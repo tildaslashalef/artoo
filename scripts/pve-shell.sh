@@ -47,7 +47,7 @@ chown -R root:root /root/.config /root/.vimrc
 sed 's|  /|  |' "$src/sums" | sha256sum -c --quiet
 for f in /root/.config/fish/config.fish /root/.config/fish/functions/*.fish; do fish -n "$f"; done
 infocmp -x xterm-ghostty | head -1
-fish -c 'for f in pveupd ts bakit extract journal killport myip ports sudo; functions -q $f; or echo "missing $f"; end; functions -q upd; and echo "upd present"; echo functions checked'
+fish -c 'for f in pveupd ispeed ts bakit extract journal killport myip ports sudo; functions -q $f; or echo "missing $f"; end; functions -q upd; and echo "upd present"; echo functions checked'
 rm -rf "$src"
 echo done
 REMOTE

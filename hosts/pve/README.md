@@ -8,6 +8,7 @@ upgrade` is wrong on Proxmox, and it calls sudo), **plus** these files:
 | File | Purpose |
 | --- | --- |
 | `fish/functions/pveupd.fish` | Proxmox update: `apt update` → summary (Proxmox/kernel/ZFS packages, running guests) → `apt full-upgrade` → optional autoremove → reboot-needed check. Never reboots. |
+| `fish/functions/ispeed.fish` | Internet speed test with `curl` against speed.cloudflare.com: edge and public IP, latency/jitter, one download and one upload stream, bars scaled to the default route's link speed. `-d`/`-u` sizes in MB (default 90/25), `-n` latency samples. |
 | `fish/functions/sudo.fish` | Proxmox has no sudo; lets `journal`, `ports` and `killport` run as root unchanged. |
 
 The Ghostty terminfo is compiled system-wide into `/etc/terminfo` (as on
