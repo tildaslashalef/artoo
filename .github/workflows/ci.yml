@@ -1,0 +1,55 @@
+# artoo CI (AGENTS.md, Git): the same checks as `make test` on Linux and
+# macOS, plus a native release build. Runs on pull requests only: `main`
+# is rebase-merged from a green pull request, so it is not checked again.
+# "Run workflow" (workflow_dispatch) runs it by hand on any branch.
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Downloads Zig from ziglang.org (mirrors) and verifies its minisign
+      # signature; caches the global Zig cache between runs.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Format check
+        timeout-minutes: 5
+        run: zig build fmt
+
+      - name: Compile
+        timeout-minutes: 15
+        run: zig build --summary all
+
+      - name: Tests
+        timeout-minutes: 10
+        run: zig build test --summary all
+
+      - name: Linux cross-builds
+        timeout-minutes: 15
+        run: zig build cross --summary all
+
+      - name: Native release build
+        run: |
+          zig build -Doptimize=ReleaseSafe
+          ./zig-out/bin/artoo --version

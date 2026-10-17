@@ -1,0 +1,52 @@
+# artoo release binaries (AGENTS.md, Git): on a pushed v* tag, check that
+# the tag matches build.zig.zon, run `make test`'s checks, build the
+# release archives (scripts/release-binaries.sh) and attach them to the
+# tag's GitHub release, creating it with generated notes if it does not
+# exist yet.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    # macOS cross-compiles every target (artoo links no libc) and can run
+    # the macOS binaries as a smoke test.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Tag matches build.zig.zon
+        run: |
+          version=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, build.zig.zon $version"; exit 1; }
+
+      - name: Checks
+        timeout-minutes: 15
+        run: zig build test fmt cross --summary all
+
+      - name: Archives
+        timeout-minutes: 15
+        run: |
+          scripts/release-binaries.sh dist
+          tar -xzOf dist/artoo-*-aarch64-macos.tar.gz '*/artoo' > artoo-smoke
+          chmod +x artoo-smoke && ./artoo-smoke --version
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # vX.Y.Z-rc.N and other SemVer pre-releases are marked as such.
+          pre=; case "$GITHUB_REF_NAME" in *-*) pre=--prerelease ;; esac
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --title "artoo ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag $pre
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
