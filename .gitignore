@@ -1,0 +1,23 @@
+# Zig
+zig-out/
+.zig-cache/
+.zig/
+zig-cache/
+
+# Local agent notes pointing at the operator's private lab record
+AGENTS.local.md
+CLAUDE.local.md
+
+# Secrets and TLS material — never commit
+*.pem
+*.key
+*.p12
+*.pfx
+
+# macOS
+.DS_Store
+
+# Embedded public keys artoo verifies packages with — tracked even where a
+# global ignore excludes *.gpg (SPEC §9.7).
+!src/edge/cloudflare-main.gpg
+!src/watch/ntfy-keyring.gpg

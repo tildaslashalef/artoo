@@ -1,0 +1,314 @@
+"================================================================"
+"         Self-Contained & Minimal Vimrc for Servers
+"================================================================"
+
+
+"----------------------------------------------------------------"
+" => General Settings
+"----------------------------------------------------------------"
+set history=500                     " Lines of history VIM remembers
+set encoding=utf-8                  " Use UTF-8 canonical spelling
+let mapleader = ","                 " Set the map leader key
+filetype plugin indent on           " Enable filetype detection, plugins, and indentation
+syntax enable                       " Enable syntax highlighting
+
+set autoread                        " Reload file if changed externally
+au FocusGained,BufEnter * silent! checktime
+
+
+"----------------------------------------------------------------"
+" => User Interface
+"----------------------------------------------------------------"
+set number                          " Show line numbers
+set relativenumber                  " Show relative line numbers
+set ruler                           " Always show cursor position
+set showcmd                         " Show incomplete commands
+set laststatus=2                    " Always show the status line
+set cmdheight=1                     " Height of the command bar
+
+set scrolloff=3                     " Keep 3 lines of context around the cursor
+set sidescrolloff=5                 " Keep 5 columns of context
+
+set splitbelow                      " New horizontal splits go below
+set splitright                      " New vertical splits go to the right
+
+set list                            " Show whitespace characters
+set listchars=tab:>-,trail:.,extends:>,precedes:<,nbsp:+ " ASCII whitespace chars for compatibility
+
+set showmatch                       " Briefly jump to matching bracket
+set mat=2                           " How long to wait on matching bracket (tenths of a second)
+set hid                             " A buffer becomes hidden when it is abandoned
+
+" No annoying sound on errors
+set noerrorbells
+set novisualbell
+set t_vb=
+
+
+"----------------------------------------------------------------"
+" => Search & Replace
+"----------------------------------------------------------------"
+set ignorecase                      " Ignore case when searching
+set smartcase                       " Be smart about case when searching
+set hlsearch                        " Highlight all search results
+set incsearch                       " Show search results as you type
+
+" Clear search highlighting with <leader><cr>
+map <silent> <leader><cr> :noh<cr>
+
+
+"----------------------------------------------------------------"
+" => Text, Tabs, and Indentation
+"----------------------------------------------------------------"
+set expandtab                       " Use spaces instead of tabs
+set smarttab                        " Be smart about tabs
+set shiftwidth=4                    " Indentation size
+set tabstop=4                       " Tab width
+set softtabstop=4                   " Soft tab width
+set autoindent                      " Enable auto-indenting
+set smartindent                     " Enable smart-indenting
+
+set wrap                            " Wrap long lines
+set linebreak                       " Wrap lines at convenient places
+set showbreak=↪\                    " Character to show for wrapped lines
+
+
+"----------------------------------------------------------------"
+" => Files, Backups & Undo
+"----------------------------------------------------------------"
+set nobackup                        " No backup files
+set nowritebackup                   " No write backup files
+set noswapfile                      " No swap files
+
+if has('persistent_undo')
+    set undofile                    " Enable persistent undo
+    let undodir = expand('~/.vim/undodir')
+    if !isdirectory(undodir)
+      call mkdir(undodir, 'p')
+    endif
+    set undodir=~/.vim/undodir      " Set undo directory
+endif
+
+
+"----------------------------------------------------------------"
+" => Key Mappings
+"----------------------------------------------------------------"
+" Save file with <leader>w or Ctrl+S
+nmap <leader>w :w!<cr>
+nnoremap <C-s> :w<cr>
+inoremap <C-s> <Esc>:w<cr>a
+
+" Sudo save with :W
+command! W execute 'w !sudo tee % > /dev/null' <bar> edit!
+
+" Quit with <leader>q (quit) and <leader>Q (force quit all)
+nnoremap <leader>q :q<cr>
+nnoremap <leader>Q :qa!<cr>
+
+" Window navigation
+map <C-j> <C-W>j
+map <C-k> <C-W>k
+map <C-h> <C-W>h
+map <C-l> <C-W>l
+
+" Move lines up/down with Alt+j/k
+nmap <M-j> mz:m+<cr>`z
+nmap <M-k> mz:m-2<cr>`z
+
+" Toggle line numbers
+nnoremap <leader>n :set number!<cr>
+nnoremap <leader>rn :set relativenumber!<cr>
+
+" Toggle spell check
+map <leader>ss :setlocal spell!<cr>
+
+" Edit/reload vimrc
+nnoremap <leader>ev :edit $MYVIMRC<cr>
+nnoremap <leader>sv :source $MYVIMRC<cr>
+
+" Toggle paste mode
+map <leader>pp :setlocal paste!<cr>
+
+" Toggle file explorer with <leader>e
+nnoremap <leader>e :Lexplore<CR>
+
+
+"----------------------------------------------------------------"
+" => Status Line
+"----------------------------------------------------------------"
+" Custom highlight groups for status line modes
+hi StatusLineMode guifg=#1d2021 guibg=#b8bb26 gui=bold ctermfg=234 ctermbg=142
+hi StatusLineModeInsert guifg=#1d2021 guibg=#83a598 gui=bold ctermfg=234 ctermbg=109
+hi StatusLineModeVisual guifg=#1d2021 guibg=#fe8019 gui=bold ctermfg=234 ctermbg=208
+hi StatusLineModeReplace guifg=#1d2021 guibg=#fb4934 gui=bold ctermfg=234 ctermbg=167
+hi StatusLineGit guifg=#fabd2f guibg=#504945 gui=bold ctermfg=214 ctermbg=239
+
+" Tell Vim to use a function to generate the entire statusline.
+set statusline=%!MyStatusLine()
+
+
+"----------------------------------------------------------------"
+" => File Explorer (Netrw)
+"----------------------------------------------------------------"
+set path+=** " Allow searching in all subdirectories
+set wildmenu " Enable command-line completion menu
+
+" Basic Netrw settings for a better experience
+let g:netrw_banner=0              " Disable the banner
+let g:netrw_liststyle=3           " Use tree view
+let g:netrw_altv=1                " Open splits to the right
+let g:netrw_winsize=25            " Set explorer width to 25%
+
+
+"----------------------------------------------------------------"
+" => Colors and Fonts (Gruvbox Dark Hard - Self-Contained)
+"----------------------------------------------------------------"
+if has('termguicolors')
+    set termguicolors " Enable 24-bit RGB color
+endif
+set t_Co=256 " Enable 256 colors
+set background=dark " Use a dark background
+
+function! GruvboxColors()
+    highlight clear
+    if exists("syntax_on")
+        syntax reset
+    endif
+    let g:colors_name = "gruvbox-hard"
+
+    " Syntax highlighting
+    highlight Normal guifg=#ebdbb2 guibg=#1d2021 ctermfg=223 ctermbg=234
+    highlight Comment guifg=#928374 gui=italic ctermfg=245
+    highlight Constant guifg=#d3869b ctermfg=175
+    highlight String guifg=#b8bb26 ctermfg=142
+    highlight Character guifg=#b8bb26 ctermfg=142
+    highlight Number guifg=#d3869b ctermfg=175
+    highlight Boolean guifg=#d3869b ctermfg=175
+    highlight Float guifg=#d3869b ctermfg=175
+    highlight Identifier guifg=#83a598 ctermfg=109
+    highlight Function guifg=#b8bb26 gui=bold ctermfg=142
+    highlight Statement guifg=#fb4934 gui=bold ctermfg=167
+    highlight Conditional guifg=#fb4934 gui=bold ctermfg=167
+    highlight Repeat guifg=#fb4934 gui=bold ctermfg=167
+    highlight Label guifg=#fb4934 gui=bold ctermfg=167
+    highlight Operator guifg=#8ec07c ctermfg=108
+    highlight Keyword guifg=#fb4934 gui=bold ctermfg=167
+    highlight Exception guifg=#fb4934 gui=bold ctermfg=167
+    highlight PreProc guifg=#8ec07c ctermfg=108
+    highlight Include guifg=#8ec07c ctermfg=108
+    highlight Define guifg=#8ec07c ctermfg=108
+    highlight Macro guifg=#8ec07c ctermfg=108
+    highlight PreCondit guifg=#8ec07c ctermfg=108
+    highlight Type guifg=#fabd2f gui=bold ctermfg=214
+    highlight StorageClass guifg=#fe8019 ctermfg=208
+    highlight Structure guifg=#8ec07c ctermfg=108
+    highlight Typedef guifg=#fabd2f gui=bold ctermfg=214
+    highlight Special guifg=#fe8019 ctermfg=208
+    highlight Underlined guifg=#83a598 gui=underline ctermfg=109
+    highlight Error guifg=#fb4934 guibg=#1d2021 gui=bold ctermfg=167 ctermbg=234
+    highlight Todo guifg=#1d2021 guibg=#fabd2f gui=bold ctermfg=234 ctermbg=214
+
+    " UI elements
+    highlight LineNr guifg=#7c6f64 guibg=#1d2021 ctermfg=243 ctermbg=234
+    highlight CursorLineNr guifg=#fabd2f guibg=#3c3836 gui=bold ctermfg=214 ctermbg=237
+    highlight CursorLine guibg=#3c3836 ctermbg=237
+    highlight StatusLine guifg=#1d2021 guibg=#d5c4a1 gui=bold ctermfg=234 ctermbg=250
+    highlight StatusLineNC guifg=#a89984 guibg=#504945 ctermfg=246 ctermbg=239
+    highlight VertSplit guifg=#504945 guibg=#1d2021 ctermfg=239 ctermbg=234
+    highlight Visual guibg=#504945 ctermbg=239
+    highlight Search guifg=#1d2021 guibg=#fabd2f ctermfg=234 ctermbg=214
+    highlight IncSearch guifg=#1d2021 guibg=#fe8019 ctermfg=234 ctermbg=208
+    highlight MatchParen guifg=#1d2021 guibg=#83a598 gui=bold ctermfg=234 ctermbg=109
+    highlight Pmenu guifg=#ebdbb2 guibg=#504945 ctermfg=223 ctermbg=239
+    highlight PmenuSel guifg=#1d2021 guibg=#83a598 ctermfg=234 ctermbg=109
+    highlight DiffAdd guifg=#b8bb26 guibg=#1d2021 ctermfg=142 ctermbg=234
+    highlight DiffChange guifg=#8ec07c guibg=#1d2021 ctermfg=108 ctermbg=234
+    highlight DiffDelete guifg=#fb4934 guibg=#1d2021 ctermfg=167 ctermbg=234
+    highlight DiffText guifg=#fabd2f guibg=#1d2021 gui=bold ctermfg=214 ctermbg=234
+    highlight Directory guifg=#83a598 gui=bold ctermfg=109
+endfunction
+
+" Apply the Gruvbox color scheme
+call GruvboxColors()
+
+" Re-apply colors if they are ever reset
+autocmd ColorScheme * call GruvboxColors()
+
+
+
+
+"----------------------------------------------------------------"
+" => Helper Functions
+"----------------------------------------------------------------"
+" Master function to build the entire statusline string.
+function! MyStatusLine()
+    " Part 1: Mode Indicator
+    let l:mode_str = ''
+    let l:current_mode = mode()
+    if l:current_mode == 'n'
+        let l:mode_str = '%#StatusLineMode# NORMAL '
+    elseif l:current_mode == 'i'
+        let l:mode_str = '%#StatusLineModeInsert# INSERT '
+    elseif l:current_mode =~# 'v\|V\|\<C-v>'
+        let l:mode_str = '%#StatusLineModeVisual# VISUAL '
+    elseif l:current_mode == 'R'
+        let l:mode_str = '%#StatusLineModeReplace# REPLACE '
+    else
+        let l:mode_str = '%#StatusLineNC# ' . toupper(l:current_mode) . ' '
+    endif
+
+    " Part 2: File Info
+    let l:file_info = '%#StatusLineNC# %F %m%r'
+
+    " Part 3: Git Branch
+    let l:git_branch = '%#StatusLineGit#%{GitBranch()}'
+
+    " Part 4: File Type & Position
+    let l:position = '%#StatusLineNC# %Y %#StatusLine# %l:%c %p%%'
+
+    " Assemble the full string with right-alignment ('%=') in the middle
+    return l:mode_str . l:file_info . '%=' . l:git_branch . l:position
+endfunction
+
+" Get current git branch for statusline (no plugins required)
+function! GitBranch()
+    let branch = system("git rev-parse --abbrev-ref HEAD 2>/dev/null")
+    if v:shell_error == 0
+        return ' ' . substitute(branch, '\n$', '', '') . ' '
+    endif
+    return ''
+endfunction
+
+" Delete trailing white space on save for some filetypes
+function! CleanExtraSpaces()
+    let save_cursor = getpos(".")
+    let old_query = getreg('/')
+    silent! %s/\s\+$//e
+    call setpos('.', save_cursor)
+    call setreg('/', old_query)
+endfun
+
+if has("autocmd")
+    autocmd BufWritePre *.txt,*.js,*.py,*.wiki,*.sh,*.coffee,*.vim,*.html,*.css,*.json,*.yaml,*.yml :call CleanExtraSpaces()
+endif
+
+
+"----------------------------------------------------------------"
+" => Filetype Specific Settings
+"----------------------------------------------------------------"
+augroup FiletypeSettings
+    autocmd!
+    " Golang, Rust, Java, C, C++, Python get 4 spaces
+    autocmd FileType go,rust,java,c,cpp,python setlocal expandtab shiftwidth=4 tabstop=4 softtabstop=4
+    " Web development files get 2 spaces
+    autocmd FileType javascript,typescript,html,css,scss,sass,yaml setlocal expandtab shiftwidth=2 tabstop=2 softtabstop=2
+augroup END
+
+
+"----------------------------------------------------------------"
+" => Final Customizations
+"----------------------------------------------------------------"
+" Load local settings if the file exists (for machine-specific overrides)
+if filereadable(expand("~/.vimrc.local"))
+    source ~/.vimrc.local
+endif
