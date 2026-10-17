@@ -86,7 +86,7 @@ function ispeed -d "Internet speed test (Cloudflare): latency, jitter, download,
     set -q _flag_pings; and set pings $_flag_pings
     set -l base https://speed.cloudflare.com
 
-    # Link speed of the default route's device (for a bridge: its first port with a speed).
+    # Link speed of the default route's device (for a bridge: its first physical port with a speed).
     set -l link
     set -l link_desc
     set -l dev
@@ -95,6 +95,8 @@ function ispeed -d "Internet speed test (Cloudflare): latency, jitter, download,
         set -l ports $dev
         test -d /sys/class/net/$dev/brif; and set ports (path basename /sys/class/net/$dev/brif/*)
         for p in $ports
+            # Skip virtual bridge ports (guest taps, firewall veths): only NICs have a device.
+            test "$p" != "$dev"; and not test -e /sys/class/net/$p/device; and continue
             set -l s (cat /sys/class/net/$p/speed 2>/dev/null)
             if string match -qr '^[1-9][0-9]*$' -- "$s"
                 set link $s
