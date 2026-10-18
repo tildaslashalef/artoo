@@ -49,6 +49,11 @@ def ts(title, targets, x, w, h=8, unit="none", stack=False, fill=12, minv=None, 
             "options":{"legend":{"displayMode":"list","placement":"bottom","showLegend":True},"tooltip":{"mode":"multi","sort":"desc"}}}
 def adv(h): y[0]+=h
 
+# a probe's service name, from Alloy's job "integrations/blackbox/<service>"
+def by_service(expr):
+    return 'label_replace(%s, "service", "$1", "job", "integrations/blackbox/(.+)")' % expr
+SVC_UP='sort_by_label(max by (service) (%s), "service")' % by_service("probe_success")
+
 # templates have system_template 1; guests 0
 GUEST='and on (vmid) (system_template{object="qemu"} == 0)'
 
@@ -76,8 +81,7 @@ panels+= [
 adv(4)
 panels+= [
  stat("Guests running",'count(system_uptime{object="qemu"} > 0)',0,3,"none",steps((None,"blue")),0,spark=False),
- stat("HTTPS services",'min(probe_success)',3,3,"none",okth,0,
-      mappings=[{"type":"value","options":{"0":{"text":"DOWN","color":"red"},"1":{"text":"UP","color":"green"}}}],spark=False,desc="Every service name, probed through the edge"),
+ stat("Services down",'count(probe_success < 1) or vector(0)',3,3,"none",zero_good,0,spark=False,desc="Service names whose HTTPS probe through the edge fails; which ones: the strip below"),
  stat("Certificate",'min(probe_ssl_earliest_cert_expiry - time()) / 86400',6,4,"suffix: days",steps((None,"red"),(14,"yellow"),(30,"green")),0,spark=False,desc="*.apps wildcard, days until expiry; Caddy renews it at about 30"),
  stat("Tunnel connections",'sum(cloudflared_tunnel_ha_connections) or vector(0)',10,3,"none",steps((None,"red"),(1,"yellow"),(2,"green")),0,spark=False),
  stat("Router routes",'sum(artoo_tailscale_routes_primary) or vector(0)',13,3,"none",okth,0,spark=False,desc="Primary subnet routes on the Tailscale router"),
@@ -85,6 +89,13 @@ panels+= [
  stat("Telemetry blocked (24 h)",'sum(increase(artoo_drop_packets{table="artoo_watch",counter="telemetry"}[24h])) or vector(0)',20,4,"none",zero_good,0,spark=False,desc="Outbound attempts by Grafana, Loki, VictoriaMetrics, Alloy, ntfy"),
 ]
 adv(4)
+# One cell per service name, so a failing one is named (job "integrations/blackbox/<service>").
+panels.append({"id":nid(),"type":"stat","title":"HTTPS services","description":"Each service name, probed from the watchdog through the edge (its health path); down = no 2xx, a TLS error or its down text","datasource":VM,
+  "gridPos":{"x":0,"y":y[0],"w":24,"h":3},"targets":[tgt(SVC_UP,"{{service}}",instant=True)],
+  "fieldConfig":{"defaults":{"unit":"none","thresholds":okth,"color":{"mode":"thresholds"},
+    "mappings":[{"type":"value","options":{"0":{"text":"down","color":"red"},"1":{"text":"up","color":"green"}}}]},"overrides":[]},
+  "options":{"reduceOptions":{"calcs":["lastNotNull"],"fields":"","values":False},"colorMode":"background","graphMode":"none","justifyMode":"center","textMode":"value_and_name","wideLayout":True,"orientation":"vertical","showPercentChange":False}})
+adv(3)
 
 # ---------------- Proxmox
 panels.append(row("Proxmox"))
@@ -153,11 +164,11 @@ panels.append(row("Edge & router"))
 panels+= [
  ts("Edge drops",[tgt('sum by (counter) (increase(artoo_drop_packets{table="artoo_edge"}[$__rate_interval]))',"{{counter}}")],0,8,draw="bars",desc="to_pve / to_gateway: sign of compromise; to_lan, out_other, in_dropped: noise worth a look"),
  ts("Tunnel",[tgt('sum(cloudflared_tunnel_ha_connections)',"connections"),tgt('sum(rate(cloudflared_tunnel_total_requests[$__rate_interval]))',"requests/s","B")],8,8),
- ts("HTTPS probe time",[tgt('probe_duration_seconds',"{{job}}")],16,8,unit="s",minv=0),
+ ts("HTTPS probe time",[tgt(by_service('probe_duration_seconds'),"{{service}}")],16,8,unit="s",minv=0),
 ]
 adv(8)
 panels+= [
- ts("Certificate expiry",[tgt('(probe_ssl_earliest_cert_expiry - time()) / 86400',"{{job}}")],0,8,unit="suffix: days",fill=0),
+ ts("Certificate expiry",[tgt(by_service('(probe_ssl_earliest_cert_expiry - time()) / 86400'),"{{service}}")],0,8,unit="suffix: days",fill=0),
  ts("Router traffic (tailscale0)",[tgt('sum by (host) (rate(node_network_receive_bytes_total{device="tailscale0"}[$__rate_interval]))',"in"),
                                    tgt('-sum by (host) (rate(node_network_transmit_bytes_total{device="tailscale0"}[$__rate_interval]))',"out","B")],8,8,unit="Bps"),
  ts("Caddy upstreams healthy",[tgt('sum by (upstream) (caddy_reverse_proxy_upstreams_healthy)',"{{upstream}}")],16,8,minv=0,fill=0),
