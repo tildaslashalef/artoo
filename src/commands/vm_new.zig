@@ -599,7 +599,7 @@ pub const new = struct {
         \\NAME.<guests.domain> on UniFi, then 'vm verify'. Re-running continues
         \\an interrupted run.
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "NAME", .help = "Guest name (default: a free curated name)", .required = false }};
+    pub const positionals = [_]cli.Positional{.{ .name = "NAME", .complete = .guest_name, .help = "Guest name (default: a free curated name)", .required = false }};
     pub const flags = [_]cli.Flag{
         .{ .long = "size", .short = 's', .kind = .choice, .choices = &.{ "tiny", "small", "medium", "large", "xlarge" }, .default = "small", .help = "Size preset" },
         .{ .long = "cores", .kind = .int, .metavar = "N", .help = "vCPUs (overrides the size)" },
