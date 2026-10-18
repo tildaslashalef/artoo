@@ -1134,6 +1134,27 @@ are out of scope, §1).
   with the message ID only; the app then fetches from `scarif`) and the
   `ntfy` user's HTTPS egress; its app trusts no private CA, so the public
   wildcard serves both.
+- **Readable notifications** (decided 2026-10-18). ntfy's built-in
+  template shows only the webhook's `title` and `message` (ntfy 2.29.0
+  `server/templates/grafana.yml`: 🚨 or ✅ before `title`, `message` cut
+  at 2000 characters). Grafana's defaults put every label into the title
+  and every label, annotation and link into the message, so a probe alert
+  read "[FIRING:1] HTTPS probe failing Lab (scarif
+  prometheus.exporter.blackbox.https integrations/blackbox/search
+  warning)", naming the watchdog that probes rather than the service. The
+  webhook therefore sets `title` and `message` from a **Grafana
+  notification template** `artoo`, provisioned in the contact point's
+  file; ntfy keeps its stock `?template=grafana`. Not a custom ntfy
+  template: it would need a template directory on the server and would
+  have to pick the rule's annotations out of Grafana's raw payload, while
+  Grafana's template sees them directly and handles grouped alerts.
+  - **Title:** one alert → its `summary`; several → `<rule title>: N
+    firing` (and `, M resolved`). A resolved notification is `Resolved:
+    <summary>` (ntfy adds ✅).
+  - **Message:** per firing alert its `summary`, its `description` and
+    `since <start, UTC>`, then the resolved ones' summaries under
+    `Resolved:`; nothing else (no label dump, no silence links). A repeat
+    every 4 h thus says how old the problem is.
 - **Removed guests are forgotten** (decided 2026-10-12). "Guest
   silent" looks back a day (`tlast_over_time(…[1d])`), so a guest removed
   without cleanup kept firing — and re-notifying every 4 h — for a day
@@ -1189,6 +1210,49 @@ are out of scope, §1).
   5 min; pending reboot > 7 days. Alert state and history stay in
   Grafana and VictoriaMetrics — artoo stores nothing. Rule uids are
   `artoo-…` (`artoo-pve-*` for Proxmox's).
+  - **Each rule says what, where, how much and what next** (decided
+    2026-10-18). The query returns the raw value (seconds, a fraction,
+    packets), B reduces it (`last`) and C compares it (`gt`/`lt` the
+    threshold), so the value is in `$values.B` for the text and every
+    series is still judged 0 or 1 (it resolves when the condition clears,
+    as with `bool`). Annotations: `summary`, one line naming the guest
+    (`host` on Alloy's and the guests' series), Proxmox (`host` on
+    `object="nodes"`), the storage (`host` on `object="storages"`) or the
+    service, with the value in its unit (`humanizePercentage`,
+    `humanizeDuration`, a count); `description`, what it means and the
+    artoo commands to run next. As rendered for naboo, hoth and the
+    search service:
+
+    | uid | `summary` | next, in `description` |
+    | --- | --- | --- |
+    | `artoo-guest-silent` | naboo is silent: no metrics for 12m 5s | `vm show naboo`, `vm verify naboo`; gone: `watch forget naboo` |
+    | `artoo-pve-silent` | Proxmox is silent: no metrics for 6m 2s | `host show`, `watch status` |
+    | `artoo-rootfs` | naboo: root filesystem 91.2% full | `vm ssh naboo -- df -h /` |
+    | `artoo-memory` | naboo: memory 94.1% used | `vm show naboo`, `vm set naboo memory=…` |
+    | `artoo-pve-memory` | Proxmox pve: memory 92.3% used | `status` (which guests hold it) |
+    | `artoo-cpu` | naboo: CPU 97.0% busy for 15 minutes | `vm ssh naboo`, then `top` |
+    | `artoo-pve-cpu` | Proxmox pve: CPU 95.5% busy for 15 minutes | `status` |
+    | `artoo-pve-storage` | Proxmox storage local-zfs: 88.0% full | `storage show local-zfs` |
+    | `artoo-units` | naboo: unit nginx.service failed | `vm ssh naboo -- systemctl status nginx.service` |
+    | `artoo-edge-drops` | bespin (edge) tried to reach Proxmox: possible compromise | the count; `edge status` now |
+    | `artoo-telemetry` | scarif: a service tried to reach the internet | the count; `watch status` |
+    | `artoo-tunnel` | Cloudflare Tunnel down: cloudflared on bespin has no connection | `edge status`, `cf tunnel ls` |
+    | `artoo-router` | dagobah (router): remote access down | Tailscale not running or the LAN route not primary; `router status` |
+    | `artoo-cert` | search: HTTPS certificate expires in 9d 4h 12m 3s | the edge renews it; `edge status` |
+    | `artoo-probe` | search (https://search.apps.lab.example.com/v1/health) is down, probed from scarif | runs on hoth; `vm verify hoth`, `svc ls`, `edge status` |
+    | `artoo-reboot` | naboo has waited 8d 2h 31m 7s for a reboot | `vm reboot naboo`; the packages: `vm verify naboo` |
+
+  - **Probe labels.** A probe's series carry `job="integrations/blackbox/<service>"`
+    and `host=<watchdog>` (Alloy's names, seen live 2026-10-18), so the
+    watchdog's Alloy relabels them with `service` (the name), `url` (the
+    probed target) and `vm` (the route file's upstream guest), rendered
+    per service at `watch setup` time like the targets; `host` stays
+    the watchdog that probes. A moved service (`svc set`) gets its new
+    `vm` at the next `watch setup`.
+  - The router rule takes the minimum of `artoo_tailscale_running` and
+    `artoo_tailscale_routes_primary` per host; the earlier `… < bool 1 or
+    … < bool 1` never looked at the right side, whose series match the
+    left one's labels.
 - **Alloy on the guests.** The template installs the pinned `alloy`
   package (§9.1: the vendor snippet carries Grafana's repository with the
   embedded key, an apt pin and Alloy's drop-in, written before packages),
