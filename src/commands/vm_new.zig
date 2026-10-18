@@ -774,6 +774,7 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
         try out.append(a, ch);
     }
     try out.append(a, try alloyCheck(ctx, c, v, agent_ok, watched));
+    try out.append(a, try @import("vm_fence.zig").check(ctx, c, v));
 
     // From the workstation.
     if (address == null or !running) {

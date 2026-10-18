@@ -25,6 +25,8 @@ const edge = @import("edge.zig");
 const router = @import("router.zig");
 const svc = @import("svc.zig");
 const vm_new = @import("vm_new.zig");
+const vm_fence = @import("vm_fence.zig");
+const template = @import("template.zig");
 const cf = @import("../cloudflare/client.zig");
 const tunnels = @import("../cloudflare/tunnel.zig");
 
@@ -47,6 +49,8 @@ const Guest = struct {
     reboot_pending: ?bool = null,
     /// The packages that want it (`/run/reboot-required.pkgs`).
     reboot_packages: []const []const u8 = &.{},
+    /// A fenced guest whose fence drifted (SPEC §9.11): what differs.
+    fence_drift: ?[]const u8 = null,
 };
 
 const Gateway = struct {
@@ -112,6 +116,7 @@ fn attempt(ctx: *Context, errors: *std.ArrayList(SectionError), section: []const
 fn guests(c: *pve.Client, templates: *usize) ![]const Guest {
     const ctx = c.ctx;
     var out: std.ArrayList(Guest) = .empty;
+    var lab: ?vm_fence.Lab = null;
     for (try vms.list(c)) |v| {
         if (v.template) {
             templates.* += 1;
@@ -147,9 +152,33 @@ fn guests(c: *pve.Client, templates: *usize) ![]const Guest {
                 }
             }
         }
-        try out.append(ctx.arena, .{ .vmid = v.vmid, .name = v.name, .status = v.status, .vcpus = v.cpus, .cpu = v.cpu, .mem = v.mem, .maxmem = v.maxmem, .uptime = v.uptime, .address = addr, .reboot_pending = reboot, .reboot_packages = pkgs.items });
+        const drift = if (template.taggedWith(v.tags, vm_fence.tag)) try fenceDrift(c, &lab, v) else null;
+        try out.append(ctx.arena, .{ .vmid = v.vmid, .name = v.name, .status = v.status, .vcpus = v.cpus, .cpu = v.cpu, .mem = v.mem, .maxmem = v.maxmem, .uptime = v.uptime, .address = addr, .reboot_pending = reboot, .reboot_packages = pkgs.items, .fence_drift = drift });
     }
     return out.items;
+}
+
+/// What differs in a fenced guest's fence, or null when it is as derived;
+/// the lab is read once, for the first fenced guest.
+fn fenceDrift(c: *pve.Client, lab: *?vm_fence.Lab, v: vms.Vm) !?[]const u8 {
+    const ctx = c.ctx;
+    const a = ctx.arena;
+    const run = struct {
+        fn f(cl: *pve.Client, l: *?vm_fence.Lab, vm: vms.Vm) !?[]const u8 {
+            if (l.* == null) l.* = try vm_fence.readLab(cl.ctx, cl);
+            const want = try vm_fence.rules(cl.ctx.arena, try vm_fence.inputsFor(cl.ctx, cl, l.*.?, vm, l.*.?.routes));
+            const st = try vm_fence.readState(cl, vm, want);
+            return if (st.steps.any()) try vm_fence.firstDrift(cl.ctx.arena, st, want) else null;
+        }
+    }.f;
+    return run(c, lab, v) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            const why = try std.fmt.allocPrint(a, "not checked: {s}", .{ctx.diag orelse @errorName(err)});
+            ctx.diag = null;
+            return why;
+        },
+    };
 }
 
 const reboot_script = "if [ -f /run/reboot-required ]; then echo yes; cat /run/reboot-required.pkgs 2>/dev/null; else echo no; fi";
@@ -415,6 +444,9 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
                 try waiting.append(a, if (shown.len == 0) try k.clean(ctx, g.name) else try std.fmt.allocPrint(a, "{s} ({s}{s})", .{ try k.clean(ctx, g.name), try k.clean(ctx, try std.mem.join(a, ", ", shown)), if (g.reboot_packages.len > 2) ", …" else "" }));
             };
             if (waiting.items.len > 0) try ctx.out.print("  {s}{s} reboot pending: {s} — 'artoo vm reboot VM'{s}\n", .{ u.palette.on(.warn), u.glyphs.warn, try std.mem.join(a, ", ", waiting.items), u.palette.off(.warn) });
+            for (gs) |g| if (g.fence_drift) |d| {
+                try ctx.out.print("  {s}{s} fence drift: {s} ({s}) — 'artoo vm fence {s}'{s}\n", .{ u.palette.on(.warn), u.glyphs.warn, try k.clean(ctx, g.name), try k.clean(ctx, d), try k.clean(ctx, g.name), u.palette.off(.warn) });
+            };
         }
     } else try failLine(ctx, unavailable(errors, "guests") orelse unavailable(errors, "pve") orelse "--");
 

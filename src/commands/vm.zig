@@ -101,6 +101,8 @@ pub const Detail = struct {
     /// Guest-agent addresses; null when not available (see `agent_note`).
     addresses: ?[]const vms.Address,
     agent_note: ?[]const u8,
+    /// The `vm fence` state (SPEC §9.11): `on …`, `drift — …`, `off`.
+    fence: []const u8 = "off",
 };
 
 pub fn detail(c: *pve.Client, word: []const u8) !Detail {
@@ -113,6 +115,7 @@ pub fn detail(c: *pve.Client, word: []const u8) !Detail {
         if (!std.mem.eql(u8, n, "current")) try snaps.append(ctx.arena, n);
     }
     var d: Detail = .{ .vm = v, .config = cfg, .snapshots = snaps.items, .addresses = null, .agent_note = null };
+    d.fence = try fenceText(ctx, c, v, cfg);
     if (!v.running()) {
         d.agent_note = "VM not running";
     } else if (!vms.agentEnabled(cfg)) {
@@ -128,6 +131,20 @@ pub fn detail(c: *pve.Client, word: []const u8) !Detail {
         };
     }
     return d;
+}
+
+fn fenceText(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value) ![]const u8 {
+    const vm_fence = @import("vm_fence.zig");
+    if (v.template) return "--";
+    if (!template.taggedWith(v.tags, vm_fence.tag)) {
+        const net0 = pve.str(cfg, "net0") orelse "";
+        return if (std.mem.find(u8, net0, "firewall=1") != null) "off (net0 firewall=1, not by 'vm fence')" else "off";
+    }
+    const ch = try vm_fence.check(ctx, c, v);
+    return switch (ch.status) {
+        .ok => try std.fmt.allocPrint(ctx.arena, "on ({s})", .{ch.detail}),
+        else => ch.detail,
+    };
 }
 
 pub const show = struct {
@@ -195,6 +212,7 @@ fn render(ctx: *Context, d: Detail) !void {
         try net.append(a, .{ .key = "Addresses", .value = if (addrs.len > 0) text.items else "(none reported)" });
     } else try net.append(a, .{ .key = "Addresses", .value = try std.fmt.allocPrint(a, "not available: {s}", .{d.agent_note orelse "--"}), .role = .muted });
     if (net.items.len == 0) try net.append(a, .{ .key = "(none)", .value = "", .role = .muted });
+    if (!v.template) try net.append(a, .{ .key = "Fence", .value = d.fence, .role = if (std.mem.startsWith(u8, d.fence, "on")) .ok else if (std.mem.startsWith(u8, d.fence, "off")) .muted else .warn });
 
     var ci: std.ArrayList(ui.blocks.Field) = .empty;
     for ([_][]const u8{ "ciuser", "ipconfig0", "nameserver", "searchdomain" }) |key| {
@@ -331,7 +349,7 @@ pub const group = cli.group("vm", "Virtual machines on Proxmox", &([_]cli.Comman
     cli.leaf(show),
     cli.leaf(config),
     cli.leaf(urls),
-} ++ @import("vm_life.zig").commands ++ @import("vm_new.zig").commands ++ @import("vm_ssh.zig").commands));
+} ++ @import("vm_life.zig").commands ++ @import("vm_new.zig").commands ++ @import("vm_ssh.zig").commands ++ @import("vm_fence.zig").commands));
 
 // ---------------------------------------------------------------- tests
 

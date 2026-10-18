@@ -32,8 +32,13 @@ const step_timeout_ms = 10 * 60 * 1000;
 
 /// The VM tagged `role-edge` (exactly one), running, agent answering.
 pub fn edgeVm(ctx: *Context, c: *pve.Client) !vms.Vm {
+    return edgeVmFrom(ctx, c, try vms.list(c));
+}
+
+/// `edgeVm` from a VM list already read.
+pub fn edgeVmFrom(ctx: *Context, c: *pve.Client, list: []const vms.Vm) !vms.Vm {
     var found: ?vms.Vm = null;
-    for (try vms.list(c)) |v| {
+    for (list) |v| {
         const r = vm_cmd.roleOf(v.tags) orelse continue;
         if (!std.mem.eql(u8, r, role) or v.template) continue;
         if (found != null) return ctx.fail(error.Refused, "several VMs carry role-edge ({s}, {s}); keep one", .{ found.?.name, v.name });
@@ -226,7 +231,7 @@ pub const Rule = struct {
     dport: []const u8 = "",
     comment: []const u8,
 
-    fn eql(r: Rule, o: Rule) bool {
+    pub fn eql(r: Rule, o: Rule) bool {
         inline for (.{ "type", "action", "macro", "source", "dest", "proto", "dport" }) |f|
             if (!std.mem.eql(u8, @field(r, f), @field(o, f))) return false;
         return true;
