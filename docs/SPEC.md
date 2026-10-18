@@ -1256,6 +1256,13 @@ are out of scope, §1).
     per service at `watch setup` time like the targets; `host` stays
     the watchdog that probes. A moved service (`svc set`) gets its new
     `vm` at the next `watch setup`.
+  - Verified live (2026-10-18): `watch setup` rewrote the two alerting
+    files, the board and the watchdog's Alloy config in one run, and a
+    second `-n` found nothing; Grafana provisioned the 16 rules without
+    error and loaded the `artoo` template; every probe series carried
+    `service`, `url` and `vm` within a minute; no notification error
+    in Grafana's log when the failing probe re-fired under its new labels.
+    The phone's rendering is not yet confirmed.
   - The router rule takes the minimum of `artoo_tailscale_running` and
     `artoo_tailscale_routes_primary` per host; the earlier `… < bool 1 or
     … < bool 1` never looked at the right side, whose series match the
