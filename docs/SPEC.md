@@ -107,6 +107,7 @@ artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
 artoo vm ssh-config                   write ~/.artoo/ssh_config: strict plain ssh/scp/rsync (§9.10)
 artoo vm cp SRC DST [-r] [--force]    copy as <user> to, from or between guests, SHA-256 checked (§9.10)
 artoo vm password VM                  print the guest user's password (TTY only, §7)
+artoo vm fence VM [--off]             Proxmox NIC firewall around a guest (§9.11)
 
 artoo template ls | show T | build T [--id N] | rm T | vendor [T]
 artoo image ls | fetch IMAGE | rm IMAGE    pinned images on Proxmox (never the workstation)
@@ -314,12 +315,13 @@ ends a step:
     "address_pool": "192.168.1.200-192.168.1.254",
     "gateway": "192.168.1.1/24",
     "user": "artoo",
-    "reserved_names": ""
+    "reserved_names": "",
+    "fence_allow_out": ""
   }
 }
 ```
 
-The values shown are the defaults. Two `guests` keys shape every guest:
+The values shown are the defaults. Three `guests` keys need a word:
 
 - `guests.user` (default `artoo`): the account `vm new` creates on every
   guest — SSH key login, `sudo` with a generated password kept in the
@@ -329,6 +331,8 @@ The values shown are the defaults. Two `guests` keys shape every guest:
 - `guests.reserved_names` (default empty): comma-separated DNS labels —
   the lab's own host and equipment names that guests may never take and
   that are never published (§9.1, §9.6).
+- `guests.fence_allow_out` (default empty): outbound exceptions for
+  fenced guests, `VM PEER PROTO PORTS` entries separated by `;` (§9.11).
 
 `config show` prints an empty value as `--`.
 
@@ -656,7 +660,8 @@ resolving via UniFi; for public guests the Cloudflare record and tunnel route ex
 Tailscale installed and not enrolled; also `sudo -n` refused for the
 guest user, `sshd -T` showing no root and no password login, the guest
 user's shell fish ("user account": home and shell), the baseline tools
-present, and Alloy enrolled and running when a `role-watch` VM exists (§9.9; not checked otherwise); unattended updates
+present, and Alloy enrolled and running when a `role-watch` VM exists (§9.9; not checked otherwise); the fence of a
+guest tagged `fenced` (§9.11); unattended updates
 (§9.1): periodic upgrade on, the `-security` pocket allowed, the daily
 timer enabled and no automatic reboot (else failed), Tailscale's origin
 where Tailscale is installed (else a warning: a baseline older than
@@ -1286,7 +1291,8 @@ are out of scope, §1).
   whose VM carries `role-search`, with no override. Alloy on it scrapes
   the gateway's `/v1/metrics` on `localhost:8080` (job `holocron`, above).
   Its NIC fence follows the edge/watchdog pattern: the Proxmox VE firewall
-  on the VM's NIC with an outbound allow-list.
+  on the VM's NIC with an outbound allow-list, written by `vm fence`
+  (§9.11).
 - **Later:** UniFi metrics; `status` reading alert state from
   Grafana (§11).
 
@@ -1463,6 +1469,119 @@ guest agent (§9.7, §9.9).
   naboo:` resolves the target `naboo:hostname` and prints the scp command
   with `-3`.
 
+### 9.11 Guest fence (`vm fence`)
+
+Decided 2026-10-18; live acceptance pending. The edge VM and the
+watchdog carry the Proxmox VE firewall on their NIC (§9.7, §9.9), written
+by their own setup. `artoo vm fence VM` puts the same kind of host-side
+fence on any other artoo guest — an app guest, a crawler that must not
+reach the LAN, the search gateway (§9.9) — so that root inside the guest
+cannot widen it. It writes only the VM's own firewall on Proxmox
+(`VM.Config.Network`, as §9.7) and nothing inside the guest; it is not
+an nftables policy in the VM.
+
+- **Rules, all derived** (no address is typed by hand; first match
+  wins; Proxmox inserts at the top, so they are sent last to first):
+
+  | # | Rule | From |
+  | --- | --- | --- |
+  | 1 | `IN ACCEPT tcp <port>` from the edge VM's address, one rule per service | each `svc` route whose upstream is this VM (§9.6), by service name; none without an edge VM |
+  | 2 | `IN ACCEPT tcp 22` from the LAN — from Proxmox only (`pve.ssh_host`) for a guest tagged `ssh-jump` | `guests.gateway`'s subnet |
+  | 3 | `IN ACCEPT Ping` from the LAN | as above |
+  | 4 | `OUT ACCEPT udp 53`, `OUT ACCEPT tcp 53` to the gateway | `guests.gateway` |
+  | 5 | `OUT ACCEPT tcp 8428,3100` to the watchdog (Alloy's push, §9.9) | the `role-watch` VM's static address; none without one |
+  | 6 | `OUT ACCEPT` per exception (below) | `guests.fence_allow_out` |
+  | 7 | `OUT DROP` to `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16`, then to `fc00::/7,fe80::/10` | — |
+  | 8 | `OUT ACCEPT tcp 80,443`; `OUT ACCEPT udp 123`; `OUT ACCEPT Ping`; `OUT DROP` | — |
+
+  So the guest answers its services only through the edge, SSH and
+  ping from the LAN, and reaches DNS on UniFi, the watchdog, the
+  internet's web and NTP — never Proxmox, UniFi's other ports, other
+  guests or other LAN clients (rule 7 covers them, the private and CGNAT
+  ranges). Every rule carries an `artoo: …` comment; comments are not
+  compared.
+- **IP set and options.** `ipfilter-net0` holds the VM's static
+  `ipconfig0` address only (a guest without one is refused), so the
+  guest cannot send from another address; the options `enable 1,
+  ipfilter 1, macfilter 1, dhcp 0, ndp 1, radv 0, policy_in DROP,
+  policy_out DROP` — those of §9.7 — and the NIC flag `firewall=1`.
+  Order as §9.7: rules, IP set, NIC (with the tag below), options last,
+  so the VM is never filtered by a half-written rule set. The datacenter
+  firewall must be on (`scripts/pve-firewall.sh`); when
+  `/cluster/firewall/options` says it is off, the plan says the fence
+  has no effect until it is, and `vm verify` warns.
+- **The `fenced` tag** marks a guest fenced by `vm fence`; it is written
+  in the same digest-guarded config PUT as the NIC flag. It is how `svc`,
+  `vm verify`, `vm show` and `status` know which guests to check without
+  reading every VM's firewall. A fence that differs from the derived one
+  (a new service, a moved watchdog, `ssh-jump` added or removed with `vm
+  set`, a rule edited by hand) is **drift**: shown, never repaired
+  silently; `vm fence VM` converges it.
+- **Per-guest exceptions live in the config**, never in one-off flags, so
+  every re-run derives the same fence: `guests.fence_allow_out`, entries
+  `VM PEER PROTO PORTS` separated by `;` — e.g. `hoth naboo tcp 5432;
+  hoth 203.0.113.0/24 udp 51820`. `PEER` is an artoo guest's name (its
+  static address, read at plan time) or an IPv4 address or CIDR;
+  `PROTO` is `tcp` or `udp`; `PORTS` a Proxmox port list (`5432`,
+  `80,443`, `6000:6010`). `config set` checks the syntax; `vm fence`
+  refuses, before planning, an entry whose guest does not exist or has no
+  static address, a peer that is the VM itself, and any peer that is a
+  protected address (§9.6: Proxmox, the gateway) or contains one — the
+  fence never opens a path to Proxmox or UniFi, with no override.
+  Inbound exceptions are not offered: a guest's inbound services are its
+  service names (rule 1).
+- **Refused** (exit 5, before planning): a template; a VM without the
+  `artoo` tag; a VM tagged `role-edge`, `role-watch` or `role-router`
+  (their setup owns their fence, and a fence would break the subnet
+  router's forwarding, §9.8); no static address; an edge VM that exists
+  but is not running or cannot be read (its routes, and so rule 1, are
+  unknown). The guest may be stopped: the fence applies when it starts.
+- **High-impact** (§3.4): typed confirmation, or `--yes --confirm VM`.
+  The plan renders the full rule diff, position by position — `rule N
+  <current> → <wanted>`, `(none)` and `(removed)` at the ends — with the
+  count of unchanged rules, and the IP set, NIC, tag and options changes.
+  Existing rules not written by artoo (a hand-written fence) are replaced;
+  the plan names them. A takeover of a hand-written fence with the same
+  rules is a change of the tag (and whatever else differs) only. `-n`
+  sends nothing; a converged fence is a no-op (exit 5, "nothing to
+  change"). Verified by read-back: rules, IP set, options, NIC flag and
+  tag as planned, else exit 8. While a fenced guest's rules are
+  rewritten its traffic drops for the moment between deleting and
+  re-adding them (no other change on Proxmox is atomic either).
+- **`vm fence VM --off`** is the rollback: options `enable 0` first (the
+  guest is unfiltered at once) with the other options reset to Proxmox's
+  defaults, then every rule and the IP set removed, `firewall=1` and the
+  tag removed from the VM config. Same confirmation; a guest without a
+  fence is a no-op.
+- **Services keep the fence in step.** `svc add`, `svc set` and `svc rm`
+  on a service whose old or new upstream is tagged `fenced` plan the
+  fence change in the same plan — `fence <vm>` with the rule that opens
+  or closes — and run it as a step of their ledger: the new upstream's
+  fence opens before the route is written, the old one's closes after
+  the route is gone. The fence step rewrites the VM's whole rule list as
+  `vm fence` would, so drift in that fence is repaired too and the plan
+  shows it.
+- **Fence state.** `vm verify` adds "fence": not checked for a guest
+  without the tag (and for the role VMs, whose setup checks theirs); ok
+  when the read-back equals the derived fence; failed on drift, naming the
+  first differing rule (`artoo vm fence VM` to converge); a warning when
+  the datacenter firewall is off. `vm show` prints a "Fence" line (`on`,
+  `drift`, `off`). `status` lists fenced guests below the guest table
+  when any is in drift — a warning, like a pending reboot.
+- **Later:** `vm new --fence` (the fence as the last step of a new guest).
+- **Testing.** Offline: the derived rules for a plain guest, an `ssh-jump`
+  guest, with and without edge, services, watchdog and exceptions; each
+  refusal; the plan's rule diff; `-n` sending nothing; the order of
+  writes (rules last to first, options last; `--off` options first) and
+  the read-back against the fake server; `svc add` on a fenced guest
+  planning and running its fence step. Live acceptance under an approved
+  plan (§13, a disposable guest): `vm fence` converges in one run and a
+  second `-n` finds nothing; from the guest, Proxmox `:8006`/`:22`,
+  UniFi `:443`, another guest and the workstation time out while `dig
+  @<gateway>` answers and HTTPS to the internet works; the service answers
+  through the edge and not directly; `--off` restores reachability.
+  Taking over an existing hand-written fence is its own approved plan.
+
 ## 10. UniFi
 
 ### 10.1 Access
@@ -1549,7 +1668,8 @@ LAN, from ~0.9 s sequential):
 Proxmox host (CPU %, load 1/5/15, RAM, swap, root FS, uptime, versions),
 guests (running/stopped/templates; per VM: state, vCPU, RAM, CPU %, memory,
 uptime, address; stopped → `--`; below the table, guests whose
-`/run/reboot-required` exists — a warning, not a failure, §9.1), storage (per backend, no invented totals),
+`/run/reboot-required` exists — a warning, not a failure, §9.1 — and fenced
+guests whose fence drifted, §9.11), storage (per backend, no invented totals),
 tasks (running + recent failures, warnings shown as warnings), UniFi
 (version, WAN status, device/client counts, guest DNS records vs guests;
 service records under `apps.` are services, not orphans), then the rest
