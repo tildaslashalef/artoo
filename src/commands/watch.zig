@@ -90,7 +90,7 @@ fn lab(ctx: *Context, c: *pve.Client, full: bool) !files.Lab {
     if (e.running()) {
         const view = try svc.read(ctx, c);
         var probes: std.ArrayList(files.Service) = .empty;
-        for (view.routes) |r| if (r.managed()) try probes.append(ctx.arena, .{ .name = r.name, .path = r.health.path, .down = r.health.down });
+        for (view.routes) |r| if (r.managed()) try probes.append(ctx.arena, .{ .name = r.name, .path = r.health.path, .down = r.health.down, .vm = r.vm });
         std.mem.sort(files.Service, probes.items, {}, byName);
         l.services = probes.items;
     }
