@@ -82,7 +82,40 @@ pub const Service = struct {
     path: []const u8 = "/",
     /// Literal text that fails the probe when the answer holds it.
     down: ?[]const u8 = null,
+    /// The route's upstream guest, named in the probe's alerts.
+    vm: []const u8 = "",
 };
+
+/// Alloy names a probe's series `job="integrations/blackbox/<target>"`
+/// and the scrape gives them the watchdog as `host` (seen live), so the
+/// probe relabelling adds `service`, `url` and `vm` for the alerts
+/// (SPEC §9.9, probe labels). `$` is the replacement's group marker.
+fn probeLabels(a: Allocator, out: *std.ArrayList(u8), l: Lab) !void {
+    try out.appendSlice(a,
+        \\
+        \\prometheus.relabel "probes" {
+        \\  forward_to = [prometheus.relabel.host.receiver]
+        \\
+    );
+    for (l.services) |s| {
+        var url: std.ArrayList(u8) = .empty;
+        for (try std.mem.concat(a, u8, &.{ try l.appsUrl(a, s.name), s.path })) |ch| {
+            if (ch == '$') try url.append(a, '$');
+            try url.append(a, ch);
+        }
+        const labels = [_][2][]const u8{ .{ "service", s.name }, .{ "url", url.items }, .{ "vm", s.vm } };
+        for (labels) |kv| if (kv[1].len > 0) try out.print(a,
+            \\  rule {{
+            \\    source_labels = ["job"]
+            \\    regex         = "integrations/blackbox/{s}"
+            \\    target_label  = "{s}"
+            \\    replacement   = "{s}"
+            \\  }}
+            \\
+        , .{ s.name, kv[0], kv[1] });
+    }
+    try out.appendSlice(a, "}\n");
+}
 
 /// The blackbox modules as YAML flow, inside an Alloy string: `https`,
 /// plus `https-<name>` for each service with a down text, which fails on
@@ -414,9 +447,61 @@ pub const dashboard_provider = header ++
     \\
 ;
 
+/// The notification's title and message (SPEC §9.9, readable
+/// notifications), from the rules' `summary` and `description`
+/// annotations: ntfy's built-in Grafana template shows only these two.
+/// One alert → its summary as the title; several → the rule's title
+/// and the counts. Grafana's notification template language (Go
+/// templates); notifications are grouped by rule (`alertname`).
+pub const notification_template =
+    \\{{ define "artoo.title" -}}
+    \\{{ if eq (len .Alerts.Firing) 0 -}}
+    \\Resolved: {{ if eq (len .Alerts.Resolved) 1 }}{{ (index .Alerts.Resolved 0).Annotations.summary }}{{ else }}{{ .GroupLabels.alertname }} ({{ len .Alerts.Resolved }}){{ end }}
+    \\{{- else if eq (len .Alerts) 1 -}}
+    \\{{ (index .Alerts.Firing 0).Annotations.summary }}
+    \\{{- else -}}
+    \\{{ .GroupLabels.alertname }}: {{ len .Alerts.Firing }} firing{{ with .Alerts.Resolved }}, {{ len . }} resolved{{ end }}
+    \\{{- end }}
+    \\{{- end }}
+    \\
+    \\{{ define "artoo.message" -}}
+    \\{{ if eq (len .Alerts) 1 -}}
+    \\{{ with index .Alerts 0 -}}
+    \\{{ if eq .Status "firing" }}{{ .Annotations.description }}
+    \\Since {{ .StartsAt.UTC.Format "Jan 2 15:04 UTC" }}.
+    \\{{- else }}Fired since {{ .StartsAt.UTC.Format "Jan 2 15:04 UTC" }}.{{ end }}
+    \\{{- end }}
+    \\{{- else -}}
+    \\{{ range .Alerts.Firing -}}
+    \\{{ .Annotations.summary }}
+    \\{{ .Annotations.description }}
+    \\Since {{ .StartsAt.UTC.Format "Jan 2 15:04 UTC" }}.
+    \\
+    \\{{ end -}}
+    \\{{ with .Alerts.Resolved -}}
+    \\Resolved:
+    \\{{ range . }}- {{ .Annotations.summary }}
+    \\{{ end -}}
+    \\{{ end -}}
+    \\{{ end -}}
+    \\{{ end }}
+    \\
+;
+
+/// `text` as a YAML block scalar's lines, indented by six spaces.
+fn indented(comptime text: []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        var it = std.mem.splitScalar(u8, text[0 .. text.len - 1], '\n');
+        while (it.next()) |line| out = out ++ (if (line.len == 0) "" else "      " ++ line) ++ "\n";
+        return out;
+    }
+}
+
 /// The webhook to ntfy on `localhost` with ntfy's built-in Grafana
-/// template; the token comes from Grafana's environment
-/// (`/etc/grafana/ntfy.env`, made on the VM by `watch setup`).
+/// template, its title and message from `notification_template`; the
+/// token comes from Grafana's environment (`/etc/grafana/ntfy.env`, made
+/// on the VM by `watch setup`).
 pub const contact_point = std.fmt.comptimePrint(header ++
     \\apiVersion: 1
     \\contactPoints:
@@ -431,6 +516,8 @@ pub const contact_point = std.fmt.comptimePrint(header ++
     \\          httpMethod: POST
     \\          authorization_scheme: Bearer
     \\          authorization_credentials: $NTFY_TOKEN
+    \\          title: '{{{{ template "artoo.title" . }}}}'
+    \\          message: '{{{{ template "artoo.message" . }}}}'
     \\policies:
     \\  - orgId: 1
     \\    receiver: ntfy
@@ -438,8 +525,12 @@ pub const contact_point = std.fmt.comptimePrint(header ++
     \\    group_wait: 30s
     \\    group_interval: 5m
     \\    repeat_interval: 4h
+    \\templates:
+    \\  - orgId: 1
+    \\    name: artoo
+    \\    template: |
     \\
-, .{ .port = port_ntfy, .topic = topic });
+, .{ .port = port_ntfy, .topic = topic }) ++ indented(notification_template);
 
 pub const grafana_dropin = header ++
     \\[Service]
@@ -719,11 +810,12 @@ pub fn alloyConfig(a: Allocator, g: Guest, l: Lab) ![]const u8 {
                 \\
                 \\prometheus.scrape "probes" {
                 \\  targets         = prometheus.exporter.blackbox.https.targets
-                \\  forward_to      = [prometheus.relabel.host.receiver]
+                \\  forward_to      = [prometheus.relabel.probes.receiver]
                 \\  scrape_interval = "60s"
                 \\}
                 \\
             );
+            try probeLabels(a, &out, l);
         },
         .search => try out.appendSlice(a,
             \\
@@ -980,6 +1072,95 @@ test "alloy: a service's health path and down text (SPEC §9.9)" {
         "name    = \"search\"\n    address = \"https://search.apps.lab.example.com/v1/health\"\n    module  = \"https-search\"\n",
         "address = \"https://odd.apps.lab.example.com/h?x=1\"\n    module  = \"https-odd\"\n",
     });
+}
+
+test "alloy: probes named by service, URL and guest for the alerts (golden, SPEC §9.9)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var l = test_lab;
+    l.services = &.{
+        .{ .name = "grafana", .vm = "scarif" },
+        .{ .name = "search", .path = "/v1/health?p=$1", .down = "\"down\"", .vm = "hoth" },
+        .{ .name = "orphan" },
+    };
+    const watch = try alloyConfig(a, .{ .name = "scarif", .role = .watch, .watch_host = "scarif.lab.example.com" }, l);
+    try expectAll(watch, &.{"  forward_to      = [prometheus.relabel.probes.receiver]\n"});
+    const start = std.mem.find(u8, watch, "prometheus.relabel \"probes\"").?;
+    try testing.expectEqualStrings(
+        \\prometheus.relabel "probes" {
+        \\  forward_to = [prometheus.relabel.host.receiver]
+        \\  rule {
+        \\    source_labels = ["job"]
+        \\    regex         = "integrations/blackbox/grafana"
+        \\    target_label  = "service"
+        \\    replacement   = "grafana"
+        \\  }
+        \\  rule {
+        \\    source_labels = ["job"]
+        \\    regex         = "integrations/blackbox/grafana"
+        \\    target_label  = "url"
+        \\    replacement   = "https://grafana.apps.lab.example.com/"
+        \\  }
+        \\  rule {
+        \\    source_labels = ["job"]
+        \\    regex         = "integrations/blackbox/grafana"
+        \\    target_label  = "vm"
+        \\    replacement   = "scarif"
+        \\  }
+        \\  rule {
+        \\    source_labels = ["job"]
+        \\    regex         = "integrations/blackbox/search"
+        \\    target_label  = "service"
+        \\    replacement   = "search"
+        \\  }
+        \\  rule {
+        \\    source_labels = ["job"]
+        \\    regex         = "integrations/blackbox/search"
+        \\    target_label  = "url"
+        \\    replacement   = "https://search.apps.lab.example.com/v1/health?p=$$1"
+        \\  }
+        \\  rule {
+        \\    source_labels = ["job"]
+        \\    regex         = "integrations/blackbox/search"
+        \\    target_label  = "vm"
+        \\    replacement   = "hoth"
+        \\  }
+        \\  rule {
+        \\    source_labels = ["job"]
+        \\    regex         = "integrations/blackbox/orphan"
+        \\    target_label  = "service"
+        \\    replacement   = "orphan"
+        \\  }
+        \\  rule {
+        \\    source_labels = ["job"]
+        \\    regex         = "integrations/blackbox/orphan"
+        \\    target_label  = "url"
+        \\    replacement   = "https://orphan.apps.lab.example.com/"
+        \\  }
+        \\}
+        \\
+    , watch[start..]);
+    // Other guests keep their series as they are.
+    const plain = try alloyConfig(a, .{ .name = "naboo", .role = .plain, .watch_host = "scarif.lab.example.com" }, l);
+    try testing.expect(std.mem.find(u8, plain, "relabel \"probes\"") == null);
+}
+
+test "contact point: ntfy's template shows the artoo title and message (golden, SPEC §9.9)" {
+    try expectAll(contact_point, &.{
+        "          url: http://localhost:2586/lab?template=grafana\n",
+        "          title: '{{ template \"artoo.title\" . }}'\n          message: '{{ template \"artoo.message\" . }}'\n",
+        "templates:\n  - orgId: 1\n    name: artoo\n    template: |\n      {{ define \"artoo.title\" -}}\n",
+    });
+    // Grafana interpolates `$VAR` in contact point settings (not in
+    // templates or rule annotations): the only `$` there is the token.
+    const settings = contact_point[0..std.mem.find(u8, contact_point, "policies:").?];
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, settings, "$"));
+    const tmpl = contact_point[std.mem.find(u8, contact_point, "    template: |\n").? + 16 ..];
+    var it = std.mem.splitScalar(u8, tmpl[0 .. tmpl.len - 1], '\n');
+    var n: usize = 0;
+    while (it.next()) |line| : (n += 1) try testing.expect(line.len == 0 or std.mem.startsWith(u8, line, "      "));
+    try testing.expectEqual(std.mem.count(u8, notification_template, "\n"), n);
 }
 
 test "ntfy: deny-all, no relay, users from the environment" {
