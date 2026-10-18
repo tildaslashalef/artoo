@@ -6,6 +6,7 @@ pub const Kind = command.Kind;
 pub const Flag = command.Flag;
 pub const Positional = command.Positional;
 pub const Complete = command.Complete;
+pub const Choice = command.Choice;
 pub const Command = command.Command;
 pub const Invocation = command.Invocation;
 pub const Globals = command.Globals;

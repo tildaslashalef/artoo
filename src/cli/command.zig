@@ -36,10 +36,21 @@ pub const Flag = struct {
 /// Where shell completion finds a positional's candidates (SPEC §3.5).
 pub const Complete = enum { none, vm, template, guest_name, file };
 
+/// A fixed completion candidate for a positional. A text ending in `=`
+/// (a `KEY=` of `KEY=VALUE`) completes without a trailing space, and once
+/// typed offers `values` after it.
+pub const Choice = struct {
+    text: []const u8,
+    help: []const u8 = "",
+    values: []const []const u8 = &.{},
+};
+
 pub const Positional = struct {
     name: []const u8,
     help: []const u8 = "",
     complete: Complete = .none,
+    /// Fixed candidates, offered alongside `complete`'s.
+    choices: []const Choice = &.{},
     required: bool = true,
     /// Collects all remaining words (must be last).
     variadic: bool = false,
