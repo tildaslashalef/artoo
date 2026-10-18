@@ -227,6 +227,26 @@ artoo vm rm VM --yes --confirm NAME      # stops, destroys disks, forgets its cl
 `vm rm` **refuses** while a service name points at the VM: move it
 (`svc set`) or remove it (`svc rm`) first.
 
+### Fence a guest (SPEC §9.11)
+
+```console
+artoo vm fence naboo -n                    # the derived rules, as a diff against what is on Proxmox
+artoo vm fence naboo --yes --confirm naboo # high-impact: an approved plan first
+artoo vm fence naboo --off --yes --confirm naboo   # rollback
+artoo config set guests.fence_allow_out 'naboo hoth tcp 5432'   # an outbound exception, kept
+```
+
+- The fence is the Proxmox VE firewall on the guest's NIC: services in
+  only from the edge, SSH and ping from the LAN (from Proxmox only for
+  `ssh-jump`), out only DNS, the watchdog, the exceptions, web and NTP.
+  Nothing inside the guest changes. The edge, the watchdog and the router
+  are refused (their setup owns their fence).
+- It is a firewall change on Proxmox: every live run needs its own
+  approved plan — also taking over a hand-written
+  `/etc/pve/firewall/<vmid>.fw`, whose rules the plan shows as replaced.
+- `svc add|set|rm` keep a fenced guest's inbound rules in step in the same
+  plan; `vm verify`, `vm show` and `status` report drift.
+
 ### Images and templates (SPEC §9.2)
 
 ```console
