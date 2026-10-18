@@ -441,7 +441,11 @@ const FenceOp = struct {
                 try std.fmt.allocPrint(a, "Out: DNS on UniFi{s}{s}, web and NTP; nothing else on the LAN", .{ if (op.inputs.watch != null) ", the watchdog" else "", if (op.inputs.allow.len > 0) ", the configured exceptions" else "" }),
                 "Only the VM's own firewall on Proxmox changes; nothing inside the guest",
             }),
-            .recovery = try std.fmt.allocPrint(a, "artoo vm fence {s} --off", .{op.vm.name}),
+            // A takeover (rules already as derived) is undone by the tag alone.
+            .recovery = if (s.steps.any())
+                try std.fmt.allocPrint(a, "artoo vm fence {s} --off", .{op.vm.name})
+            else
+                try std.fmt.allocPrint(a, "artoo vm set {s} tags={s}", .{ op.vm.name, try tagsWith(a, op.vm.tags, false) }),
             .notes = notes.items,
         };
     }
@@ -480,7 +484,7 @@ const FenceOp = struct {
         const i = try l.add(a, if (op.off) "remove fence" else "write fence");
         l.set(i, .unknown, "");
         if (op.off) try op.sendOff() else try apply(op.c, op.vm, op.want, op.state);
-        l.set(i, .done, if (op.off) "" else try std.fmt.allocPrint(a, "{d} rules on Proxmox", .{op.want.len}));
+        l.set(i, .done, if (op.off) "" else if (!op.state.steps.any()) "tag only; rules unchanged" else try std.fmt.allocPrint(a, "{d} rules on Proxmox", .{op.want.len}));
     }
 
     /// Options first (unfiltered at once), then rules, IP set, NIC, tag.
@@ -872,7 +876,7 @@ test "vm fence: a converged fence is a no-op; a hand-written one with the same r
     try testing.expect(std.mem.find(u8, g.h.stderr(), "nothing to change") != null);
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm fence naboo -n"));
     const out = g.h.stdout();
-    try expectLines(out, &.{ "tag  (none) → fenced", "Dry run: nothing was sent." });
+    try expectLines(out, &.{ "tag  (none) → fenced", "Recovery  artoo vm set naboo tags=artoo\n", "Dry run: nothing was sent." });
     try testing.expect(std.mem.find(u8, out, "rule ") == null);
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
