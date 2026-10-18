@@ -1184,9 +1184,10 @@ are out of scope, §1).
     home page (`default_home_dashboard_path`), read-only in the UI:
     Overview tiles (Proxmox CPU, memory gauge, memory used / available /
     ZFS ARC / total, load against the host's threads, failed units, guests
-    running, HTTPS services, certificate days, tunnel connections, router
+    running, services down, certificate days, tunnel connections, router
     routes, edge drops towards Proxmox/UniFi and blocked telemetry over
-    24 h); Proxmox (CPU with I/O wait, load, memory stacked to the total,
+    24 h, then a strip with one cell per service name, `up` or `down`);
+    Proxmox (CPU with I/O wait, load, memory stacked to the total,
     `vmbr0` traffic, storage per pool); Guests (a table with inline CPU,
     memory and disk gauges, uptime, pending reboot; per-guest CPU, memory
     and network; Proxmox's view without templates); Edge & router (drop
@@ -1242,6 +1243,12 @@ are out of scope, §1).
     | `artoo-probe` | search (https://search.apps.lab.example.com/v1/health) is down, probed from scarif | runs on hoth; `vm verify hoth`, `svc ls`, `edge status` |
     | `artoo-reboot` | naboo has waited 8d 2h 31m 7s for a reboot | `vm reboot naboo`; the packages: `vm verify naboo` |
 
+  - **The board names services too** (decided 2026-10-18): one
+    aggregated "DOWN" tile for every probe read as "search is down" while
+    another service failed. The overview counts the services down and a
+    strip shows each service (`up`/`down`), named from the probe's `job`
+    with `label_replace` (so series from before the probe labels count
+    too); the probe-time and certificate panels are labelled by service.
   - **Probe labels.** A probe's series carry `job="integrations/blackbox/<service>"`
     and `host=<watchdog>` (Alloy's names, seen live 2026-10-18), so the
     watchdog's Alloy relabels them with `service` (the name), `url` (the
