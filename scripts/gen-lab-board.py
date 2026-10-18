@@ -54,8 +54,8 @@ def by_service(expr):
     return 'label_replace(%s, "service", "$1", "job", "integrations/blackbox/(.+)")' % expr
 SVC_UP='sort_by_label(max by (service) (%s), "service")' % by_service("probe_success")
 
-# templates have system_template 1; guests 0
-GUEST='and on (vmid) (system_template{object="qemu"} == 0)'
+# Proxmox exports system_template only for templates (1), nothing for guests (seen live)
+GUEST='unless on (vmid) (system_template{object="qemu"} == 1)'
 
 # ---------------- Overview
 panels.append(row("Overview"))
