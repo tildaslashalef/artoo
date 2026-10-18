@@ -68,10 +68,13 @@ pub const Config = struct {
         /// Never a guest name and never published (SPEC §9.6): the lab's
         /// own host and equipment names beyond the node and endpoints.
         reserved_names: []const u8 = "",
+        /// Outbound exceptions of fenced guests (SPEC §9.11): `VM PEER
+        /// PROTO PORTS` entries separated by `;`.
+        fence_allow_out: []const u8 = "",
     };
 };
 
-pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, ipv4_range, ipv4_cidr, username, label_list };
+pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, ipv4_range, ipv4_cidr, username, label_list, fence_list };
 
 pub const Key = struct {
     name: []const u8,
@@ -105,6 +108,7 @@ pub const keys = [_]Key{
     .{ .name = "guests.gateway", .help = "Guest gateway and DNS server, with prefix (A/N)", .check = .ipv4_cidr },
     .{ .name = "guests.user", .help = "Account created on every guest", .check = .username },
     .{ .name = "guests.reserved_names", .help = "Host and equipment names never used or published (comma-separated)", .check = .label_list },
+    .{ .name = "guests.fence_allow_out", .help = "Fenced guests' outbound exceptions: 'VM PEER tcp|udp PORTS' entries separated by ';'", .check = .fence_list },
 };
 
 comptime {
@@ -266,6 +270,7 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .ipv4_cidr => parseCidr(s) != null,
         .username => validUsername(s),
         .label_list => validLabelList(s),
+        .fence_list => validFenceList(s),
     };
     if (ok) return true;
     const want = switch (k.check) {
@@ -278,6 +283,7 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .ipv4_cidr => "an IPv4 address with prefix length, like 192.168.1.1/24",
         .username => "a Linux user name (lowercase letter first; letters, digits, '_' or '-'; at most 32; not root)",
         .label_list => "DNS labels separated by commas",
+        .fence_list => "entries 'VM PEER PROTO PORTS' separated by ';' (PEER a guest name or IPv4 address/CIDR, PROTO tcp or udp, PORTS like 5432, 80,443 or 6000:6010)",
         else => "a valid value",
     };
     msg.* = try std.fmt.allocPrint(arena, "{s}: expected {s}, got '{s}'", .{ k.name, want, s });
@@ -318,6 +324,86 @@ fn validLabelList(s: []const u8) bool {
         if (std.mem.findScalar(u8, l, '.') != null or !validHostname(l)) return false;
     }
     return true;
+}
+
+/// One `guests.fence_allow_out` entry (SPEC §9.11).
+pub const FenceAllow = struct {
+    vm: []const u8,
+    /// A guest name, or an IPv4 address or CIDR.
+    peer: []const u8,
+    proto: []const u8,
+    /// A Proxmox port list: ports and `A:B` ranges, comma-separated.
+    ports: []const u8,
+
+    pub fn peerIsAddress(f: FenceAllow) bool {
+        return parseIp4Net(f.peer) != null;
+    }
+};
+
+/// The entries of `guests.fence_allow_out`, in order; null when one is
+/// malformed.
+pub fn fenceAllows(arena: Allocator, s: []const u8) Allocator.Error!?[]const FenceAllow {
+    var out: std.ArrayList(FenceAllow) = .empty;
+    var entries = std.mem.splitScalar(u8, s, ';');
+    while (entries.next()) |entry| {
+        if (std.mem.trim(u8, entry, " ").len == 0) continue;
+        var w = std.mem.tokenizeScalar(u8, entry, ' ');
+        const f: FenceAllow = .{
+            .vm = w.next() orelse return null,
+            .peer = w.next() orelse return null,
+            .proto = w.next() orelse return null,
+            .ports = w.next() orelse return null,
+        };
+        if (w.next() != null) return null;
+        if (!validGuestLabel(f.vm)) return null;
+        if (!validGuestLabel(f.peer) and parseIp4Net(f.peer) == null) return null;
+        if (!std.mem.eql(u8, f.proto, "tcp") and !std.mem.eql(u8, f.proto, "udp")) return null;
+        if (!validPortList(f.ports)) return null;
+        try out.append(arena, f);
+    }
+    return out.items;
+}
+
+fn validFenceList(s: []const u8) bool {
+    var buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    return (fenceAllows(fba.allocator(), s) catch return false) != null;
+}
+
+/// A guest name: one DNS label, letter first.
+fn validGuestLabel(s: []const u8) bool {
+    return s.len > 0 and std.ascii.isLower(s[0]) and validHostname(s) and std.mem.findScalar(u8, s, '.') == null;
+}
+
+/// `5432`, `80,443`, `6000:6010` — ports 1-65535, ranges ascending.
+pub fn validPortList(s: []const u8) bool {
+    if (s.len == 0) return false;
+    var it = std.mem.splitScalar(u8, s, ',');
+    while (it.next()) |part| {
+        const lo, const hi = std.mem.cut(u8, part, ":") orelse .{ part, part };
+        const a = std.fmt.parseInt(u16, lo, 10) catch return false;
+        const b = std.fmt.parseInt(u16, hi, 10) catch return false;
+        if (a == 0 or b < a) return false;
+    }
+    return true;
+}
+
+pub const Ip4Net = struct { address: u32, prefix: u6 };
+
+/// `203.0.113.7` (a /32) or `203.0.113.0/24`, prefix 1-32.
+pub fn parseIp4Net(s: []const u8) ?Ip4Net {
+    const a, const b = std.mem.cut(u8, s, "/") orelse .{ s, "32" };
+    const ip = Io.net.Ip4Address.parse(a, 0) catch return null;
+    const prefix = std.fmt.parseInt(u6, b, 10) catch return null;
+    if (prefix < 1 or prefix > 32) return null;
+    return .{ .address = std.mem.readInt(u32, &ip.bytes, .big), .prefix = prefix };
+}
+
+/// Whether `net` contains `addr`.
+pub fn netContains(net: Ip4Net, addr: u32) bool {
+    if (net.prefix == 32) return net.address == addr;
+    const mask: u32 = ~@as(u32, 0) << @intCast(32 - @as(u32, net.prefix));
+    return net.address & mask == addr & mask;
 }
 
 fn validHostname(s: []const u8) bool {
@@ -568,4 +654,23 @@ test "validators" {
     try testing.expect(parseRange("192.168.1.200") == null);
     try testing.expectEqualStrings("auto|keychain|secret-service|file", choicesOf("credentials.store").?);
     try testing.expect(choicesOf("pve.node") == null);
+}
+
+test "fenceAllows: entries, peers, ports; malformed lists refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const got = (try fenceAllows(a, "hoth naboo tcp 5432; hoth 203.0.113.0/24 udp 51820,6000:6010 ;")).?;
+    try testing.expectEqual(@as(usize, 2), got.len);
+    try testing.expectEqualStrings("naboo", got[0].peer);
+    try testing.expect(!got[0].peerIsAddress() and got[1].peerIsAddress());
+    try testing.expectEqualStrings("51820,6000:6010", got[1].ports);
+    try testing.expectEqual(@as(usize, 0), (try fenceAllows(a, "")).?.len);
+    for ([_][]const u8{ "hoth naboo tcp", "hoth naboo icmp 1", "hoth naboo tcp 0", "hoth naboo tcp 10:5", "Hoth naboo tcp 1", "hoth naboo tcp 1 extra", "hoth 10.0.0.0/33 tcp 1" }) |bad|
+        try testing.expect((try fenceAllows(a, bad)) == null);
+    try testing.expect(validFenceList("hoth naboo tcp 5432"));
+    try testing.expect(!validFenceList("hoth"));
+    const net = parseIp4Net("192.168.0.0/16").?;
+    try testing.expect(netContains(net, parseIp4Net("192.168.1.10").?.address));
+    try testing.expect(!netContains(parseIp4Net("192.168.1.11").?, parseIp4Net("192.168.1.10").?.address));
 }
