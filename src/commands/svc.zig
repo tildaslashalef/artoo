@@ -23,6 +23,7 @@ const life = @import("vm_life.zig");
 const template = @import("template.zig");
 const k = @import("node.zig");
 
+const vm_fence = @import("vm_fence.zig");
 const Context = app.Context;
 
 pub const dir = "/etc/caddy/services";
@@ -544,17 +545,21 @@ const PutOp = struct {
     fp: []const u8 = "",
     ledger: exec.Ledger = .{},
     probe: Probe = .{},
+    /// Fenced guests whose fence the move opens or closes (SPEC §9.11).
+    fences: []const vm_fence.Follow = &.{},
 
     pub fn read(op: *PutOp, ctx: *Context) !void {
         const a = ctx.arena;
         op.d = try domains(ctx);
         op.target = try fqdn(ctx, op.d, op.name);
-        op.edge_vm = try edge.edgeVm(ctx, op.c);
+        const list = try vms.list(op.c);
+        op.edge_vm = try edge.edgeVmFrom(ctx, op.c, list);
         op.edge_addr = try edgeAddress(op.c, op.edge_vm);
         op.view = try readEdge(op.c, op.edge_vm.vmid, op.d);
         if (!op.view.caddy_active) return ctx.fail(error.Refused, "Caddy is not running on {s}; see 'artoo edge status'", .{op.edge_vm.name});
         op.vm = try upstreamVm(ctx, op.c, op.vm_word);
         op.route = op.view.find(op.name);
+        op.fences = try fencesFor(ctx, op.c, list, op.edge_vm, op.edge_addr, op.view.routes, op.name, op.vm.name, op.port, if (op.route) |r| r.vm else null);
         op.record = dns.find(try dns.list(op.u), op.target);
         op.health = op.want_health orelse if (op.route) |r| r.health else .{};
         op.content = try renderRoute(a, op.d, op.name, op.vm.name, op.port, op.health);
@@ -580,7 +585,7 @@ const PutOp = struct {
             return ctx.fail(error.Refused, "{s} already points at {s}{s}, not the edge ({s}); remove it with 'artoo dns rm {s}'", .{ op.target, try k.clean(ctx, r.ipv4), if (r.enabled) "" else " (disabled)", op.edge_addr, op.target });
         op.write_route = !same or health_changes;
         op.add_record = op.mode == .add and op.record == null;
-        if (!op.write_route and !op.add_record) return null;
+        if (!op.write_route and !op.add_record and op.fences.len == 0) return null;
 
         const up = try std.fmt.allocPrint(a, "{s}:{d}", .{ op.vm.name, op.port });
         var changes: std.ArrayList(ui.blocks.Change) = .empty;
@@ -595,7 +600,9 @@ const PutOp = struct {
             .to = try std.fmt.allocPrint(a, "{s}{s}", .{ try op.health.describe(a), if (same) try std.fmt.allocPrint(a, " ({s} on {s})", .{ path, op.edge_vm.name }) else "" }),
         });
         if (op.add_record) try changes.append(a, .{ .field = "DNS record", .from = null, .to = try std.fmt.allocPrint(a, "{s} {s} {s} (UniFi)", .{ op.target, ctx.ui.glyphs.arrow, op.edge_addr }) });
+        for (op.fences) |f| try vm_fence.followChanges(a, f, &changes);
         var notes: std.ArrayList([]const u8) = .empty;
+        if (op.fences.len > 0) try notes.append(a, "A fenced guest's fence opens before the route is written and closes after it is gone (SPEC §9.11).");
         if (op.write_route) try notes.append(a, "Caddy validates the whole configuration first and reloads gracefully; a rejected route is put back.");
         if (op.mode == .set and op.record == null) try notes.append(a, try std.fmt.allocPrint(a, "{s} has no DNS record; 'artoo svc add {s} {s}' adds it.", .{ op.target, op.name, up }));
         if (op.add_record) try notes.append(a, no_etags);
@@ -623,12 +630,15 @@ const PutOp = struct {
     pub fn send(op: *PutOp, ctx: *Context) !void {
         const a = ctx.arena;
         const l = &op.ledger;
+        const s_open = try addFenceSteps(a, l, op.fences, true);
         const s_route = if (op.write_route) try l.add(a, "write route, reload Caddy") else null;
         const s_rec = if (op.add_record) try l.add(a, "add DNS record") else null;
+        const s_close = try addFenceSteps(a, l, op.fences, false);
         errdefer {
             ctx.out.writeAll("\n") catch {};
             l.render(ctx.out, &ctx.ui) catch {};
         }
+        try runFenceSteps(op.c, l, op.fences, s_open, true);
         if (s_route) |i| {
             l.set(i, .unknown, "");
             const enc = std.base64.standard.Encoder;
@@ -651,11 +661,13 @@ const PutOp = struct {
             try dns.create(op.u, op.target, op.edge_addr, dns.default_ttl);
             l.set(i, .done, op.target);
         }
+        try runFenceSteps(op.c, l, op.fences, s_close, false);
     }
 
     pub fn verify(op: *PutOp, ctx: *Context) !bool {
         try ctx.out.writeAll("\n");
         try op.ledger.render(ctx.out, &ctx.ui);
+        if (!try fencesConverged(op.c, op.fences)) return false;
         const view = try readEdge(op.c, op.edge_vm.vmid, op.d);
         const r = view.find(op.name) orelse return false;
         if (!r.managed() or !std.mem.eql(u8, r.vm, op.vm.name) or r.port != op.port or !r.health.eql(op.health)) return false;
@@ -797,15 +809,20 @@ const RmOp = struct {
     public_note: ?[]const u8 = null,
     fp: []const u8 = "",
     ledger: exec.Ledger = .{},
+    fences: []const vm_fence.Follow = &.{},
 
     pub fn read(op: *RmOp, ctx: *Context) !void {
         const a = ctx.arena;
         op.target = op.name;
         op.d = try domains(ctx);
-        op.edge_vm = try edge.edgeVm(ctx, op.c);
+        const list = try vms.list(op.c);
+        op.edge_vm = try edge.edgeVmFrom(ctx, op.c, list);
         op.edge_addr = try edgeAddress(op.c, op.edge_vm);
         const view = try readEdge(op.c, op.edge_vm.vmid, op.d);
         op.route = view.find(op.name);
+        if (op.route) |r| if (r.managed()) {
+            op.fences = try fencesFor(ctx, op.c, list, op.edge_vm, op.edge_addr, view.routes, op.name, null, 0, r.vm);
+        };
         const domain = try fqdn(ctx, op.d, op.name);
         op.record = null;
         op.record_note = null;
@@ -834,6 +851,7 @@ const RmOp = struct {
         var changes: std.ArrayList(ui.blocks.Change) = .empty;
         if (op.record) |r| try changes.append(a, .{ .field = "DNS record", .from = try std.fmt.allocPrint(a, "{s} {s} {s} (UniFi)", .{ try k.clean(ctx, r.domain), ctx.ui.glyphs.arrow, r.ipv4 }), .to = null });
         if (op.route) |r| try changes.append(a, .{ .field = "route", .from = try std.fmt.allocPrint(a, "{s}:{d} ({s} on {s})", .{ r.vm, r.port, path, op.edge_vm.name }), .to = null });
+        for (op.fences) |f| try vm_fence.followChanges(a, f, &changes);
         var notes: std.ArrayList([]const u8) = .empty;
         if (op.record_note) |n| try notes.append(a, n);
         if (op.public_note) |n| try notes.append(a, n);
@@ -859,6 +877,7 @@ const RmOp = struct {
         const l = &op.ledger;
         const s_rec = if (op.record != null) try l.add(a, "remove DNS record") else null;
         const s_route = if (op.route != null) try l.add(a, "remove route, reload Caddy") else null;
+        const s_close = try addFenceSteps(a, l, op.fences, false);
         errdefer {
             ctx.out.writeAll("\n") catch {};
             l.render(ctx.out, &ctx.ui) catch {};
@@ -877,11 +896,13 @@ const RmOp = struct {
             }
             l.set(i, .done, "");
         }
+        try runFenceSteps(op.c, l, op.fences, s_close, false);
     }
 
     pub fn verify(op: *RmOp, ctx: *Context) !bool {
         try ctx.out.writeAll("\n");
         try op.ledger.render(ctx.out, &ctx.ui);
+        if (!try fencesConverged(op.c, op.fences)) return false;
         if ((try readEdge(op.c, op.edge_vm.vmid, op.d)).find(op.name) != null) return false;
         if (op.record) |r| if (dns.find(try dns.list(op.u), r.domain) != null) return false;
         return true;
@@ -891,6 +912,56 @@ const RmOp = struct {
         return std.fmt.allocPrint(op.c.ctx.arena, "service {s} removed", .{op.name}) catch "done";
     }
 };
+
+// ---------------------------------------------------------------- fences
+
+/// The fences a route change moves (SPEC §9.11): the new upstream `to`
+/// (null for `rm`) and the old one `from`, when they are fenced guests
+/// whose fence differs for the new route set. Reads nothing more unless
+/// one of them is fenced.
+fn fencesFor(ctx: *Context, c: *pve.Client, list: []const vms.Vm, edge_vm: vms.Vm, edge_addr: []const u8, routes: []const Route, name: []const u8, to: ?[]const u8, port: u16, from: ?[]const u8) ![]const vm_fence.Follow {
+    const a = ctx.arena;
+    const new_vm = if (to) |n| vm_fence.fencedNamed(list, n) else null;
+    const old_vm = if (from) |n| (if (to != null and std.ascii.eqlIgnoreCase(n, to.?)) null else vm_fence.fencedNamed(list, n)) else null;
+    if (new_vm == null and old_vm == null) return &.{};
+    const after = try vm_fence.routesWith(a, routes, name, to, port);
+    const lab = try vm_fence.labFor(ctx, c, list, edge_vm, edge_addr, after);
+    var out: std.ArrayList(vm_fence.Follow) = .empty;
+    if (new_vm) |v| if (try vm_fence.follow(ctx, c, lab, v, after, true)) |f| try out.append(a, f);
+    if (old_vm) |v| if (try vm_fence.follow(ctx, c, lab, v, after, false)) |f| try out.append(a, f);
+    return out.items;
+}
+
+/// One ledger step per fence that opens (`opens`) or closes; the first
+/// index, or null when there is none.
+fn addFenceSteps(a: std.mem.Allocator, l: *exec.Ledger, fences: []const vm_fence.Follow, opens: bool) !?usize {
+    var first: ?usize = null;
+    for (fences) |f| {
+        if (f.opens != opens) continue;
+        const i = try l.add(a, try std.fmt.allocPrint(a, "{s} fence {s}", .{ if (opens) "open" else "close", f.vm.name }));
+        if (first == null) first = i;
+    }
+    return first;
+}
+
+fn runFenceSteps(c: *pve.Client, l: *exec.Ledger, fences: []const vm_fence.Follow, first: ?usize, opens: bool) !void {
+    var i = first orelse return;
+    for (fences) |f| {
+        if (f.opens != opens) continue;
+        l.set(i, .unknown, "");
+        try vm_fence.apply(c, f.vm, f.want, f.state);
+        l.set(i, .done, try std.fmt.allocPrint(c.ctx.arena, "{d} rules on Proxmox", .{f.want.len}));
+        i += 1;
+    }
+}
+
+fn fencesConverged(c: *pve.Client, fences: []const vm_fence.Follow) !bool {
+    for (fences) |f| {
+        const v = try vms.resolve(c, f.vm.name);
+        if (!(try vm_fence.readState(c, v, f.want)).converged()) return false;
+    }
+    return true;
+}
 
 pub const rm = struct {
     pub const name = "rm";
@@ -1259,4 +1330,43 @@ test "vm rm refuses while a service points at the VM" {
     try testing.expectEqual(testkit.Exit.refused, g.h.run(&vm_root, "vm rm web-01 -n"));
     try testing.expect(std.mem.find(u8, g.h.stderr(), "service(s) grafana point at web-01") != null);
     try testing.expectEqual(@as(usize, 5), g.sent());
+}
+
+test "svc add on a fenced guest: the fence opens in the same plan, before the route" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const R = testkit.Gateway.FakeServer.Route;
+    const ok = struct {
+        fn r(match: []const u8, b: []const u8) R {
+            return .{ .match = match, .behavior = .{ .respond = .{ .body = b } } };
+        }
+    }.r;
+    const fenced = "{\"data\":[{\"vmid\":200,\"name\":\"bespin\",\"status\":\"running\",\"tags\":\"artoo;role-edge;ssh-jump\"},{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;fenced\"}]}";
+    const cfg = "{\"data\":{\"net0\":\"virtio=BC:24:11:00:00:01,bridge=vmbr0,firewall=1\",\"ipconfig0\":\"ip=192.168.1.201/24,gw=192.168.1.1\",\"digest\":\"d2\"}}";
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(&.{
+        ok("GET /api2/json/nodes/pve/qemu ", fenced),
+        ok("/qemu/200/agent/ping ", "{\"data\":{\"result\":{}}}"),
+        ok("/qemu/200/config ", edge_cfg),
+        ok("/qemu/200/agent/exec ", "{\"data\":{\"pid\":42}}"),
+        ok("/qemu/200/agent/exec-status", try agentBody(a, "==caddy== active\n")),
+        ok("GET /api2/json/nodes/pve/qemu ", fenced),
+        ok("/qemu/201/config ", naboo_cfg),
+        ok("/qemu/201/config ", cfg),
+        ok("/qemu/201/firewall/options ", "{\"data\":{\"enable\":1,\"ipfilter\":1,\"macfilter\":1,\"policy_in\":\"DROP\",\"policy_out\":\"DROP\",\"dhcp\":0,\"ndp\":1,\"radv\":0}}"),
+        ok("/qemu/201/firewall/rules ", "{\"data\":[]}"),
+        ok("/qemu/201/firewall/ipset ", "{\"data\":[]}"),
+        ok("/v1/sites?", sites_body),
+        ok("/dns/policies?", "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}"),
+    });
+    defer g.deinit();
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "svc add grafana naboo:3000 -n"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try expectLines(g.h.stdout(), &.{
+        "fence naboo  (none) → IN ACCEPT tcp 3000 from 192.168.1.200",
+        "fence naboo  (none) → OUT DROP\n",
+        "fence naboo  drift → IP set, NIC and options as 'vm fence' writes them",
+        "A fenced guest's fence opens before the route is written",
+    });
 }
