@@ -629,7 +629,7 @@ const testing = std.testing;
 const testkit = @import("../testkit.zig");
 const R = testkit.Gateway.FakeServer.Route;
 
-const test_ad: files.Addresses = .{ .pve = "192.168.1.10", .gateway = "192.168.1.1", .lan = "192.168.1.0/24", .pool = "192.168.1.200-192.168.1.254" };
+pub const test_ad: files.Addresses = .{ .pve = "192.168.1.10", .gateway = "192.168.1.1", .lan = "192.168.1.0/24", .pool = "192.168.1.200-192.168.1.254" };
 
 test "rules: a plain guest — SSH and ping from the LAN, DNS, nothing private, web, NTP" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -739,7 +739,7 @@ fn edgeDump(a: std.mem.Allocator) ![]const u8 {
 }
 
 /// Proxmox's answer to GET …/firewall/rules for `rs`, at positions 0…
-fn rulesBody(a: std.mem.Allocator, rs: []const Rule) ![]const u8 {
+pub fn rulesBody(a: std.mem.Allocator, rs: []const Rule) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(a, "{\"data\":[");
     for (rs, 0..) |r, i| {
@@ -935,5 +935,46 @@ test "vm fence: refuses role VMs, templates, foreign VMs; exceptions resolve gue
     const bad = try g.file("bad.json", "{\"schema_version\":1,\"guests\":{\"fence_allow_out\":\"naboo 192.168.0.0/16 tcp 22\"}}");
     try testing.expectEqual(testkit.Exit.refused, g.h.run(&root, try std.fmt.allocPrint(a, "vm fence naboo -n --config {s}", .{bad})));
     try testing.expect(std.mem.find(u8, g.h.stderr(), "never opened") != null);
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+}
+
+test "vm show: the fence on, in drift, or a firewall not written by vm fence" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const want = try rules(a, .{ .ad = test_ad, .edge = "192.168.1.200", .services = &.{.{ .name = "grafana", .port = 3000 }}, .watch = "192.168.1.202" });
+    const stopped = try std.mem.replaceOwned(u8, a, fenced_list, "\"name\":\"naboo\",\"status\":\"running\"", "\"name\":\"naboo\",\"status\":\"stopped\"");
+    const ipset = "{\"data\":[{\"name\":\"ipfilter-net0\"}]}";
+    const entries = "{\"data\":[{\"cidr\":\"192.168.1.201\"}]}";
+    var routes: std.ArrayList(R) = .empty;
+    for ([_][]const u8{ try rulesBody(a, want), empty }) |rules_body| {
+        try routes.appendSlice(a, &.{
+            ok("GET /api2/json/nodes/pve/qemu ", stopped),
+            ok("/qemu/201/config ", cfg_naboo_fenced),
+            ok("/qemu/201/snapshot ", empty),
+            ok("GET /api2/json/nodes/pve/qemu ", stopped),
+            ok("POST /api2/json/nodes/pve/qemu/200/agent/exec ", pid),
+            ok("/qemu/200/agent/exec-status", try edgeDump(a)),
+            ok("/qemu/200/config ", "{\"data\":{\"ipconfig0\":\"ip=192.168.1.200/24,gw=192.168.1.1\"}}"),
+            ok("/qemu/202/config ", "{\"data\":{\"ipconfig0\":\"ip=192.168.1.202/24,gw=192.168.1.1\"}}"),
+            ok("/qemu/201/config ", cfg_naboo_fenced),
+            ok("GET /api2/json/nodes/pve/qemu/201/firewall/options ", all_options),
+            ok("GET /api2/json/nodes/pve/qemu/201/firewall/rules ", rules_body),
+            ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset ", ipset),
+            ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset/ipfilter-net0 ", entries),
+        });
+    }
+    try routes.insert(a, 13, ok("/cluster/firewall/options ", "{\"data\":{\"enable\":1}}"));
+    const hand = try std.mem.replaceOwned(u8, a, stopped, "artoo;fenced", "artoo");
+    try routes.appendSlice(a, &.{ ok("GET /api2/json/nodes/pve/qemu ", hand), ok("/qemu/201/config ", cfg_naboo_fenced), ok("/qemu/201/snapshot ", empty) });
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm show naboo"));
+    try expectLines(g.h.stdout(), &.{"Fence      on (12 rules, only source 192.168.1.201)"});
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm show naboo"));
+    try expectLines(g.h.stdout(), &.{"Fence      drift — rule 1: (none) instead of IN ACCEPT tcp 3000 from 192.168.1.200; 'artoo vm fence naboo'"});
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm show naboo"));
+    try expectLines(g.h.stdout(), &.{"Fence      off (net0 firewall=1, not by 'vm fence')"});
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }

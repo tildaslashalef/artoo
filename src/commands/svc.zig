@@ -1370,3 +1370,153 @@ test "svc add on a fenced guest: the fence opens in the same plan, before the ro
         "A fenced guest's fence opens before the route is written",
     });
 }
+
+test "svc rm -y on a fenced guest: record, route, then the fence closes; verified by read-back" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const R = testkit.Gateway.FakeServer.Route;
+    const ok = struct {
+        fn r(match: []const u8, b: []const u8) R {
+            return .{ .match = match, .behavior = .{ .respond = .{ .body = b } } };
+        }
+    }.r;
+    const ad = vm_fence.test_ad;
+    const before = try vm_fence.rules(a, .{ .ad = ad, .edge = "192.168.1.200", .services = &.{.{ .name = "grafana", .port = 3000 }} });
+    const after = try vm_fence.rules(a, .{ .ad = ad, .edge = "192.168.1.200" });
+    const fenced = "{\"data\":[{\"vmid\":200,\"name\":\"bespin\",\"status\":\"running\",\"tags\":\"artoo;role-edge;ssh-jump\"},{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;fenced\"}]}";
+    const cfg = "{\"data\":{\"net0\":\"virtio=BC:24:11:00:00:01,bridge=vmbr0,firewall=1\",\"ipconfig0\":\"ip=192.168.1.201/24,gw=192.168.1.1\",\"digest\":\"d2\"}}";
+    const opts = "{\"data\":{\"enable\":1,\"ipfilter\":1,\"macfilter\":1,\"policy_in\":\"DROP\",\"policy_out\":\"DROP\",\"dhcp\":0,\"ndp\":1,\"radv\":0}}";
+    const ipset = "{\"data\":[{\"name\":\"ipfilter-net0\"}]}";
+    const entries = "{\"data\":[{\"cidr\":\"192.168.1.201\"}]}";
+    const route = try render(a, test_domains, "grafana", "naboo", 3000);
+    const record = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"type\":\"A_RECORD\",\"id\":\"R9\",\"enabled\":true,\"domain\":\"grafana.apps.lab.example.com\",\"ipv4Address\":\"192.168.1.200\",\"ttlSeconds\":300}]}";
+    const none = "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}";
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, &.{
+        ok("GET /api2/json/nodes/pve/qemu ", fenced),
+        ok("/qemu/200/agent/ping ", "{\"data\":{\"result\":{}}}"),
+        ok("/qemu/200/config ", edge_cfg),
+        ok("/qemu/200/agent/exec ", "{\"data\":{\"pid\":42}}"),
+        ok("/qemu/200/agent/exec-status", try agentBody(a, try std.fmt.allocPrint(a, "==artoo== /etc/caddy/services/grafana.caddy\n{s}\n==caddy== active\n", .{route}))),
+        ok("GET /api2/json/nodes/pve/qemu/201/config ", cfg),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/options ", opts),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/rules ", try vm_fence.rulesBody(a, before)),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset ", ipset),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset/ipfilter-net0 ", entries),
+        ok("/v1/sites?", sites_body),
+        ok("/dns/policies?", record),
+        ok("/zones?", @import("cf_tunnel.zig").zones_body),
+        ok("/cfd_tunnel?", "{\"success\":true,\"errors\":[],\"result\":[],\"result_info\":{\"page\":1,\"per_page\":100,\"count\":0,\"total_count\":0}}"),
+        // send: record, route, then the fence
+        ok("DELETE ", "{}"),
+        ok("/qemu/200/agent/exec ", "{\"data\":{\"pid\":43}}"),
+        ok("/qemu/200/agent/exec-status", try agentBody(a, "")),
+    });
+    for (before) |_| try routes.append(a, ok("DELETE /api2/json/nodes/pve/qemu/201/firewall/rules/0 ", "{\"data\":null}"));
+    for (after) |_| try routes.append(a, ok("POST /api2/json/nodes/pve/qemu/201/firewall/rules ", "{\"data\":null}"));
+    try routes.appendSlice(a, &.{
+        // verify: the fence, the route, the record
+        ok("GET /api2/json/nodes/pve/qemu ", fenced),
+        ok("GET /api2/json/nodes/pve/qemu/201/config ", cfg),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/options ", opts),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/rules ", try vm_fence.rulesBody(a, after)),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset ", ipset),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset/ipfilter-net0 ", entries),
+        ok("/qemu/200/agent/exec ", "{\"data\":{\"pid\":44}}"),
+        ok("/qemu/200/agent/exec-status", try agentBody(a, "==caddy== active\n")),
+        ok("/v1/sites?", sites_body),
+        ok("/dns/policies?", none),
+    });
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "svc rm grafana --yes --confirm grafana"));
+    // The record goes first, then the route, then the fence closes.
+    var rec_at: ?usize = null;
+    var close_at: ?usize = null;
+    for (0..g.sent()) |i| {
+        const line = g.request(i);
+        if (rec_at == null and std.mem.startsWith(u8, line, "DELETE ") and std.mem.find(u8, line, "dns/policies") != null) rec_at = i;
+        if (close_at == null and std.mem.find(u8, line, "firewall/rules/0") != null) close_at = i;
+    }
+    try testing.expect(rec_at.? < close_at.?);
+    try testing.expectEqualStrings("POST /api2/json/nodes/pve/qemu/200/agent/exec HTTP/1.1", g.request(rec_at.? + 1));
+    try expectLines(g.h.stdout(), &.{ "fence naboo  IN ACCEPT tcp 3000 from 192.168.1.200 → (removed)", "close fence naboo", "service grafana removed" });
+}
+
+test "svc add -y on a fenced guest: the fence opens before the route is written" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const R = testkit.Gateway.FakeServer.Route;
+    const ok = struct {
+        fn r(match: []const u8, b: []const u8) R {
+            return .{ .match = match, .behavior = .{ .respond = .{ .body = b } } };
+        }
+    }.r;
+    const ad = vm_fence.test_ad;
+    const before = try vm_fence.rules(a, .{ .ad = ad, .edge = "192.168.1.200" });
+    const after = try vm_fence.rules(a, .{ .ad = ad, .edge = "192.168.1.200", .services = &.{.{ .name = "grafana", .port = 3000 }} });
+    const fenced = "{\"data\":[{\"vmid\":200,\"name\":\"bespin\",\"status\":\"running\",\"tags\":\"artoo;role-edge;ssh-jump\"},{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;fenced\"}]}";
+    const cfg = "{\"data\":{\"net0\":\"virtio=BC:24:11:00:00:01,bridge=vmbr0,firewall=1\",\"ipconfig0\":\"ip=192.168.1.201/24,gw=192.168.1.1\",\"digest\":\"d2\"}}";
+    const opts = "{\"data\":{\"enable\":1,\"ipfilter\":1,\"macfilter\":1,\"policy_in\":\"DROP\",\"policy_out\":\"DROP\",\"dhcp\":0,\"ndp\":1,\"radv\":0}}";
+    const ipset = "{\"data\":[{\"name\":\"ipfilter-net0\"}]}";
+    const entries = "{\"data\":[{\"cidr\":\"192.168.1.201\"}]}";
+    const route = try render(a, test_domains, "grafana", "naboo", 3000);
+    const record = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"type\":\"A_RECORD\",\"id\":\"R9\",\"enabled\":true,\"domain\":\"grafana.apps.lab.example.com\",\"ipv4Address\":\"192.168.1.200\",\"ttlSeconds\":300}]}";
+    const none = "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}";
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, &.{
+        ok("GET /api2/json/nodes/pve/qemu ", fenced),
+        ok("/qemu/200/agent/ping ", "{\"data\":{\"result\":{}}}"),
+        ok("/qemu/200/config ", edge_cfg),
+        ok("/qemu/200/agent/exec ", "{\"data\":{\"pid\":42}}"),
+        ok("/qemu/200/agent/exec-status", try agentBody(a, "==caddy== active\n")),
+        ok("GET /api2/json/nodes/pve/qemu ", fenced),
+        ok("GET /api2/json/nodes/pve/qemu/201/config ", cfg),
+        ok("GET /api2/json/nodes/pve/qemu/201/config ", cfg),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/options ", opts),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/rules ", try vm_fence.rulesBody(a, before)),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset ", ipset),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset/ipfilter-net0 ", entries),
+        ok("/v1/sites?", sites_body),
+        ok("/dns/policies?", none),
+    });
+    for (before) |_| try routes.append(a, ok("DELETE /api2/json/nodes/pve/qemu/201/firewall/rules/0 ", "{\"data\":null}"));
+    for (after) |_| try routes.append(a, ok("POST /api2/json/nodes/pve/qemu/201/firewall/rules ", "{\"data\":null}"));
+    try routes.appendSlice(a, &.{
+        ok("/qemu/200/agent/exec ", "{\"data\":{\"pid\":43}}"),
+        ok("/qemu/200/agent/exec-status", try agentBody(a, "")),
+        ok("POST /v1/sites/S1/dns/policies", "{}"),
+        // verify: the fence, the route, the record, the probe
+        ok("GET /api2/json/nodes/pve/qemu ", fenced),
+        ok("GET /api2/json/nodes/pve/qemu/201/config ", cfg),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/options ", opts),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/rules ", try vm_fence.rulesBody(a, after)),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset ", ipset),
+        ok("GET /api2/json/nodes/pve/qemu/201/firewall/ipset/ipfilter-net0 ", entries),
+        ok("/qemu/200/agent/exec ", "{\"data\":{\"pid\":44}}"),
+        ok("/qemu/200/agent/exec-status", try agentBody(a, try std.fmt.allocPrint(a, "==artoo== /etc/caddy/services/grafana.caddy\n{s}\n==caddy== active\n", .{route}))),
+        ok("/v1/sites?", sites_body),
+        ok("/dns/policies?", record),
+        ok("/qemu/200/agent/exec ", "{\"data\":{\"pid\":45}}"),
+        ok("/qemu/200/agent/exec-status", try agentBody(a, "route yes\nhttp 200\n")),
+    });
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "svc add grafana naboo:3000 -y"));
+    // The fence's last POST comes before the route's agent exec.
+    var last_rule: usize = 0;
+    var route_at: ?usize = null;
+    for (0..g.sent()) |i| {
+        const line = g.request(i);
+        if (std.mem.startsWith(u8, line, "POST /api2/json/nodes/pve/qemu/201/firewall/rules ")) last_rule = i;
+        if (route_at == null and last_rule == 0 and i > 13 and std.mem.startsWith(u8, line, "POST /api2/json/nodes/pve/qemu/200/agent/exec ")) route_at = i;
+    }
+    try testing.expect(route_at == null);
+    try testing.expectEqualStrings("POST /api2/json/nodes/pve/qemu/200/agent/exec HTTP/1.1", g.request(last_rule + 1));
+    try testing.expect(std.mem.find(u8, g.body(last_rule), "dport=3000") != null);
+    try expectLines(g.h.stdout(), &.{ "fence naboo  (none) → IN ACCEPT tcp 3000 from 192.168.1.200", "open fence naboo", "answers HTTP 200" });
+}
