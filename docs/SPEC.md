@@ -151,7 +151,9 @@ that drives parsing and help — nouns, verbs, `help <noun> [verb]`, flags
 without regenerating the script. A positional may declare live candidates:
 **VM names** (`VM` arguments) and **template names** (`TEMPLATE`), read
 from Proxmox with a 1 s deadline; any error, timeout or missing secret
-completes nothing. Nothing else touches the network or prompts, and stdout
+completes nothing. `vm new NAME` offers the **curated guest names**
+(§9.1) that no VM or template carries; without Proxmox it offers all of
+them. Nothing else touches the network or prompts, and stdout
 never carries an error message.
 
 ## 4. Output

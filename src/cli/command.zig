@@ -34,7 +34,7 @@ pub const Flag = struct {
 };
 
 /// Where shell completion finds a positional's candidates (SPEC §3.5).
-pub const Complete = enum { none, vm, template, file };
+pub const Complete = enum { none, vm, template, guest_name, file };
 
 pub const Positional = struct {
     name: []const u8,
