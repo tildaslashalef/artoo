@@ -114,7 +114,7 @@ fn isPath(f: Flag) bool {
 }
 
 /// Candidates for `target`, filtered by the prefix `current`; `live` holds
-/// the names fetched for a `.vm`/`.template` positional.
+/// the names fetched for a `.vm`/`.template`/`.guest_name` positional.
 pub fn candidates(arena: Allocator, target: Target, current: []const u8, live: []const Candidate) !Answer {
     var out: std.ArrayList(Candidate) = .empty;
     switch (target) {
@@ -141,7 +141,7 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, live: [
         .positional => |p| switch (p.complete) {
             .none => {},
             .file => return .file,
-            .vm, .template => try out.appendSlice(arena, live),
+            .vm, .template, .guest_name => try out.appendSlice(arena, live),
         },
     }
     return .{ .list = try filter(arena, out.items, current) };
