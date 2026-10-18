@@ -1535,7 +1535,7 @@ guest agent (§9.7, §9.9).
 
 ### 9.11 Guest fence (`vm fence`)
 
-Decided 2026-10-18; live acceptance pending. The edge VM and the
+Decided and accepted live 2026-10-18. The edge VM and the
 watchdog carry the Proxmox VE firewall on their NIC (§9.7, §9.9), written
 by their own setup. `artoo vm fence VM` puts the same kind of host-side
 fence on any other artoo guest — an app guest, a crawler that must not
@@ -1645,6 +1645,21 @@ an nftables policy in the VM.
   @<gateway>` answers and HTTPS to the internet works; the service answers
   through the edge and not directly; `--off` restores reachability.
   Taking over an existing hand-written fence is its own approved plan.
+  Verified live (2026-10-18), approved: two guests fenced by hand-written
+  `<vmid>.fw` files with this rule set planned only the tag, a second `-n`
+  found nothing to change and `vm verify` showed the fence ok. On a
+  disposable guest with a test service: one run converged and a second
+  `-n` found nothing; from the guest Proxmox `:8006`/`:22`, UniFi `:443`,
+  other guests and the workstation were blocked while `dig @<gateway>`
+  and HTTPS to the internet answered; from the workstation the service
+  answered through the edge (200) and not directly, SSH and ping worked;
+  `--off` opened every one of those paths again. **Enforcement lags the
+  write:** `pve-firewall` compiles the configuration on its own cycle
+  (about 10 s), so a probe right after the write still passes — the
+  read-back checks the configuration, and live probes wait about 20 s.
+  The workstation's tailnet path (through the subnet router, which
+  masquerades by default, so the guest sees a LAN source) is not yet
+  checked from away.
 
 ## 10. UniFi
 
