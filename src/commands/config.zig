@@ -73,10 +73,18 @@ pub const show = struct {
     }
 };
 
+/// Every settable key, completed for KEY (SPEC §3.5).
+const key_choices = blk: {
+    var out: [config.keys.len]cli.Choice = undefined;
+    for (config.keys, 0..) |key, i| out[i] = .{ .text = key.name, .help = key.help };
+    const final = out;
+    break :blk &final;
+};
+
 pub const get = struct {
     pub const name = "get";
     pub const summary = "Print one value";
-    pub const positionals = [_]cli.Positional{.{ .name = "KEY", .help = "Dotted key, e.g. unifi.endpoint" }};
+    pub const positionals = [_]cli.Positional{.{ .name = "KEY", .help = "Dotted key, e.g. unifi.endpoint", .choices = key_choices }};
     pub const examples = [_][]const u8{"artoo config get unifi.endpoint"};
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
@@ -95,7 +103,7 @@ pub const set = struct {
     pub const summary = "Set one value (validated, written atomically)";
     pub const details = config.key_help;
     pub const positionals = [_]cli.Positional{
-        .{ .name = "KEY", .help = "Dotted key (see 'artoo config show')" },
+        .{ .name = "KEY", .help = "Dotted key (see 'artoo config show')", .choices = key_choices },
         .{ .name = "VALUE", .help = "New value" },
     };
     pub const examples = [_][]const u8{
@@ -135,7 +143,7 @@ pub const set = struct {
 pub const unset = struct {
     pub const name = "unset";
     pub const summary = "Remove a key from the file (its default applies)";
-    pub const positionals = [_]cli.Positional{.{ .name = "KEY", .help = "Dotted key" }};
+    pub const positionals = [_]cli.Positional{.{ .name = "KEY", .help = "Dotted key", .choices = key_choices }};
     pub const examples = [_][]const u8{"artoo config unset unifi.timeout_seconds"};
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
@@ -327,6 +335,7 @@ test "config: show renders sections, marks defaults" {
         \\  gateway          192.168.1.1/24  (default)
         \\  user             artoo  (default)
         \\  reserved_names   --  (default)
+        \\  fence_allow_out  --  (default)
         \\
     , h.stdout());
 }
