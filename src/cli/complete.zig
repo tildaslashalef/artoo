@@ -138,10 +138,19 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, live: [
             if (isPath(f)) return .file;
             for (f.choices) |ch| try out.append(arena, .{ .text = ch });
         },
-        .positional => |p| switch (p.complete) {
-            .none => {},
-            .file => return .file,
-            .vm, .template, .guest_name => try out.appendSlice(arena, live),
+        .positional => |p| {
+            if (std.mem.findScalar(u8, current, '=')) |eq| {
+                for (p.choices) |ch| if (std.mem.eql(u8, ch.text, current[0 .. eq + 1])) {
+                    for (ch.values) |v| try out.append(arena, .{ .text = try std.fmt.allocPrint(arena, "{s}{s}", .{ ch.text, v }) });
+                };
+                return .{ .list = try filter(arena, out.items, current) };
+            }
+            for (p.choices) |ch| try out.append(arena, .{ .text = ch.text, .help = ch.help });
+            switch (p.complete) {
+                .none => {},
+                .file => return .file,
+                .vm, .template, .guest_name => try out.appendSlice(arena, live),
+            }
         },
     }
     return .{ .list = try filter(arena, out.items, current) };
@@ -209,6 +218,8 @@ const bash_script =
     \\        :file) COMPREPLY=($(compgen -f -- "$cur")); compopt -o filenames 2>/dev/null ;;
     \\        *) for line in $out; do COMPREPLY+=("${line%%$'\t'*}"); done ;;
     \\    esac
+    \\    # A KEY= completes without a space so its value can follow.
+    \\    [[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == *= ]] && compopt -o nospace 2>/dev/null
     \\}
     \\complete -F _artoo artoo
     \\
@@ -218,18 +229,21 @@ const zsh_script =
     \\#compdef artoo
     \\# artoo completion for zsh: every Tab asks the binary (SPEC 3.5).
     \\_artoo() {
-    \\    local -a lines described plain
+    \\    local -a lines described keys plain
     \\    local line
     \\    lines=("${(@f)$(command artoo __complete -- "${(@)words[2,CURRENT]}" 2>/dev/null)}")
     \\    [[ "$lines[1]" == :file ]] && { _files; return; }
     \\    for line in $lines; do
     \\        [[ -n $line ]] || continue
-    \\        if [[ $line == *$'\t'* ]]; then
+    \\        if [[ ${line%%$'\t'*} == *= ]]; then
+    \\            keys+=("${${line%%$'\t'*}//:/\\:}:${line#*$'\t'}")
+    \\        elif [[ $line == *$'\t'* ]]; then
     \\            described+=("${${line%%$'\t'*}//:/\\:}:${line#*$'\t'}")
     \\        else
     \\            plain+=("$line")
     \\        fi
     \\    done
+    \\    (( $#keys )) && _describe -t keys artoo keys -S ''
     \\    (( $#described )) && _describe -t values artoo described
     \\    (( $#plain )) && compadd -a plain
     \\}
@@ -271,7 +285,8 @@ const demo = struct {
     const rm: Command = .{ .name = "rm", .summary = "Remove", .run = noop, .positionals = &.{.{ .name = "VM", .complete = .vm }}, .flags = &.{.{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "Confirm" }} };
     const ssh: Command = .{ .name = "ssh", .summary = "SSH", .run = noop, .positionals = &.{.{ .name = "VM", .complete = .vm }}, .trailing = "CMD" };
     const spec: Command = .{ .name = "spec", .summary = "Spec", .run = noop, .flags = &.{.{ .long = "file", .short = 'f', .kind = .string, .metavar = "PATH", .help = "File" }} };
-    const vm: Command = .{ .name = "vm", .summary = "VMs", .children = &.{ rm, ssh } };
+    const set: Command = .{ .name = "set", .summary = "Set", .run = noop, .positionals = &.{ .{ .name = "VM", .complete = .vm }, .{ .name = "KEY=VALUE", .variadic = true, .choices = &.{ .{ .text = "name=", .help = "Rename" }, .{ .text = "onboot=", .values = &.{ "yes", "no" } } } } } };
+    const vm: Command = .{ .name = "vm", .summary = "VMs", .children = &.{ rm, ssh, set } };
     const gw: Command = .{ .name = "gw", .summary = "Gateway", .children = &.{spec} };
     const secret: Command = .{ .name = "__complete", .summary = "", .run = noop, .hidden = true };
     const root: Command = .{ .name = "artoo", .summary = "t", .children = &.{ vm, gw, secret } };
@@ -282,7 +297,7 @@ test "resolve + candidates: commands, help, flags, values, positionals" {
     const live = [_]Candidate{ .{ .text = "naboo", .help = "201 running" }, .{ .text = "hoth" } };
     try expectTexts(r, &.{""}, &.{}, &.{ "vm", "gw", "help" });
     try expectTexts(r, &.{"v"}, &.{}, &.{"vm"});
-    try expectTexts(r, &.{ "vm", "" }, &.{}, &.{ "rm", "ssh" });
+    try expectTexts(r, &.{ "vm", "" }, &.{}, &.{ "rm", "ssh", "set" });
     try expectTexts(r, &.{ "help", "" }, &.{}, &.{ "vm", "gw" });
     try expectTexts(r, &.{ "help", "vm", "rm", "" }, &live, &.{});
     try expectTexts(r, &.{ "vm", "rm", "" }, &live, &.{ "naboo", "hoth" });
@@ -299,6 +314,18 @@ test "resolve + candidates: commands, help, flags, values, positionals" {
     try expectTexts(r, &.{ "vm", "ssh", "naboo", "--", "" }, &live, &.{});
     try expectTexts(r, &.{ "__complete", "" }, &.{}, &.{});
     try expectTexts(r, &.{ "nope", "" }, &.{}, &.{});
+}
+
+test "resolve + candidates: KEY= choices and their values" {
+    const r = &demo.root;
+    const live = [_]Candidate{.{ .text = "naboo" }};
+    try expectTexts(r, &.{ "vm", "set", "" }, &live, &.{"naboo"});
+    try expectTexts(r, &.{ "vm", "set", "naboo", "" }, &live, &.{ "name=", "onboot=" });
+    try expectTexts(r, &.{ "vm", "set", "naboo", "name=x", "o" }, &live, &.{"onboot="});
+    try expectTexts(r, &.{ "vm", "set", "naboo", "onboot=" }, &live, &.{ "onboot=yes", "onboot=no" });
+    try expectTexts(r, &.{ "vm", "set", "naboo", "onboot=y" }, &live, &.{"onboot=yes"});
+    try expectTexts(r, &.{ "vm", "set", "naboo", "name=" }, &live, &.{});
+    try expectTexts(r, &.{ "vm", "set", "naboo", "nope=" }, &live, &.{});
 }
 
 test "write: tab-separated, descriptions on one line" {

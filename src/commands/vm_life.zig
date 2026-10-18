@@ -348,7 +348,16 @@ pub const set = struct {
         \\balloon (MiB, or 512M/2G), onboot (yes/no). Unchanged keys are left out;
         \\nothing to change exits 5.
     ;
-    pub const positionals = [_]cli.Positional{ vm_arg, .{ .name = "KEY=VALUE", .help = "One or more assignments", .variadic = true } };
+    pub const positionals = [_]cli.Positional{ vm_arg, .{ .name = "KEY=VALUE", .help = "One or more assignments", .variadic = true, .choices = &.{
+        .{ .text = "name=", .help = "Rename (a DNS label)" },
+        .{ .text = "description=", .help = "Notes shown in Proxmox" },
+        .{ .text = "tags=", .help = "Comma list; replaces all tags (keep artoo, role-ROLE)" },
+        .{ .text = "cores=", .help = "vCPU cores per socket (1-128)" },
+        .{ .text = "sockets=", .help = "CPU sockets (1-4)" },
+        .{ .text = "memory=", .help = "RAM in MiB, or 512M/2G" },
+        .{ .text = "balloon=", .help = "Minimum RAM in MiB, or 512M/2G" },
+        .{ .text = "onboot=", .help = "Start with the host (yes/no)", .values = &.{ "yes", "no" } },
+    } } };
     pub const examples = [_][]const u8{ "artoo vm set web-01 memory=4G cores=2", "artoo vm set 100 tags=artoo,web onboot=yes" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
