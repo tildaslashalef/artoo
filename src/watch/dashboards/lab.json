@@ -514,8 +514,8 @@
     {
       "id": 8,
       "type": "stat",
-      "title": "HTTPS services",
-      "description": "Every service name, probed through the edge",
+      "title": "Services down",
+      "description": "Service names whose HTTPS probe through the edge fails; which ones: the strip below",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -529,7 +529,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "min(probe_success)",
+          "expr": "count(probe_success < 1) or vector(0)",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -544,11 +544,11 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
               },
               {
-                "color": "green",
+                "color": "red",
                 "value": 1
               }
             ]
@@ -556,22 +556,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "decimals": 0,
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "DOWN",
-                  "color": "red"
-                },
-                "1": {
-                  "text": "UP",
-                  "color": "green"
-                }
-              }
-            }
-          ]
+          "decimals": 0
         },
         "overrides": []
       },
@@ -926,19 +911,101 @@
     },
     {
       "id": 14,
+      "type": "stat",
+      "title": "HTTPS services",
+      "description": "Each service name, probed from the watchdog through the edge (its health path); down = no 2xx, a TLS error or its down text",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 24,
+        "h": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sort_by_label(max by (service) (label_replace(probe_success, \"service\", \"$1\", \"job\", \"integrations/blackbox/(.+)\")), \"service\")",
+          "legendFormat": "{{service}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "down",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "orientation": "vertical",
+        "showPercentChange": false
+      }
+    },
+    {
+      "id": 15,
       "type": "row",
       "title": "Proxmox",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 9,
+        "y": 12,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 15,
+      "id": 16,
       "type": "timeseries",
       "title": "CPU",
       "description": "",
@@ -948,7 +1015,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 10,
+        "y": 13,
         "w": 8,
         "h": 8
       },
@@ -1009,7 +1076,7 @@
       }
     },
     {
-      "id": 16,
+      "id": 17,
       "type": "timeseries",
       "title": "Load",
       "description": "",
@@ -1019,7 +1086,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 10,
+        "y": 13,
         "w": 8,
         "h": 8
       },
@@ -1127,7 +1194,7 @@
       }
     },
     {
-      "id": 17,
+      "id": 18,
       "type": "timeseries",
       "title": "Memory",
       "description": "Used, ARC and available stack up to the total",
@@ -1137,7 +1204,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 10,
+        "y": 13,
         "w": 8,
         "h": 8
       },
@@ -1300,7 +1367,7 @@
       }
     },
     {
-      "id": 18,
+      "id": 19,
       "type": "timeseries",
       "title": "Network (vmbr0)",
       "description": "Out drawn below zero",
@@ -1310,7 +1377,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 18,
+        "y": 21,
         "w": 12,
         "h": 8
       },
@@ -1370,7 +1437,7 @@
       }
     },
     {
-      "id": 19,
+      "id": 20,
       "type": "bargauge",
       "title": "Storage",
       "datasource": {
@@ -1379,7 +1446,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 18,
+        "y": 21,
         "w": 12,
         "h": 8
       },
@@ -1444,20 +1511,20 @@
       }
     },
     {
-      "id": 20,
+      "id": 21,
       "type": "row",
       "title": "Guests",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 29,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 21,
+      "id": 22,
       "type": "table",
       "title": "Guests",
       "datasource": {
@@ -1466,7 +1533,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 27,
+        "y": 30,
         "w": 24,
         "h": 7
       },
@@ -1888,7 +1955,7 @@
       }
     },
     {
-      "id": 22,
+      "id": 23,
       "type": "timeseries",
       "title": "CPU by guest",
       "description": "",
@@ -1898,7 +1965,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 34,
+        "y": 37,
         "w": 8,
         "h": 8
       },
@@ -1950,7 +2017,7 @@
       }
     },
     {
-      "id": 23,
+      "id": 24,
       "type": "timeseries",
       "title": "Memory by guest",
       "description": "",
@@ -1960,7 +2027,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 34,
+        "y": 37,
         "w": 8,
         "h": 8
       },
@@ -2013,7 +2080,7 @@
       }
     },
     {
-      "id": 24,
+      "id": 25,
       "type": "timeseries",
       "title": "Network by guest",
       "description": "Out drawn below zero",
@@ -2023,7 +2090,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 34,
+        "y": 37,
         "w": 8,
         "h": 8
       },
@@ -2083,7 +2150,7 @@
       }
     },
     {
-      "id": 25,
+      "id": 26,
       "type": "timeseries",
       "title": "Guest CPU seen by Proxmox",
       "description": "Fraction of each VM's vCPUs, from Proxmox (includes VMs without Alloy)",
@@ -2093,7 +2160,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 42,
+        "y": 45,
         "w": 12,
         "h": 7
       },
@@ -2145,7 +2212,7 @@
       }
     },
     {
-      "id": 26,
+      "id": 27,
       "type": "timeseries",
       "title": "Guest memory seen by Proxmox",
       "description": "",
@@ -2155,7 +2222,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 42,
+        "y": 45,
         "w": 12,
         "h": 7
       },
@@ -2207,20 +2274,20 @@
       }
     },
     {
-      "id": 27,
+      "id": 28,
       "type": "row",
       "title": "Edge & router",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 49,
+        "y": 52,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 28,
+      "id": 29,
       "type": "timeseries",
       "title": "Edge drops",
       "description": "to_pve / to_gateway: sign of compromise; to_lan, out_other, in_dropped: noise worth a look",
@@ -2230,7 +2297,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 50,
+        "y": 53,
         "w": 8,
         "h": 8
       },
@@ -2281,7 +2348,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 30,
       "type": "timeseries",
       "title": "Tunnel",
       "description": "",
@@ -2291,7 +2358,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 50,
+        "y": 53,
         "w": 8,
         "h": 8
       },
@@ -2351,7 +2418,7 @@
       }
     },
     {
-      "id": 30,
+      "id": 31,
       "type": "timeseries",
       "title": "HTTPS probe time",
       "description": "",
@@ -2361,15 +2428,15 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 50,
+        "y": 53,
         "w": 8,
         "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "probe_duration_seconds",
-          "legendFormat": "{{job}}",
+          "expr": "label_replace(probe_duration_seconds, \"service\", \"$1\", \"job\", \"integrations/blackbox/(.+)\")",
+          "legendFormat": "{{service}}",
           "datasource": {
             "type": "prometheus",
             "uid": "victoriametrics"
@@ -2413,7 +2480,7 @@
       }
     },
     {
-      "id": 31,
+      "id": 32,
       "type": "timeseries",
       "title": "Certificate expiry",
       "description": "",
@@ -2423,15 +2490,15 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 61,
         "w": 8,
         "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "(probe_ssl_earliest_cert_expiry - time()) / 86400",
-          "legendFormat": "{{job}}",
+          "expr": "label_replace((probe_ssl_earliest_cert_expiry - time()) / 86400, \"service\", \"$1\", \"job\", \"integrations/blackbox/(.+)\")",
+          "legendFormat": "{{service}}",
           "datasource": {
             "type": "prometheus",
             "uid": "victoriametrics"
@@ -2474,7 +2541,7 @@
       }
     },
     {
-      "id": 32,
+      "id": 33,
       "type": "timeseries",
       "title": "Router traffic (tailscale0)",
       "description": "",
@@ -2484,7 +2551,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 58,
+        "y": 61,
         "w": 8,
         "h": 8
       },
@@ -2544,7 +2611,7 @@
       }
     },
     {
-      "id": 33,
+      "id": 34,
       "type": "timeseries",
       "title": "Caddy upstreams healthy",
       "description": "",
@@ -2554,7 +2621,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 58,
+        "y": 61,
         "w": 8,
         "h": 8
       },
@@ -2606,19 +2673,19 @@
       }
     },
     {
-      "id": 37,
+      "id": 38,
       "type": "row",
       "title": "Logs",
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 69,
         "w": 24,
         "h": 1
       },
       "panels": [
         {
-          "id": 34,
+          "id": 35,
           "type": "timeseries",
           "title": "Errors per host",
           "description": "err, crit, alert, emerg",
@@ -2628,7 +2695,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 67,
+            "y": 70,
             "w": 12,
             "h": 7
           },
@@ -2679,7 +2746,7 @@
           }
         },
         {
-          "id": 35,
+          "id": 36,
           "type": "timeseries",
           "title": "Warnings per host",
           "description": "Mostly boot-time chatter from virtual hardware; read them in Explore",
@@ -2689,7 +2756,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 67,
+            "y": 70,
             "w": 12,
             "h": 7
           },
@@ -2740,7 +2807,7 @@
           }
         },
         {
-          "id": 36,
+          "id": 37,
           "type": "logs",
           "title": "Errors (err and worse)",
           "datasource": {
@@ -2749,7 +2816,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 74,
+            "y": 77,
             "w": 24,
             "h": 12
           },
