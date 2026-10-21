@@ -204,6 +204,7 @@ pub fn render(arena: Allocator, codename: []const u8, user: []const u8) !Snippet
         \\  - [systemctl, start, qemu-guest-agent]
         \\  - [systemctl, try-reload-or-restart, ssh.service]
         \\  - [dracut, -f, --regenerate-all]
+        \\  - [systemctl, mask, --now, fwupd-refresh.timer]
         \\  - [sh, -c, "systemctl reset-failed systemd-networkd-wait-online.service || true"]
         \\
     , .{ .u = user, .h = h });
@@ -291,6 +292,7 @@ test "render: deterministic, content-addressed, secret- and identity-free" {
         "  - [cloud-init-per, instance, artoo-netplan, netplan, apply]\n",
         "  - path: /etc/dracut.conf.d/90-artoo-no-initrd-network.conf\n",
         "  - [dracut, -f, --regenerate-all]\n",
+        "  - [systemctl, mask, --now, fwupd-refresh.timer]\n",
         "  - path: /etc/apt/apt.conf.d/52artoo-unattended-upgrades\n    owner: \"root:root\"\n",
         "  - [sh, -c, \"systemctl reset-failed systemd-networkd-wait-online.service || true\"]\n",
     }) |want| {
