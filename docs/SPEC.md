@@ -529,8 +529,9 @@ that is defined (§9.3).
   `pve-edk2-firmware`, microcode); fwupd inside a VM finds nothing to
   update, yet `fwupd-refresh.timer` fetches LVFS metadata hourly and
   fails whenever the CDN stalls — the watchdog's failed-unit alert fired
-  on several guests at once (2026-10-21). `runcmd` masks the timer
-  (`systemctl mask --now`, so an upgrade cannot re-enable it); the
+  on several guests at once (2026-10-21). `runcmd` stops the timer, then
+  masks it, so an upgrade cannot re-enable it (`mask --now` on a running
+  timer left it failed, "Unit to trigger vanished", seen 2026-10-21); the
   package stays, because `ubuntu-server` depends on it. Existing guests
   need the mask by hand.
 - Unique per guest: machine-id, SSH host keys, password; nothing secret or
