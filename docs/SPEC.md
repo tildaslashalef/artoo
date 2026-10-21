@@ -524,6 +524,15 @@ that is defined (§9.3).
   failed — the watchdog's failed-unit alert fired for it (seen
   2026-10-11). The final `runcmd` resets it (`systemctl reset-failed`,
   tolerant of a unit that did not fail).
+- **No firmware refresh in guests** (decided 2026-10-21). A guest's
+  firmware is QEMU's, updated on the Proxmox host (`pve-qemu-kvm`,
+  `pve-edk2-firmware`, microcode); fwupd inside a VM finds nothing to
+  update, yet `fwupd-refresh.timer` fetches LVFS metadata hourly and
+  fails whenever the CDN stalls — the watchdog's failed-unit alert fired
+  on several guests at once (2026-10-21). `runcmd` masks the timer
+  (`systemctl mask --now`, so an upgrade cannot re-enable it); the
+  package stays, because `ubuntu-server` depends on it. Existing guests
+  need the mask by hand.
 - Unique per guest: machine-id, SSH host keys, password; nothing secret or
   identity-bearing in templates or payload.
 - Size presets (vCPU / RAM / disk): `tiny` 1 / 1 GiB / 20 GiB, `small`
