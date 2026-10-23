@@ -155,19 +155,63 @@ pub fn encodeKeys(arena: std.mem.Allocator, keys: []const u8) ![]const u8 {
     return out.items;
 }
 
-/// The operator's public key line from `guests.ssh_public_key`.
-fn publicKey(ctx: *Context) ![]const u8 {
+/// The public keys installed for the guest user: the operator's
+/// (`guests.ssh_public_key`) first, then `guests.extra_ssh_keys`.
+const PublicKeys = struct {
+    /// One OpenSSH line per key, newline-separated (PVE `sshkeys`).
+    lines: []const u8,
+    /// Each extra key's comment (or its file name), for the plan.
+    extra: []const []const u8,
+};
+
+fn publicKeys(ctx: *Context) !PublicKeys {
     const cfg = try ctx.config();
-    const p = files.expandHome(ctx.arena, ctx.env, cfg.guests.ssh_public_key) catch
-        return ctx.fail(error.ConfigInvalid, "HOME is not set; cannot read guests.ssh_public_key", .{});
+    var lines: std.ArrayList(u8) = .empty;
+    try lines.appendSlice(ctx.arena, try keyLine(ctx, cfg.guests.ssh_public_key, "guests.ssh_public_key"));
+    var extra: std.ArrayList([]const u8) = .empty;
+    for (try config.pathList(ctx.arena, cfg.guests.extra_ssh_keys)) |p| {
+        const line = try keyLine(ctx, p, "guests.extra_ssh_keys");
+        if (std.mem.find(u8, lines.items, line) != null) continue;
+        try lines.append(ctx.arena, '\n');
+        try lines.appendSlice(ctx.arena, line);
+        try extra.append(ctx.arena, keyComment(line) orelse std.fs.path.basename(p));
+    }
+    return .{ .lines = lines.items, .extra = extra.items };
+}
+
+/// One OpenSSH public key line from the file at `path` (`what` names
+/// the config key in errors). A private key is refused, never echoed.
+fn keyLine(ctx: *Context, path: []const u8, what: []const u8) ![]const u8 {
+    const p = files.expandHome(ctx.arena, ctx.env, path) catch
+        return ctx.fail(error.ConfigInvalid, "HOME is not set; cannot read {s}", .{what});
     const raw = std.Io.Dir.cwd().readFileAlloc(ctx.io, p, ctx.arena, .limited(16 * 1024)) catch |err| switch (err) {
         error.OutOfMemory, error.Canceled => |e| return e,
-        else => return ctx.fail(error.ConfigInvalid, "cannot read guests.ssh_public_key ({s})", .{ctx.tilde(p)}),
+        else => return ctx.fail(error.ConfigInvalid, "cannot read {s} ({s})", .{ what, ctx.tilde(p) }),
     };
+    if (std.mem.find(u8, raw, "PRIVATE KEY") != null)
+        return ctx.fail(error.ConfigInvalid, "{s} ({s}) is a private key; name the .pub file", .{ what, ctx.tilde(p) });
     const line = std.mem.trim(u8, raw, " \r\n");
-    if (!std.mem.startsWith(u8, line, "ssh-") or std.mem.findScalar(u8, line, '\n') != null)
+    if (!validKeyLine(line))
         return ctx.fail(error.ConfigInvalid, "{s} is not one OpenSSH public key line", .{ctx.tilde(p)});
     return line;
+}
+
+fn validKeyLine(line: []const u8) bool {
+    if (std.mem.findAny(u8, line, "\r\n") != null) return false;
+    var it = std.mem.tokenizeScalar(u8, line, ' ');
+    const kind = it.next() orelse return false;
+    const blob = it.next() orelse return false;
+    if (!std.mem.startsWith(u8, kind, "ssh-") and !std.mem.startsWith(u8, kind, "ecdsa-") and !std.mem.startsWith(u8, kind, "sk-")) return false;
+    for (blob) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '+' and ch != '/' and ch != '=') return false;
+    return true;
+}
+
+fn keyComment(line: []const u8) ?[]const u8 {
+    var it = std.mem.tokenizeScalar(u8, line, ' ');
+    _ = it.next();
+    _ = it.next();
+    const rest = std.mem.trim(u8, it.rest(), " ");
+    return if (rest.len > 0) rest else null;
 }
 
 fn gateway(ctx: *Context) !config.Cidr {
@@ -245,6 +289,8 @@ const NewOp = struct {
     state: []const u8 = "",
     ledger: exec.Ledger = .{},
     checks: []const Check = &.{},
+    /// The pinned host key as a known_hosts line for other machines.
+    host_line: ?[]const u8 = null,
 
     pub fn read(op: *NewOp, ctx: *Context) !void {
         const c = op.c;
@@ -385,7 +431,9 @@ const NewOp = struct {
         if (op.steps.clone) try changes.append(a, .{ .field = "VM", .from = null, .to = try std.fmt.allocPrint(a, "{d} {s}, full clone of {s} ({d})", .{ op.vmid, op.name, try k.clean(ctx, op.tmpl.name), op.tmpl.vmid }) });
         try changes.append(a, .{ .field = "size", .from = null, .to = try std.fmt.allocPrint(a, "{d} vCPU, {f} RAM, {d} GiB disk ({t})", .{ op.cores, ui.values.bytes(op.memory << 20), op.disk, op.size }) });
         try changes.append(a, .{ .field = "address", .from = null, .to = try std.fmt.allocPrint(a, "{s}/{d} via {s} (static)", .{ op.address, op.net.prefix, gw }) });
+        const extra = (try publicKeys(ctx)).extra;
         try changes.append(a, .{ .field = "user", .from = null, .to = try std.fmt.allocPrint(a, "{s}: your SSH key; sudo password generated, kept in the Keychain", .{(try ctx.config()).guests.user}) });
+        if (extra.len > 0) try changes.append(a, .{ .field = "more SSH keys", .from = null, .to = try std.mem.join(a, ", ", extra) });
         if (!std.mem.eql(u8, op.tags, tag)) try changes.append(a, .{ .field = "tags", .from = null, .to = op.tags });
         if (op.steps.reserve) try changes.append(a, .{ .field = "client record", .from = null, .to = try std.fmt.allocPrint(a, "{s}, Fixed IP {s} on UniFi (the VM's MAC)", .{ op.name, op.address }) });
         if (op.steps.dns) try changes.append(a, .{ .field = "DNS record", .from = null, .to = try std.fmt.allocPrint(a, "{s} {s} {s} on UniFi", .{ op.fqdn, ctx.ui.glyphs.arrow, op.address }) });
@@ -471,7 +519,7 @@ const NewOp = struct {
                 .{ .name = "memory", .value = try std.fmt.allocPrint(a, "{d}", .{op.memory}) },
                 .{ .name = "ciuser", .value = (try ctx.config()).guests.user },
                 .{ .name = "cipassword", .value = hash },
-                .{ .name = "sshkeys", .value = try encodeKeys(a, try publicKey(ctx)) },
+                .{ .name = "sshkeys", .value = try encodeKeys(a, (try publicKeys(ctx)).lines) },
                 .{ .name = "ipconfig0", .value = try std.fmt.allocPrint(a, "ip={s}/{d},gw={s}", .{ op.address, op.net.prefix, gw }) },
                 .{ .name = "nameserver", .value = gw },
                 .{ .name = "searchdomain", .value = (try ctx.config()).guests.domain },
@@ -522,6 +570,7 @@ const NewOp = struct {
                 return ctx.fail(error.Partial, "guest {s} has no usable {s}", .{ op.name, known_hosts.host_key_file });
             };
             try known_hosts.record(ctx, op.name, key);
+            op.host_line = try hostLine(a, op.name, if (op.no_dns) null else op.fqdn, op.address, key);
             l.set(s_key, .done, known_hosts.default_path);
         }
         if (s_ssh) |i| {
@@ -562,11 +611,21 @@ const NewOp = struct {
     }
 
     pub fn done(op: *NewOp) []const u8 {
-        return std.fmt.allocPrint(op.c.ctx.arena, "{s} ({d}) is ready at {s}{s}{s} — 'artoo vm ssh {s}'", .{
-            op.name, op.vmid, op.address, if (op.no_dns) "" else ", ", if (op.no_dns) "" else op.fqdn, op.name,
+        return std.fmt.allocPrint(op.c.ctx.arena, "{s} ({d}) is ready at {s}{s}{s} — 'artoo vm ssh {s}'{s}{s}", .{
+            op.name,                                                                       op.vmid,                op.address, if (op.no_dns) "" else ", ", if (op.no_dns) "" else op.fqdn, op.name,
+            if (op.host_line != null) "\n  known_hosts line for other machines: " else "", op.host_line orelse "",
         }) catch "done";
     }
 };
+
+/// `NAME,FQDN,ADDRESS KEY`: one known_hosts line that pins the guest
+/// under every name another machine may use for it.
+fn hostLine(a: std.mem.Allocator, name: []const u8, fqdn: ?[]const u8, address: []const u8, key: []const u8) ![]const u8 {
+    return if (fqdn) |f|
+        std.fmt.allocPrint(a, "{s},{s},{s} {s}", .{ name, f, address, key })
+    else
+        std.fmt.allocPrint(a, "{s},{s} {s}", .{ name, address, key });
+}
 
 fn hashOf(ctx: *Context, buf: *[crypt.hash_buf_len]u8, pw: []const u8) ![]const u8 {
     var salt: [crypt.salt_len]u8 = undefined;
@@ -592,10 +651,12 @@ pub const new = struct {
         \\address is --ip or the lowest free one in guests.address_pool (no VM,
         \\DNS record, Fixed IP or connected client on it). One confirmation covers the
         \\workflow: password into the Keychain (guest/NAME, only its SHA-512 hash
-        \\goes to Proxmox), full clone, cloud-init settings, a UniFi client
+        \\goes to Proxmox), full clone, cloud-init settings (your SSH key plus
+        \\guests.extra_ssh_keys), a UniFi client
         \\record for the VM's MAC (name, Fixed IP), disk resize, start,
         \\wait for cloud-init, one reboot if the first boot's updates ask for it,
-        \\host key pinned via the guest agent, DNS record
+        \\host key pinned via the guest agent (and printed as a known_hosts line
+        \\for other machines), DNS record
         \\NAME.<guests.domain> on UniFi, then 'vm verify'. Re-running continues
         \\an interrupted run.
     ;
@@ -1533,6 +1594,9 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
     defer g.deinit();
     try g.tmp.dir.createDirPath(testing.io, ".ssh");
     try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".ssh/id_ed25519.pub", .data = "ssh-ed25519 AAAAkey me@mac\n" });
+    try g.tmp.dir.createDirPath(testing.io, ".artoo/keys");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/keys/pve.pub", .data = "ssh-ed25519 AAAAother root@pve-guests\n" });
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"guests\":{\"extra_ssh_keys\":\"~/.artoo/keys/pve.pub\"}}\n" });
     const home = g.h.env.get("HOME").?;
     var fake: FakeRunner = .{ .arena = a };
     try fake.expect(&.{
@@ -1560,7 +1624,7 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
     const put = g.body(14);
     for ([_][]const u8{
         "cores=2&memory=2048&ciuser=artoo&cipassword=%246%24",
-        "&sshkeys=ssh-ed25519%2520AAAAkey%2520me%2540mac&ipconfig0=ip%3D192.168.1.204%2F24%2Cgw%3D192.168.1.1&nameserver=192.168.1.1",
+        "&sshkeys=ssh-ed25519%2520AAAAkey%2520me%2540mac%250Assh-ed25519%2520AAAAother%2520root%2540pve-guests&ipconfig0=ip%3D192.168.1.204%2F24%2Cgw%3D192.168.1.1&nameserver=192.168.1.1",
         "&searchdomain=lab.example.com&cicustom=vendor%3Dlocal%3Asnippets%2Fartoo-vendor-0123456789ab.yaml&tags=artoo%3Brole-web&digest=d1",
     }) |want| {
         if (std.mem.find(u8, put, want) == null) {
@@ -1584,6 +1648,7 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
     for ([_][]const u8{
         "Plan · Create guest test-01 (200)\n",
         "address        (none) → 192.168.1.204/24 via 192.168.1.1 (static)\n",
+        "more SSH keys  (none) → root@pve-guests\n",
         "✓ wait for cloud-init   done  done, 2 deprecation(s)",
         "✓ reboot for updates    done  kernel 7.0.0-38-generic",
         "✓ pin SSH host key      done",
@@ -1596,12 +1661,28 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
         "SSH key login           ✓ ok           artoo@192.168.1.204",
         "DNS record              – not checked  --no-dns",
         "✓ test-01 (200) is ready at 192.168.1.204",
+        "\n  known_hosts line for other machines: test-01,192.168.1.204 ssh-ed25519 " ++ blob ++ "\n",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "public key lines: kinds, one line, comments" {
+    try testing.expect(validKeyLine("ssh-ed25519 AAAAC3Nza root@pve-guests"));
+    try testing.expect(validKeyLine("ecdsa-sha2-nistp256 AAAAE2Vj"));
+    try testing.expect(!validKeyLine("ssh-ed25519"));
+    try testing.expect(!validKeyLine("ssh-ed25519 AAAA\nssh-rsa BBBB"));
+    try testing.expect(!validKeyLine("ssh-ed25519 AA'AA"));
+    try testing.expect(!validKeyLine("-----BEGIN OPENSSH PRIVATE KEY-----"));
+    try testing.expectEqualStrings("root@pve-guests", keyComment("ssh-ed25519 AAAA root@pve-guests").?);
+    try testing.expect(keyComment("ssh-ed25519 AAAA") == null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectEqualStrings("naboo,naboo.lab.example.com,192.168.1.230 ssh-ed25519 K", try hostLine(arena.allocator(), "naboo", "naboo.lab.example.com", "192.168.1.230", "ssh-ed25519 K"));
+    try testing.expectEqualStrings("hoth,192.168.1.231 ssh-ed25519 K", try hostLine(arena.allocator(), "hoth", null, "192.168.1.231", "ssh-ed25519 K"));
 }
 
 test "judgeUpdates and judgeReboot" {

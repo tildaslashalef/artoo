@@ -312,6 +312,7 @@ ends a step:
     "domain": "lab.example.com",
     "template": "ubuntu-2604",
     "ssh_public_key": "~/.ssh/id_ed25519.pub",
+    "extra_ssh_keys": "",
     "address_pool": "192.168.1.200-192.168.1.254",
     "gateway": "192.168.1.1/24",
     "user": "artoo",
@@ -321,13 +322,21 @@ ends a step:
 }
 ```
 
-The values shown are the defaults. Three `guests` keys need a word:
+The values shown are the defaults. Four `guests` keys need a word:
 
 - `guests.user` (default `artoo`): the account `vm new` creates on every
   guest — SSH key login, `sudo` with a generated password kept in the
   secret store as `guest/<name>` (§6, §9.1); `vm ssh` and `vm cp` log in
   as it. A Linux user name: lowercase letter first, then lowercase
   letters, digits, `_` or `-`, at most 32 characters, never `root`.
+- `guests.extra_ssh_keys` (default empty): comma-separated paths of
+  more public key files `vm new` installs for the guest user next to
+  `guests.ssh_public_key` — the other machines that log in (a second
+  device, the Proxmox host). Each file holds one OpenSSH public key line;
+  a private key is refused without echoing it. The `vm new` plan lists
+  them by comment ("more SSH keys"); `doctor` checks they are readable.
+  artoo itself logs in with `guests.ssh_public_key` only. Existing guests
+  are unchanged (cloud-init applies keys once).
 - `guests.reserved_names` (default empty): comma-separated DNS labels —
   the lab's own host and equipment names that guests may never take and
   that are never published (§9.1, §9.6).
@@ -463,7 +472,8 @@ that is defined (§9.3).
 - Ubuntu Server LTS cloud image (26.04), pinned build + SHA-256; existing
   guests never change when the pin advances.
 - User `guests.user` (default `artoo`, §5), SSH key login only
-  (`guests.ssh_public_key`, `~/.ssh/id_ed25519.pub`),
+  (`guests.ssh_public_key`, `~/.ssh/id_ed25519.pub`, plus
+  `guests.extra_ssh_keys`),
   `PasswordAuthentication no`, root login disabled.
 - `sudo` asks for a password (vendor drop-in
   `/etc/sudoers.d/99-artoo-sudo-password` overrides cloud-init's
@@ -638,7 +648,9 @@ stored in the repository.
 8. Create the DNS A record `<name>.lab.example.com → address` on UniFi
    (§10.3), unless `--no-dns`. Public exposure is per service, never
    part of `vm new` (§9.6).
-9. Verify (§9.4) and print the ledger: name, VMID, address, FQDN, SSH command.
+9. Verify (§9.4) and print the ledger: name, VMID, address, FQDN, SSH command,
+   and the pinned host key as one known_hosts line (`NAME,FQDN,ADDRESS
+   ssh-ed25519 …`) for the other machines in `guests.extra_ssh_keys`.
 
 Guests are tagged `artoo`; the gateway and DNS server come from
 `guests.gateway` (`192.168.1.1/24`). Steps 6–9 always run (they are
