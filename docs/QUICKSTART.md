@@ -22,6 +22,9 @@ make install          # ~/.local/bin/artoo + fish completion (COMPLETION=zsh|bas
 artoo --version
 ```
 
+Later, `artoo update` replaces the installed binary with the newest
+release after checking it (`artoo update --check` only asks; SPEC §18).
+
 ## 2. Prepare Proxmox (once, as root on the host)
 
 artoo uses one API token with built-in roles, plus one tiny custom role

@@ -111,6 +111,9 @@ artoo status               # one screen: Proxmox, guests, storage, tasks, UniFi,
 - Use the **installed** binary `~/.local/bin/artoo`. After code changes the
   developer runs `make install` (it also installs the fish completion;
   `COMPLETION=zsh|bash|none`; `artoo completion SHELL` prints the script).
+  A release install is brought current with `artoo update` (SPEC §18):
+  `artoo update --check` is read-only (exit 0 = a newer release exists);
+  replacing the binary is a write — the operator's go-ahead first.
 - Config: `~/.artoo/config.json`, non-secret (`artoo config show|get|set|
   unset|edit|init`; `config set -h` lists the keys).
 - Another machine: `artoo config export FILE` seals the config, the CA
