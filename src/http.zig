@@ -5,8 +5,9 @@
 //! - No connection reuse: the pool is disabled and every request sends
 //!   `Connection: close` (pveproxy closes idle sockets after 5 s; the prototype lost
 //!   writes on reused dead sockets).
-//! - Redirects refused; `accept-encoding: identity`; bodies capped while
-//!   streaming.
+//! - Redirects refused unless a caller asks for them back (the self-update,
+//!   SPEC §18, follows GitHub's own under its policy); `accept-encoding:
+//!   identity`; bodies capped while streaming.
 //! - Every request has a deadline: the attempt runs as a concurrent task
 //!   raced against a sleep in an `Io.Select`; on expiry the attempt is
 //!   canceled (Io.Threaded interrupts the blocked syscall with SIG.IO).
@@ -31,6 +32,11 @@ pub const Request = struct {
     authorization: ?[]const u8 = null,
     body: ?[]const u8 = null,
     content_type: []const u8 = "application/json",
+    /// `.give_back`: a 3xx is returned as a response with its `location`
+    /// (the caller decides whether to follow) instead of `Protocol`.
+    redirect: enum { refuse, give_back } = .refuse,
+    /// Body cap for this request; null = the client's `max_body`.
+    max_body: ?usize = null,
 };
 
 pub const Response = struct {
@@ -38,6 +44,8 @@ pub const Response = struct {
     body: []const u8,
     /// Status-line reason phrase (pveproxy puts its error message here).
     reason: []const u8 = "",
+    /// `Location` of a 3xx returned with `redirect = .give_back`.
+    location: ?[]const u8 = null,
 };
 
 pub const Error = error{
@@ -130,9 +138,9 @@ pub const Client = struct {
         if (c.opts.trace) |w| {
             const ms = @divTrunc(started.durationTo(Io.Clock.awake.now(c.io)).nanoseconds, std.time.ns_per_ms);
             if (result) |r| {
-                w.print("http: {s} {s} → {d} ({d} ms, {d} bytes)\n", .{ @tagName(req.method), req.url, r.status, ms, r.body.len }) catch {};
+                w.print("http: {s} {s} → {d} ({d} ms, {d} bytes)\n", .{ @tagName(req.method), traceUrl(req.url), r.status, ms, r.body.len }) catch {};
             } else |err| {
-                w.print("http: {s} {s} → {s} ({d} ms)\n", .{ @tagName(req.method), req.url, @errorName(err), ms }) catch {};
+                w.print("http: {s} {s} → {s} ({d} ms)\n", .{ @tagName(req.method), traceUrl(req.url), @errorName(err), ms }) catch {};
             }
         }
         const sent = @backingInt(a.phase.load(.acquire)) >= @backingInt(Phase.sending);
@@ -272,15 +280,20 @@ const Attempt = struct {
         a.phase.store(.receiving, .release);
         const status: u16 = @backingInt(response.head.status);
         if (status >= 300 and status < 400) {
+            if (a.req.redirect == .give_back) {
+                const location = a.arena.dupe(u8, response.head.location orelse "") catch return error.OutOfMemory;
+                return .{ .status = status, .body = "", .location = location };
+            }
             return a.fail(error.Protocol, "{s} answered with a redirect ({d}); redirects are refused", .{ host, status });
         }
         // The head buffer is reused while the body streams: copy first.
         const reason = a.arena.dupe(u8, response.head.reason) catch return error.OutOfMemory;
         var transfer_buf: [64]u8 = undefined;
         const body_reader = response.reader(&transfer_buf);
-        const body = body_reader.allocRemaining(a.arena, .limited(c.opts.max_body)) catch |err| return switch (err) {
+        const max_body = a.req.max_body orelse c.opts.max_body;
+        const body = body_reader.allocRemaining(a.arena, .limited(max_body)) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            error.StreamTooLong => a.fail(error.Protocol, "response from {s} exceeds {d} bytes", .{ host, c.opts.max_body }),
+            error.StreamTooLong => a.fail(error.Protocol, "response from {s} exceeds {d} bytes", .{ host, max_body }),
             error.ReadFailed => if (response.request.reader.body_err) |e| switch (e) {
                 else => a.fail(error.Network, "reading the response from {s} failed ({s})", .{ host, @errorName(e) }),
             } else a.fail(error.Network, "reading the response from {s} failed", .{host}),
@@ -293,6 +306,12 @@ const Attempt = struct {
         return a.fail(error.Network, "sending to {s} failed ({s})", .{ host, @errorName(err) });
     }
 };
+
+/// A URL for `-v` traces: without its query, which may carry a signature
+/// (a redirected download's short-lived URL).
+fn traceUrl(url: []const u8) []const u8 {
+    return url[0 .. std.mem.findScalar(u8, url, '?') orelse url.len];
+}
 
 fn hostOf(arena: Allocator, uri: std.Uri) []const u8 {
     const h = uri.host orelse return "?";
@@ -541,6 +560,28 @@ test "GET: redirect refused, oversized body refused" {
     try testing.expect(std.mem.find(u8, d.message, "redirects are refused") != null);
     try testing.expectError(error.Protocol, c.send(ar, .{ .url = try srv.url(ar, "/") }, &d));
     try testing.expect(std.mem.find(u8, d.message, "exceeds 8 bytes") != null);
+}
+
+test "GET: a redirect given back on request; per-request body cap" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const ar = a.allocator();
+    var srv: FakeServer = undefined;
+    try srv.start(testing.io, &.{
+        .{ .respond = .{ .status = 302, .body = "", .extra = "location: https://example.com/x?sig=1\r\n" } },
+        .{ .respond = .{ .body = "0123456789" } },
+    });
+    defer srv.stop();
+    var c: Client = undefined;
+    try testClient(&c, 2000);
+    defer c.deinit();
+    var d: Diag = .{};
+    const r = try c.send(ar, .{ .url = try srv.url(ar, "/dl"), .redirect = .give_back }, &d);
+    try testing.expectEqual(@as(u16, 302), r.status);
+    try testing.expectEqualStrings("https://example.com/x?sig=1", r.location.?);
+    try testing.expectError(error.Protocol, c.send(ar, .{ .url = try srv.url(ar, "/"), .max_body = 4 }, &d));
+    try testing.expect(std.mem.find(u8, d.message, "exceeds 4 bytes") != null);
+    try testing.expectEqualStrings("https://example.com/x", traceUrl("https://example.com/x?sig=1"));
 }
 
 test "writes: sent once; lost response or deadline after sending is unknown" {
