@@ -8,7 +8,7 @@ const Io = std.Io;
 
 pub const schema_version = 1;
 
-pub const Target = enum { pve, unifi, cloudflare, local };
+pub const Target = enum { pve, unifi, cloudflare, github, local };
 
 pub const options: std.json.Stringify.Options = .{
     .whitespace = .indent_2,
