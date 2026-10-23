@@ -21,6 +21,9 @@ test {
     _ = @import("prompt.zig");
     _ = @import("http.zig");
     _ = @import("exec.zig");
+    _ = @import("update/release.zig");
+    _ = @import("update/archive.zig");
+    _ = @import("update/install.zig");
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -44,6 +47,7 @@ pub fn main(init: std.process.Init) !void {
         .err = &err_file.interface,
         .out_file = .stdout(),
         .err_file = .stderr(),
+        .argv0 = if (argv.len > 0) argv[0] else "",
     }, &registry.root, words);
     out_file.interface.flush() catch {};
     err_file.interface.flush() catch {};

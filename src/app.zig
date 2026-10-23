@@ -19,6 +19,9 @@ pub const Context = struct {
     out: *Io.Writer,
     err: *Io.Writer,
     env: *const std.process.Environ.Map,
+    /// argv[0] as the shell passed it (`artoo update` checks the path it
+    /// was invoked by, SPEC §18); empty in tests.
+    argv0: []const u8 = "",
     /// Command-line globals with config defaults applied.
     globals: cli.Globals = .{},
     /// Rendering settings for stdout / stderr.
@@ -50,6 +53,22 @@ pub const Context = struct {
         runner: ?proc.Runner = null,
         /// Argon2id memory (KiB) for `config export`, kept small in tests.
         kdf_kib: ?u32 = null,
+        /// `artoo update` against the fake server (SPEC §18).
+        update: ?Update = null,
+    };
+
+    pub const Update = struct {
+        /// The fake server's origin: API, downloads and the one redirect
+        /// origin allowed.
+        base: []const u8,
+        /// Stands in for the running executable.
+        exe_path: []const u8,
+        /// The path artoo was invoked by; null = `exe_path`.
+        invoked: ?[]const u8 = null,
+        /// This build's version.
+        version: []const u8,
+        /// This build's release target; null = unsupported.
+        target: ?[]const u8,
     };
 
     pub const LoadedConfig = union(enum) {
