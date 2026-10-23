@@ -102,7 +102,9 @@ exists.
   `cloudflare`, `guest/<name>`.
 - Never print, log, serialize, cache, persist, shell-interpolate, or include a
   secret in exception text; never accept one as an ordinary CLI option or
-  environment variable.
+  environment variable. The only exception is `config export`'s
+  passphrase-sealed setup file (SPEC §6.1): the three API credentials,
+  encrypted, after a plan and confirmation — never guest passwords.
 - Verify TLS by default via the mkcert public root; no insecure mode.
 - Configs hold non-secret settings only. `~/.artoo/config.json` for artoo.
 - Never ask the operator for a password or to paste a secret into the
