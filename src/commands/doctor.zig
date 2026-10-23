@@ -62,6 +62,7 @@ pub const doctor = struct {
             try caCheck(&r, "unifi CA", cfg.unifi.ca_bundle);
             try caCheck(&r, "pve CA", cfg.pve.ca_bundle);
             try fileCheck(&r, "ssh key", cfg.guests.ssh_public_key);
+            for (try config.pathList(ctx.arena, cfg.guests.extra_ssh_keys)) |p| try fileCheck(&r, "extra ssh key", p);
         }
         if (!args.has("connect")) {
             try r.add("unifi", .not_checked, "use --connect", .{});

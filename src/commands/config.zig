@@ -331,6 +331,7 @@ test "config: show renders sections, marks defaults" {
         \\  domain           lab.example.com  (default)
         \\  template         ubuntu-2604  (default)
         \\  ssh_public_key   ~/.ssh/id_ed25519.pub  (default)
+        \\  extra_ssh_keys   --  (default)
         \\  address_pool     192.168.1.200-192.168.1.254  (default)
         \\  gateway          192.168.1.1/24  (default)
         \\  user             artoo  (default)

@@ -59,6 +59,10 @@ pub const Config = struct {
         domain: []const u8 = "lab.example.com",
         template: []const u8 = "ubuntu-2604",
         ssh_public_key: []const u8 = "~/.ssh/id_ed25519.pub",
+        /// More public key files `vm new` installs for the guest user
+        /// beside `ssh_public_key` (comma-separated paths): the other
+        /// machines that log in. artoo itself uses `ssh_public_key`.
+        extra_ssh_keys: []const u8 = "",
         address_pool: []const u8 = "192.168.1.200-192.168.1.254",
         /// Guests' default gateway and subnet; also their DNS server.
         gateway: []const u8 = "192.168.1.1/24",
@@ -74,7 +78,7 @@ pub const Config = struct {
     };
 };
 
-pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, ipv4_range, ipv4_cidr, username, label_list, fence_list };
+pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list };
 
 pub const Key = struct {
     name: []const u8,
@@ -104,6 +108,7 @@ pub const keys = [_]Key{
     .{ .name = "guests.domain", .help = "DNS domain for guest names", .check = .hostname },
     .{ .name = "guests.template", .help = "Default template name", .check = .ident },
     .{ .name = "guests.ssh_public_key", .help = "Public key installed for the guest user", .check = .path },
+    .{ .name = "guests.extra_ssh_keys", .help = "More public key files for the guest user (comma-separated paths)", .check = .path_list },
     .{ .name = "guests.address_pool", .help = "Static guest addresses (A-B)", .check = .ipv4_range },
     .{ .name = "guests.gateway", .help = "Guest gateway and DNS server, with prefix (A/N)", .check = .ipv4_cidr },
     .{ .name = "guests.user", .help = "Account created on every guest", .check = .username },
@@ -271,6 +276,7 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .username => validUsername(s),
         .label_list => validLabelList(s),
         .fence_list => validFenceList(s),
+        .path_list => validPathList(s),
     };
     if (ok) return true;
     const want = switch (k.check) {
@@ -283,6 +289,7 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .ipv4_cidr => "an IPv4 address with prefix length, like 192.168.1.1/24",
         .username => "a Linux user name (lowercase letter first; letters, digits, '_' or '-'; at most 32; not root)",
         .label_list => "DNS labels separated by commas",
+        .path_list => "file paths separated by commas",
         .fence_list => "entries 'VM PEER PROTO PORTS' separated by ';' (PEER a guest name or IPv4 address/CIDR, PROTO tcp or udp, PORTS like 5432, 80,443 or 6000:6010)",
         else => "a valid value",
     };
@@ -324,6 +331,26 @@ fn validLabelList(s: []const u8) bool {
         if (std.mem.findScalar(u8, l, '.') != null or !validHostname(l)) return false;
     }
     return true;
+}
+
+fn validPathList(s: []const u8) bool {
+    if (std.mem.findScalar(u8, s, 0) != null) return false;
+    var it = std.mem.splitScalar(u8, s, ',');
+    while (it.next()) |p| {
+        if (std.mem.trim(u8, p, " ").len == 0 and std.mem.trim(u8, s, " ").len > 0) return false;
+    }
+    return true;
+}
+
+/// The entries of a `path_list` value, trimmed (empty value: none).
+pub fn pathList(arena: Allocator, s: []const u8) Allocator.Error![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.tokenizeScalar(u8, s, ',');
+    while (it.next()) |p| {
+        const t = std.mem.trim(u8, p, " ");
+        if (t.len > 0) try out.append(arena, t);
+    }
+    return out.items;
 }
 
 /// One `guests.fence_allow_out` entry (SPEC §9.11).
@@ -654,6 +681,15 @@ test "validators" {
     try testing.expect(parseRange("192.168.1.200") == null);
     try testing.expectEqualStrings("auto|keychain|secret-service|file", choicesOf("credentials.store").?);
     try testing.expect(choicesOf("pve.node") == null);
+    try testing.expect(validPathList(""));
+    try testing.expect(validPathList("~/.artoo/keys/a.pub, /etc/b.pub"));
+    try testing.expect(!validPathList("a.pub,,b.pub"));
+    try testing.expect(!validPathList("a.pub,"));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const paths = try pathList(arena.allocator(), " a.pub , b.pub ");
+    try testing.expectEqual(@as(usize, 2), paths.len);
+    try testing.expectEqualStrings("b.pub", paths[1]);
 }
 
 test "fenceAllows: entries, peers, ports; malformed lists refused" {
