@@ -123,6 +123,7 @@ artoo watch setup | status | enroll VM…|--all | secret grafana|phone | forget 
                                       the watchdog VM `scarif` (§9.9)
 
 artoo config show | get KEY | set KEY VALUE | unset KEY | edit | init
+artoo config export FILE | import FILE   artoo's setup to another machine (§6.1)
 artoo completion fish|bash|zsh        print the shell completion script (§3.5)
 artoo auth set pve|unifi|cloudflare | status | rm pve|unifi|cloudflare
 ```
@@ -384,6 +385,8 @@ Rules for every backend:
   shows backend + presence without reading the secret; `auth rm` confirms.
 - Secrets are fetched only when a request is about to be sent; never
   printed, logged, cached elsewhere, put in error text, flags or env vars.
+  The one exception is the passphrase-sealed setup file of `config
+  export` (§6.1).
   No custom in-memory wiping ceremony is required.
 - Protection model, stated honestly: every backend protects against other
   user accounts, accidental commits/dotfile sync and (Keychain / encrypted
@@ -393,6 +396,45 @@ Rules for every backend:
   user or permission administration (§7), and can be given an expiry; the
   Cloudflare token is limited to the `example.com` zone's DNS and the
   account's tunnels, ideally with an expiry and an IP filter (§15).
+
+### 6.1 Setup transfer (`config export` / `config import`)
+
+Decided 2026-10-23: one file carries artoo's setup to another Mac or
+Linux machine — the deliberate, only exception to "secrets never leave
+the store" (§6).
+
+- **Contents:** the config file as it is, the CA bundles it names
+  (`pve.ca_bundle`, `unifi.ca_bundle`, once each) and the stored `pve`,
+  `unifi` and `cloudflare` credentials. Never `guest/<name>` passwords,
+  SSH keys, `known_hosts` or `ssh_config`: each machine has its own SSH
+  key (added to Proxmox root and to `guests.extra_ssh_keys`).
+- **Sealing** (`setup_file.zig`, stdlib only): Argon2id (64 MiB, 3
+  passes, one lane — checked against the reference implementation's
+  test vector, as Zig 0.17 skips its own Argon2 tests) derives the key
+  from the passphrase and a random 16-byte salt; XChaCha20-Poly1305 with
+  a random 24-byte nonce encrypts a JSON payload; the header (magic,
+  version, parameters, salt, nonce) is the associated data. The file is
+  ASCII-armored (`BEGIN/END ARTOO SETUP`). Reading bounds the parameters
+  (1–10 passes, at most 1 GiB) before any work; a wrong passphrase and a
+  changed file give the same refusal.
+- **Passphrase:** a hidden prompt (asked twice on export) or the first
+  line of `--stdin`; never an argument or variable. At least 12
+  characters.
+- **Export:** a plan of names only (config, CA bundles, which
+  credentials are stored), confirmation, then FILE atomically with mode
+  0600 (an existing FILE needs `--force`), opened again and compared
+  before success is reported. `--dry-run` writes nothing.
+- **Import:** a plan per item — new, same (skipped) or different;
+  anything different is replaced only with `--force`. Paths under the
+  exporting machine's home become `~/…`; a `credentials.store` this
+  system lacks (`keychain` off macOS, `secret-service` on macOS) becomes
+  `auto`; both show in the plan. Credentials go to the store the
+  imported config selects. Values are never shown or compared in the
+  output. It ends with the machine's own next steps (SSH key, `doctor
+  --connect`).
+- **Protection model:** the file is an offline copy of the lab's API
+  credentials; its strength is the passphrase's. Delete it after use;
+  for a machine kept long-term, a fresh Proxmox token is better still.
 
 ## 7. Proxmox access
 

@@ -99,6 +99,12 @@ artoo config show
 `artoo config set -h` lists every key. The file is
 `~/.artoo/config.json` and holds no secrets.
 
+Already set up on another machine? There, `artoo config export
+~/artoo-setup.txt`; here, `artoo config import ~/artoo-setup.txt` brings
+the config, the CA bundle and the credentials in one step (it asks for
+the passphrase you chose). Then create this machine's own SSH key and
+continue with `artoo doctor --connect`.
+
 Store the credentials — each one is read from a hidden prompt (or
 `--stdin`), never from an argument:
 

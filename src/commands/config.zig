@@ -7,6 +7,7 @@ const cli = @import("../cli.zig");
 const config = @import("../config.zig");
 const files = @import("../files.zig");
 const ui = @import("../ui.zig");
+const transfer = @import("config_transfer.zig");
 
 const Context = app.Context;
 
@@ -254,6 +255,8 @@ pub const group = cli.group("config", "Local configuration (~/.artoo/config.json
     cli.leaf(unset),
     cli.leaf(edit),
     cli.leaf(init),
+    cli.leaf(transfer.export_cmd),
+    cli.leaf(transfer.import_cmd),
 });
 
 // ---------------------------------------------------------------- tests

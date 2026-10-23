@@ -113,6 +113,12 @@ artoo status               # one screen: Proxmox, guests, storage, tasks, UniFi,
   `COMPLETION=zsh|bash|none`; `artoo completion SHELL` prints the script).
 - Config: `~/.artoo/config.json`, non-secret (`artoo config show|get|set|
   unset|edit|init`; `config set -h` lists the keys).
+- Another machine: `artoo config export FILE` seals the config, the CA
+  bundle and the three API credentials under a passphrase; `artoo config
+  import FILE` installs them there (SPEC §6.1). The operator runs both in
+  their own terminal and types the passphrase; an agent never asks for
+  it. The new machine still needs its own SSH key on Proxmox and in
+  `guests.extra_ssh_keys`.
 - TLS to Proxmox and UniFi is verified against the mkcert root
   `~/.artoo/tls/rootCA.pem`; Cloudflare against the system roots. There is
   no insecure mode.
