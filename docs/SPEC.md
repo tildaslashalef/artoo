@@ -125,6 +125,7 @@ artoo watch setup | status | enroll VM…|--all | secret grafana|phone | forget 
 artoo config show | get KEY | set KEY VALUE | unset KEY | edit | init
 artoo config export FILE | import FILE   artoo's setup to another machine (§6.1)
 artoo completion fish|bash|zsh        print the shell completion script (§3.5)
+artoo update [VERSION] [--check]      replace this binary with a verified GitHub release (§18)
 artoo auth set pve|unifi|cloudflare | status | rm pve|unifi|cloudflare
 ```
 
@@ -192,7 +193,7 @@ All server- and user-supplied strings are sanitized for terminal controls
 ### 4.2 JSON
 
 `-o json` prints exactly one document on stdout:
-`{"schema_version":1,"target":"pve|unifi|cloudflare|local","data":…,"meta":{…}}`,
+`{"schema_version":1,"target":"pve|unifi|cloudflare|github|local","data":…,"meta":{…}}`,
 where `meta` carries collection times, pagination and per-section errors.
 No ANSI, no prose on stdout; errors are a JSON object on stderr. Values are
 raw units (bytes, seconds, fractions → documented), missing values `null`.
@@ -1870,6 +1871,7 @@ src/
   cloudflare/         client, typed models (§15)
   exec.zig            mutation pipeline (§8.2) + workflow ledger
   guest/              baseline, crypt512, vendor-data renderer, payload embed
+  update/             self-update: GitHub releases, archive checks, install (§18)
   commands/           one file per noun: thin glue from args → domain → view
 ```
 
@@ -2214,3 +2216,120 @@ procedures in GUIDE.md.
   image's virtual size (3.5 GiB for 26.04); the API lists snippets
   (`content=snippets`, with size) though it cannot upload them.
 
+
+### 17.3 GitHub releases
+
+Checked 2026-10-23 against the public repository, read-only and without
+a token:
+
+- `GET https://api.github.com/repos/<owner>/<repo>/releases/latest` is
+  the newest release that is neither a draft nor a pre-release;
+  `…/releases/tags/vX.Y.Z` names one (404 when absent). Fields used:
+  `tag_name`, `prerelease`, `draft`, `published_at`, and per asset
+  `name`, `size`, `state` (`uploaded`) and `digest` (`sha256:<hex>`,
+  GitHub's own hash of the upload). Headers sent: `Accept:
+  application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, a
+  `User-Agent` (required).
+- An asset's download URL `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`
+  answers **302** to a signed, short-lived URL on
+  `release-assets.githubusercontent.com` (formerly
+  `objects.githubusercontent.com`), which serves the bytes.
+- Without a token the API allows 60 requests an hour per address; a
+  used-up limit answers 403 or 429 with a JSON `message`.
+- Zig 0.17's `std.http` reaches both hosts with the system roots; its
+  `std.compress.flate` (gzip) and `std.tar` read the release archives
+  that `scripts/release-binaries.sh` makes on the macOS runner (a
+  directory, `LICENSE`, `artoo` mode 755, `README.md`; no PAX entries).
+
+## 18. Self-update (`artoo update`)
+
+Decided 2026-10-23. `artoo update` replaces the running binary with a
+release from GitHub, on macOS and Linux, so a machine without a checkout
+(`make install`) stays current. Releases are made by
+`.github/workflows/release.yml` (docs/RELEASING.md): per target an
+archive `artoo-<ver>-<target>.tar.gz` holding
+`artoo-<ver>-<target>/artoo`, plus `SHA256SUMS`.
+
+- **Command.** `artoo update [VERSION] [--check]`. Without VERSION: the
+  latest release (§17.3; pre-releases and drafts are never chosen).
+  VERSION (`0.4.0`, `v0.4.0`, `0.4.0-rc.1`) names one release; it is
+  checked as SemVer before any request (exit 2), and a release that does
+  not exist is exit 2. A downgrade or a pre-release happens only when
+  named; the plan says so. VERSION is a positional because `--version` is
+  a global flag (§3.1). No config, secret or token is used; the
+  repository is `tildaslashalef/artoo`, built in.
+- **Versions** compare by SemVer precedence (`std.SemanticVersion.order`,
+  build metadata ignored): `0.4.0-dev+abc` < `0.4.0-rc.1` < `0.4.0`. The
+  same version is a no-op (exit 5, nothing downloaded); so is a build
+  newer than the latest release (a `-dev` build after its predecessor's
+  release) unless VERSION is named.
+- **`--check`** is read-only: release metadata only, nothing downloaded,
+  no prompt. Exit 0 when an update is available, 5 when there is nothing
+  to update (the no-op `artoo update` itself would refuse), so
+  `artoo update --check && artoo update -y`. Other failures keep their
+  codes.
+- **Target.** From the build's own OS and CPU: `aarch64-macos`,
+  `x86_64-macos`, `aarch64-linux`, `x86_64-linux`. Any other is refused
+  before a request (exit 5). A release that lacks this target's archive
+  or `SHA256SUMS` is exit 4.
+- **Transport.** §8.1 with the system roots (as Cloudflare, §15), no
+  Authorization header ever. The transport refuses redirects; the
+  updater alone asks for them back and follows at most two hops, each
+  `https` to `github.com`, `api.github.com`,
+  `release-assets.githubusercontent.com` or
+  `objects.githubusercontent.com` — anything else is exit 4. `-v` shows a
+  redirected hop's host and path, not its signed query. Deadlines: 15 s
+  for metadata and `SHA256SUMS`, 120 s for the archive (`--timeout`
+  overrides both). Size caps: metadata 1 MiB, `SHA256SUMS` 64 KiB,
+  archive 64 MiB, binary 128 MiB. A used-up rate limit is exit 4 with
+  GitHub's message.
+- **Verification, before the plan is shown** (so before any change):
+  the archive's length equals the asset's `size`; its SHA-256 equals its
+  one line in `SHA256SUMS` (`<hex>  <name>`) and the asset's `digest`
+  when GitHub gives one; gzip and tar are read with the stdlib only
+  (never `tar` or `curl`); only the entry `artoo-<ver>-<target>/artoo`,
+  a regular file present once, is used — every other entry is skipped
+  and never written. It is streamed into `<dir>/.artoo.update-<random>`
+  beside the target (exclusive create, 0755, fsync), and that file run
+  with `--version` must print exactly `artoo <ver>`. Any mismatch or
+  malformed archive is exit 5; the staged file is removed and nothing
+  changed. Protection model, stated honestly: this catches corruption
+  and a changed download; the trust root is GitHub's TLS and the
+  release itself (releases are not signed).
+- **Replacement.** The target is the running executable
+  (`std.process.executablePath`, which follows links). Refused: the path
+  artoo was invoked by (argv[0], or the `PATH` entry for a bare name) is
+  a symbolic link (exit 5: update what owns its target, or install the
+  binary itself); the target is not a regular file or was deleted
+  (exit 5); its directory is not writable (exit 3) — artoo never runs
+  `sudo`. The current binary is copied to `<dir>/.artoo.previous` (one
+  generation, atomic, 0755) — a copy, not a hard link (Linux's
+  `protected_hardlinks`), and not a rename (no moment without a binary).
+  Then the staged file is renamed over the target, and the directory is
+  synced. A new inode avoids Linux's "text file busy" and macOS killing
+  a binary whose signed pages changed in place; the running process
+  keeps the old one. Shell completion needs nothing (§3.5).
+- **Pipeline** (§8.2): read (release, target identity) → plan (no-op
+  check, then download, verify, stage) → preview → `--dry-run` stops,
+  removing the staged file (exit 0: downloaded and verified, nothing
+  replaced) → confirm (normal risk, `-y`) → re-read after a long prompt
+  (a changed release or target file aborts, exit 5) → back up and rename
+  → verify: the installed file's `--version` prints `artoo <ver>`, else
+  exit 8 with the rollback command. The staged file is removed on every
+  path that does not install it. Rollback: `mv <dir>/.artoo.previous
+  <dir>/artoo`, or `artoo update OLDVERSION`.
+- **Plan** names current → new version, the release and its date, the
+  asset and size, the SHA-256 and what it matched, the staged binary's
+  version, the target path, the backup and the recovery command. `-o
+  json` uses target `github`: `current`, `version`, `latest`,
+  `update_available`, `asset`, `sha256`, `path`, `backup` and `result`
+  (`dry-run`, `applied`; `--check` gives the first five fields).
+- **Testing.** Offline against the fake server, with archives built in
+  the test (`std.tar.Writer`, gzip) around a shell script that prints a
+  version, installed into a temp directory: newer, same, a dev build,
+  explicit and missing VERSION, checksum and digest mismatch, wrong
+  version inside, a missing entry, entries outside the one used, an
+  off-list redirect, unsupported target, symlinked and non-writable
+  targets, dry run, declined and non-interactive runs, `--check` and
+  JSON. Live: `artoo update --check` and `-n` against the published
+  release on a workstation; an actual update is the operator's.
