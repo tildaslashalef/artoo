@@ -48,6 +48,8 @@ pub const Context = struct {
         poll_ms: ?u64 = null,
         /// Stands in for helper processes (ssh).
         runner: ?proc.Runner = null,
+        /// Argon2id memory (KiB) for `config export`, kept small in tests.
+        kdf_kib: ?u32 = null,
     };
 
     pub const LoadedConfig = union(enum) {

@@ -17,6 +17,7 @@ test {
     _ = @import("dispatch.zig");
     _ = @import("proc.zig");
     _ = @import("secrets.zig");
+    _ = @import("setup_file.zig");
     _ = @import("prompt.zig");
     _ = @import("http.zig");
     _ = @import("exec.zig");
