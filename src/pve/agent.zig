@@ -62,12 +62,23 @@ pub const Watch = struct {
 const watch_every = 4;
 
 pub fn execWatched(c: *pve.Client, vmid: u32, argv: []const []const u8, input: ?[]const u8, timeout_ms: u64, watch: ?Watch) !Result {
+    return wait(c, vmid, try start(c, vmid, argv, input), argv[0], timeout_ms, watch);
+}
+
+/// Start `argv` in the guest without waiting for it: its pid. The one
+/// write; its errors keep their meaning (SPEC §8.1).
+pub fn start(c: *pve.Client, vmid: u32, argv: []const []const u8, input: ?[]const u8) !i64 {
     const ctx = c.ctx;
     var params: std.ArrayList(pve.Param) = .empty;
     for (argv) |a| try params.append(ctx.arena, .{ .name = "command", .value = a });
     if (input) |i| try params.append(ctx.arena, .{ .name = "input-data", .value = i });
     const started_data = try c.send(.POST, try c.nodePath("/qemu/{d}/agent/exec", .{vmid}), params.items);
-    const pid = pve.int(started_data, "pid") orelse return ctx.fail(error.Protocol, "the guest agent of VM {d} returned no pid", .{vmid});
+    return pve.int(started_data, "pid") orelse ctx.fail(error.Protocol, "the guest agent of VM {d} returned no pid", .{vmid});
+}
+
+/// Wait for a process `start` began (`what` names it in the timeout).
+pub fn wait(c: *pve.Client, vmid: u32, pid: i64, what: []const u8, timeout_ms: u64, watch: ?Watch) !Result {
+    const ctx = c.ctx;
     const path = try c.nodePath("/qemu/{d}/agent/exec-status?pid={d}", .{ vmid, pid });
     const started = Io.Clock.awake.now(ctx.io);
     var polls: usize = 0;
@@ -82,7 +93,7 @@ pub fn execWatched(c: *pve.Client, vmid: u32, argv: []const []const u8, input: ?
         }
         if (watch) |w| if (polls % watch_every == 0) try readStage(c, vmid, w);
         if (elapsed(ctx.io, started) >= timeout_ms)
-            return ctx.fail(error.WaitTimeout, "'{s}' in VM {d} still running after {d} s", .{ argv[0], vmid, timeout_ms / 1000 });
+            return ctx.fail(error.WaitTimeout, "'{s}' in VM {d} still running after {d} s", .{ what, vmid, timeout_ms / 1000 });
         try ctx.io.sleep(.fromMilliseconds(@intCast(ctx.test_hooks.poll_ms orelse 500)), .awake);
     }
 }

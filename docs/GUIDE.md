@@ -223,6 +223,8 @@ Lifecycle:
 artoo vm start VM -y
 artoo vm shutdown VM -y                  # ACPI; Proxmox gives up after 180 s (exit 6)
 artoo vm reboot VM -y
+artoo vm upgrade VM -n                   # what apt would install ('vm verify': pending updates)
+artoo vm upgrade VM -y                   # install it (SPEC §9.12); never reboots: then 'vm reboot VM'
 artoo vm stop VM --yes --confirm NAME    # power cut
 artoo vm set VM memory=4G cores=2 onboot=1 tags=artoo,web -y   # allowlisted keys, digest-guarded
 artoo vm snap add VM pre-upgrade -y
