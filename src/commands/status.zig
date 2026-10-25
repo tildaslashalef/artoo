@@ -29,6 +29,7 @@ const vm_fence = @import("vm_fence.zig");
 const template = @import("template.zig");
 const cf = @import("../cloudflare/client.zig");
 const tunnels = @import("../cloudflare/tunnel.zig");
+const activity = @import("../activity.zig");
 
 const Context = app.Context;
 
@@ -244,6 +245,11 @@ pub const status = struct {
         const d = try svc.domains(ctx);
 
         var parts: [5]Part = @splat(.{ .ctx = ctx.* });
+        var tally: activity.Tally = try .init(ctx.arena, ctx.activity, &.{ "pve", "unifi", "edge", "router", "tunnel" });
+        for (&parts, 0..) |*p, i| {
+            p.tally = &tally;
+            p.index = i;
+        }
         var records: ?[]const dns.ARecord = null;
         var edge_view: EdgeRead = .{};
         var group: std.Io.Group = .init;
@@ -289,6 +295,13 @@ pub const status = struct {
 const Part = struct {
     ctx: Context,
     errors: std.ArrayList(SectionError) = .empty,
+    /// The activity detail's count (SPEC §4.5); this part's index in it.
+    tally: ?*activity.Tally = null,
+    index: usize = 0,
+
+    fn finished(p: *Part) void {
+        if (p.tally) |t| t.finish(p.ctx.io, p.index);
+    }
 };
 
 /// Run `f` concurrently in `group`, or inline when the Io has no
@@ -299,6 +312,7 @@ fn spawn(io: std.Io, group: *std.Io.Group, comptime f: anytype, args: std.meta.A
 
 fn readPve(p: *Part, r: *Report) void {
     const ctx = &p.ctx;
+    defer p.finished();
     var c = attempt(ctx, &p.errors, "pve", pve.Client.open(ctx)) orelse return;
     defer c.deinit();
     r.host = attempt(ctx, &p.errors, "host", host.read(&c));
@@ -310,6 +324,7 @@ fn readPve(p: *Part, r: *Report) void {
 
 fn readUnifi(p: *Part, r: *Report, records: *?[]const dns.ARecord) void {
     const ctx = &p.ctx;
+    defer p.finished();
     var c = attempt(ctx, &p.errors, "unifi", unifi.Client.open(ctx)) orelse return;
     defer c.deinit();
     r.gateway = attempt(ctx, &p.errors, "gateway", gateway(&c));
@@ -330,6 +345,7 @@ fn roleVm(ctx: *Context, errors: *std.ArrayList(SectionError), section: []const 
 
 fn readEdge(p: *Part, r: *Report, d: svc.Domains, out: *EdgeRead) void {
     const ctx = &p.ctx;
+    defer p.finished();
     var c = attempt(ctx, &p.errors, "edge", pve.Client.open(ctx)) orelse return;
     defer c.deinit();
     const before = p.errors.items.len;
@@ -345,6 +361,7 @@ fn readEdge(p: *Part, r: *Report, d: svc.Domains, out: *EdgeRead) void {
 
 fn readRouter(p: *Part, r: *Report) void {
     const ctx = &p.ctx;
+    defer p.finished();
     var c = attempt(ctx, &p.errors, "router", pve.Client.open(ctx)) orelse return;
     defer c.deinit();
     const before = p.errors.items.len;
@@ -357,6 +374,7 @@ fn readRouter(p: *Part, r: *Report) void {
 
 fn readTunnel(p: *Part, r: *Report, d: svc.Domains) void {
     const ctx = &p.ctx;
+    defer p.finished();
     const name = (ctx.config() catch return).cloudflare.tunnel;
     var c = attempt(ctx, &p.errors, "tunnel", cf.Client.open(ctx)) orelse return;
     defer c.deinit();

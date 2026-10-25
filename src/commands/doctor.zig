@@ -69,9 +69,18 @@ pub const doctor = struct {
             try r.add("pve", .not_checked, "use --connect", .{});
             try r.add("cloudflare", .not_checked, "use --connect", .{});
         } else {
-            if (cfg_ok and have_unifi) try probeUnifi(&r) else try r.add("unifi", .not_checked, "{s}", .{if (cfg_ok) "no UniFi API key stored" else "config unusable"});
-            if (cfg_ok and have_pve) try probePve(&r) else try r.add("pve", .not_checked, "{s}", .{if (cfg_ok) "no Proxmox token stored" else "config unusable"});
-            if (cfg_ok and have_cf) try probeCloudflare(&r) else try r.add("cloudflare", .not_checked, "{s}", .{if (cfg_ok) "no Cloudflare token stored" else "config unusable"});
+            if (cfg_ok and have_unifi) {
+                ctx.busy("probing UniFi", .{});
+                try probeUnifi(&r);
+            } else try r.add("unifi", .not_checked, "{s}", .{if (cfg_ok) "no UniFi API key stored" else "config unusable"});
+            if (cfg_ok and have_pve) {
+                ctx.busy("probing Proxmox", .{});
+                try probePve(&r);
+            } else try r.add("pve", .not_checked, "{s}", .{if (cfg_ok) "no Proxmox token stored" else "config unusable"});
+            if (cfg_ok and have_cf) {
+                ctx.busy("probing Cloudflare", .{});
+                try probeCloudflare(&r);
+            } else try r.add("cloudflare", .not_checked, "{s}", .{if (cfg_ok) "no Cloudflare token stored" else "config unusable"});
         }
         return render(ctx, r.checks.items);
     }
