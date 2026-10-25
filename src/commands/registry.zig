@@ -68,6 +68,7 @@ test {
     _ = @import("../pve/ssh.zig");
     _ = @import("../guest/image.zig");
     _ = @import("../guest/vendor.zig");
+    _ = @import("../guest/apt.zig");
     _ = @import("status.zig");
     _ = @import("update.zig");
     _ = @import("../unifi/client.zig");

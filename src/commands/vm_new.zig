@@ -26,6 +26,7 @@ const known_hosts = @import("../guest/known_hosts.zig");
 const ssh_config = @import("../guest/ssh_config.zig");
 const vm_ssh = @import("vm_ssh.zig");
 const vendor = @import("../guest/vendor.zig");
+const apt = @import("../guest/apt.zig");
 const names = @import("../guest/names.zig");
 const vm_role = @import("vm.zig").roleOf;
 const exposure = @import("../exposure.zig");
@@ -816,6 +817,7 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
         else
             .{ .name = "tailscale not enrolled", .argv = &.{ "tailscale", "status", "--json" }, .judge = judgeTailscale },
         .{ .name = "unattended updates", .argv = &.{ "sh", "-c", scripts.updates }, .judge = judgeUpdates },
+        .{ .name = "pending updates", .argv = &.{ "sh", "-c", apt.simulate_script }, .judge = judgePending },
         .{ .name = "reboot pending", .argv = &.{ "sh", "-c", scripts.reboot }, .judge = judgeReboot },
     };
     for (guest_checks) |g| {
@@ -1139,6 +1141,36 @@ fn judgeUpdates(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !C
     if (std.mem.eql(u8, f.installed, "yes") and std.mem.eql(u8, f.tailscale, "0"))
         return .{ .name = "", .status = .warning, .detail = try std.fmt.allocPrint(a, "security daily, {s}; Tailscale not among the origins (baseline before 2026-10-11)", .{when}) };
     return .{ .name = "", .status = .ok, .detail = try std.fmt.allocPrint(a, "security daily, no auto-reboot, {s}", .{when}) };
+}
+
+/// Lists older than this mean apt's daily refresh is not running.
+const stale_lists_s: u64 = 2 * 24 * 3600;
+
+/// What `vm upgrade` would install (SPEC §9.4, §9.12): security updates
+/// waiting are a warning (the unattended run installs them within a
+/// day), others only a count; stale package lists are a warning too.
+fn judgePending(ctx: *Context, r: agent.Result, vm: []const u8, _: []const u8) !Check {
+    const a = ctx.arena;
+    if (!r.ok()) return .{ .name = "", .status = .failed, .detail = try std.fmt.allocPrint(a, "apt-get -s failed: {s}", .{try k.clean(ctx, firstLine(r.err))}) };
+    const p = try apt.parse(a, r.out);
+    const sec = p.security();
+    const others = p.packages.len - sec;
+    const name = try k.clean(ctx, vm);
+    var detail: std.ArrayList(u8) = .empty;
+    if (sec > 0) {
+        var shown: std.ArrayList([]const u8) = .empty;
+        for (p.packages) |pk| if (pk.security and shown.items.len < 3) try shown.append(a, try k.clean(ctx, pk.name));
+        try detail.print(a, "{d} security ({s}{s})", .{ sec, try std.mem.join(a, ", ", shown.items), if (sec > 3) try std.fmt.allocPrint(a, " +{d}", .{sec - 3}) else "" });
+        if (others > 0) try detail.print(a, ", {d} other", .{others});
+    } else if (others > 0) {
+        try detail.print(a, "no security updates; {d} other", .{others});
+    } else {
+        try detail.appendSlice(a, "none");
+    }
+    if (p.packages.len > 0) try detail.print(a, " — 'artoo vm upgrade {s}'", .{name});
+    const stale = if (p.listsAge()) |age| age > stale_lists_s else false;
+    if (stale) try detail.print(a, "; package lists from {f} ago (apt's daily refresh is not running)", .{ui.values.duration(p.listsAge().?)});
+    return .{ .name = "", .status = if (sec > 0 or stale) .warning else .ok, .detail = detail.items };
 }
 
 /// A reboot an update wants: a warning naming the packages.
@@ -1601,6 +1633,7 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
         r(try execStatus(a, 0, "", "")),                                                                                                  r(pid),
         r(try execStatus(a, 0, "{\"BackendState\":\"NeedsLogin\"}", "")),                                                                 r(pid),
         r(try execStatus(a, 0, "periodic 1\nreboot false\nsecurity 2\ntailscale 1\ninstalled yes\ntimer enabled\nlast \nnow 100\n", "")), r(pid),
+        r(try execStatus(a, 0, "lists 90\nnow 100\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n", "")),               r(pid),
         r(try execStatus(a, 0, "no\n", "")),                                                                                              r("{\"meta\":{\"rc\":\"ok\"},\"data\":[{\"_id\":\"U10\",\"mac\":\"bc:24:11:ab:cd:ef\",\"name\":\"test-01\",\"use_fixedip\":true,\"fixed_ip\":\"192.168.1.204\"}]}"),
     });
     defer g.deinit();
@@ -1669,6 +1702,7 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
         "UniFi client            ✓ ok           test-01, Fixed IP 192.168.1.204",
         "sudo asks password      ✓ ok           sudo -n refused",
         "unattended updates      ✓ ok           security daily, no auto-reboot, not run yet",
+        "pending updates         ✓ ok           none\n",
         "reboot pending          ✓ ok           no",
         "SSH key login           ✓ ok           artoo@192.168.1.204",
         "DNS record              – not checked  --no-dns",
@@ -1697,7 +1731,7 @@ test "public key lines: kinds, one line, comments" {
     try testing.expectEqualStrings("hoth,192.168.1.231 ssh-ed25519 K", try hostLine(arena.allocator(), "hoth", null, "192.168.1.231", "ssh-ed25519 K"));
 }
 
-test "judgeUpdates and judgeReboot" {
+test "judgeUpdates, judgePending and judgeReboot" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var h = try testkit.Harness.init();
@@ -1725,6 +1759,21 @@ test "judgeUpdates and judgeReboot" {
     try testing.expectEqual(ui.style.Status.failed, c.status);
     c = try judgeUpdates(&ctx, R("periodic 1\nreboot false\nsecurity 2\ntimer disabled\n"), "", "");
     try testing.expectEqualStrings("apt-daily-upgrade.timer disabled", c.detail);
+
+    c = try judgePending(&ctx, R(apt.sample), "naboo", "");
+    try testing.expectEqual(ui.style.Status.warning, c.status);
+    try testing.expectEqualStrings("1 security (libssl3t64), 2 other — 'artoo vm upgrade naboo'", c.detail);
+    c = try judgePending(&ctx, R("lists 1000\nnow 4600\nInst tmux [1] (2 Ubuntu:26.04/resolute-updates [amd64])\n"), "naboo", "");
+    try testing.expectEqual(ui.style.Status.ok, c.status);
+    try testing.expectEqualStrings("no security updates; 1 other — 'artoo vm upgrade naboo'", c.detail);
+    c = try judgePending(&ctx, R("lists 0\nnow 259200\n"), "naboo", "");
+    try testing.expectEqual(ui.style.Status.warning, c.status);
+    try testing.expectEqualStrings("none; package lists from 3d ago (apt's daily refresh is not running)", c.detail);
+    c = try judgePending(&ctx, R("lists \nnow 5\n"), "naboo", "");
+    try testing.expectEqualStrings("none", c.detail);
+    c = try judgePending(&ctx, .{ .code = 100, .out = "", .err = "E: Could not open lock file\n" }, "naboo", "");
+    try testing.expectEqual(ui.style.Status.failed, c.status);
+    try testing.expectEqualStrings("apt-get -s failed: E: Could not open lock file", c.detail);
 
     c = try judgeReboot(&ctx, R("no\n"), "", "");
     try testing.expectEqual(ui.style.Status.ok, c.status);
