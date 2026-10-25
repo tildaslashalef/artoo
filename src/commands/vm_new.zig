@@ -735,7 +735,7 @@ pub fn failures(checks: []const Check) usize {
 
 /// Shell snippets run as root through the guest agent; each prints what
 /// the check compares.
-const scripts = struct {
+pub const scripts = struct {
     const names = "hostname; hostname -f";
     fn account(a: std.mem.Allocator, user: []const u8) ![]const u8 {
         return std.fmt.allocPrint(a, "getent passwd {s} | cut -d: -f6,7; stat -c %U /home/{s}", .{ user, user });
@@ -767,7 +767,7 @@ const scripts = struct {
         \\echo "last $(stat -c %Y /var/lib/apt/periodic/unattended-upgrades-stamp /var/lib/apt/periodic/upgrade-stamp 2>/dev/null | sort -n | tail -1)"
         \\echo "now $(date +%s)"
     ;
-    const reboot = "if [ -f /run/reboot-required ]; then echo yes; cat /run/reboot-required.pkgs 2>/dev/null; else echo no; fi";
+    pub const reboot = "if [ -f /run/reboot-required ]; then echo yes; cat /run/reboot-required.pkgs 2>/dev/null; else echo no; fi";
 };
 
 fn payloadScript(arena: std.mem.Allocator, user: []const u8) ![]const u8 {
