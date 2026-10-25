@@ -11,6 +11,7 @@ const ui = @import("ui.zig");
 const config = @import("config.zig");
 const prompt = @import("prompt.zig");
 const secrets = @import("secrets.zig");
+const activity = @import("activity.zig");
 
 pub const version = build_options.version;
 
@@ -128,7 +129,27 @@ fn dispatchInner(p: Process, root: *const cli.Command, words: []const []const u8
                 .err_ui = err_ui,
                 .path = try pathTail(p.arena, inv.path),
             };
-            inv.command().run.?(&ctx, &inv) catch |e| {
+            // The activity line (SPEC §4.5): stdout and stderr pass
+            // through gates that erase it at the first output.
+            const live = err_ui.width != null and !globals.verbose and !json and !inv.command().hidden;
+            var act: activity.Activity = .{ .io = p.io, .w = p.err, .u = &err_ui, .name = ctx.path };
+            var out_buf: [4096]u8 = undefined;
+            var err_buf: [1024]u8 = undefined;
+            var out_gate: activity.Gate = .init(&act, p.out, &out_buf);
+            var err_gate: activity.Gate = .init(&act, p.err, &err_buf);
+            if (live) {
+                ctx.out = &out_gate.writer;
+                ctx.err = &err_gate.writer;
+                ctx.activity = &act;
+                act.start();
+            }
+            const result = inv.command().run.?(&ctx, &inv);
+            if (live) {
+                act.end();
+                out_gate.writer.flush() catch {};
+                err_gate.writer.flush() catch {};
+            }
+            result catch |e| {
                 const code = exitFor(e);
                 const message = ctx.diag orelse try defaultMessage(p.arena, e, code);
                 if (json) {
