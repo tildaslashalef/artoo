@@ -21,6 +21,7 @@ test {
     _ = @import("prompt.zig");
     _ = @import("http.zig");
     _ = @import("exec.zig");
+    _ = @import("activity.zig");
     _ = @import("update/release.zig");
     _ = @import("update/archive.zig");
     _ = @import("update/install.zig");

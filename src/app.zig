@@ -9,6 +9,7 @@ const Ui = @import("ui/Ui.zig");
 const prompt = @import("prompt.zig");
 const secrets = @import("secrets.zig");
 const proc = @import("proc.zig");
+const Activity = @import("activity.zig").Activity;
 
 pub const Context = struct {
     /// One arena per invocation; everything parsed lives here.
@@ -42,6 +43,8 @@ pub const Context = struct {
     store_override: ?secrets.Store = null,
     /// Tests point API clients at an in-process plain-HTTP server.
     test_hooks: TestHooks = .{},
+    /// The activity line, when one is shown (SPEC §4.5).
+    activity: ?*Activity = null,
 
     pub const TestHooks = struct {
         unifi_base: ?[]const u8 = null,
@@ -80,6 +83,11 @@ pub const Context = struct {
     pub fn fail(ctx: *Context, err: anyerror, comptime fmt: []const u8, args: anytype) anyerror {
         ctx.diag = std.fmt.allocPrint(ctx.arena, fmt, args) catch null;
         return err;
+    }
+
+    /// Detail for the activity line (SPEC §4.5); nothing when none is shown.
+    pub fn busy(ctx: *const Context, comptime fmt: []const u8, args: anytype) void {
+        if (ctx.activity) |a| a.note(fmt, args);
     }
 
     pub fn json(ctx: *const Context) bool {
