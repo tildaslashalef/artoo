@@ -313,7 +313,12 @@ is printed, so the output is the same as without it.
 - **Testing:** offline, the drawn line is a pure function of (path,
   detail, seconds, frame, width), the end-on-output writers are
   asserted exactly (erase before the first bytes, nothing when never
-  drawn), and the counter's detail text is checked.
+  drawn), and the counter's detail text is checked. Verified live
+  (2026-10-25, read-only) under a pseudo-terminal: `vm verify --all` and
+  `status` cycled all frames with their counts, `doctor --connect` named
+  its probe, `vm new -n` showed the line until its plan; each time the
+  line was erased right before the output, stdout carried no control
+  sequence, and with stderr piped or `-o json` nothing was written.
 
 ## 5. Configuration
 
