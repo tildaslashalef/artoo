@@ -1831,6 +1831,15 @@ and the watchdog included.
   does not count). The result names a pending reboot with its packages
   (`/run/reboot-required`, as §9.4) and `vm reboot VM`.
 
+Verified live (2026-10-25, approved plan) on the watchdog guest: `vm
+verify` counted "no security updates; 10 other", `vm upgrade -n` planned
+those 10 from `-updates` with 14 phased updates deferred, and `vm
+upgrade -y` installed them in 18 s. apt's stage lines showed while it ran
+(`0% Retrieving file 1 of 10`, `51% Configuring snapd (amd64)`), the
+result said no reboot was needed, `vm verify` then showed "pending updates
+ok none" and every other check unchanged, no unit had failed, and the
+stage and exit-code files were gone.
+
 ## 10. UniFi
 
 ### 10.1 Access
