@@ -29,6 +29,7 @@ const vendor = @import("../guest/vendor.zig");
 const names = @import("../guest/names.zig");
 const vm_role = @import("vm.zig").roleOf;
 const exposure = @import("../exposure.zig");
+const activity = @import("../activity.zig");
 const template = @import("template.zig");
 const storage = @import("storage.zig");
 const life = @import("vm_life.zig");
@@ -1253,10 +1254,14 @@ const VerifySlot = struct {
     vm: vms.Vm,
     checks: []const Check = &.{},
     err: ?[]const u8 = null,
+    /// The activity detail's count (SPEC §4.5); this guest's index in it.
+    tally: ?*activity.Tally = null,
+    index: usize = 0,
 };
 
 fn verifyOne(slot: *VerifySlot, watched: ?[]const u8, no_dns: bool) void {
     const ctx = &slot.ctx;
+    defer if (slot.tally) |t| t.finish(ctx.io, slot.index);
     const run = struct {
         fn f(s: *VerifySlot, w: ?[]const u8, nd: bool) !void {
             var c = try pve.Client.open(&s.ctx);
@@ -1281,6 +1286,13 @@ fn verifyAll(ctx: *Context, no_dns: bool) !void {
     }
     const w = try watch.findWatchVm(&c);
     const watched: ?[]const u8 = if (w) |x| x.name else null;
+    const guest_names = try a.alloc([]const u8, slots.items.len);
+    for (slots.items, guest_names) |s, *n| n.* = s.vm.name;
+    var tally: activity.Tally = try .init(a, ctx.activity, guest_names);
+    for (slots.items, 0..) |*s, i| {
+        s.tally = &tally;
+        s.index = i;
+    }
     var group: std.Io.Group = .init;
     for (slots.items) |*s| group.concurrent(ctx.io, verifyOne, .{ s, watched, no_dns }) catch verifyOne(s, watched, no_dns);
     try group.await(ctx.io);
