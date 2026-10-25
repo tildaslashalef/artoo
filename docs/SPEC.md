@@ -103,6 +103,7 @@ artoo vm snap ls VM | add VM NAME | rm VM NAME | rollback VM NAME
 artoo vm new NAME [--size S] [--cores N] [--memory SIZE] [--disk SIZE] [--ip ADDR]
                  [--id N] [--template T] [--no-dns]
 artoo vm verify VM|--all [--no-dns]   read-only readiness checks (§9.4)
+artoo vm upgrade VM                   install the guest's pending package updates (§9.12)
 artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
 artoo vm ssh-config                   write ~/.artoo/ssh_config: strict plain ssh/scp/rsync (§9.10)
 artoo vm cp SRC DST [-r] [--force]    copy as <user> to, from or between guests, SHA-256 checked (§9.10)
@@ -606,6 +607,8 @@ that is defined (§9.3).
   pinned (Alloy, the watchdog's stack: apt preferences, §9.9). A reboot an
   update needs is the operator's: `vm verify` and `status` show it
   (`/run/reboot-required`, with `.pkgs`), `vm reboot VM` does it.
+  Bug fixes from `-updates` are not installed unattended: `vm verify`
+  counts them and `vm upgrade VM` installs them (§9.12).
   Verified live (2026-10-11) against a disposable guest: "unattended
   updates ok" with the Tailscale origin, no failed units, and — on every
   fresh guest — a pending reboot, because first boot's package upgrade
@@ -769,7 +772,13 @@ guest tagged `fenced` (§9.11); unattended updates
 (§9.1): periodic upgrade on, the `-security` pocket allowed, the daily
 timer enabled and no automatic reboot (else failed), Tailscale's origin
 where Tailscale is installed (else a warning: a baseline older than
-2026-10-11), with the last run's time; reboot pending (a warning, with the
+2026-10-11), with the last run's time; pending updates (§9.12's
+simulation on the guest's current package lists, nothing refreshed or
+installed): security updates waiting are a warning naming them and `vm
+upgrade VM` — the unattended run installs them within a day, so one that
+stays is the updater falling behind; other updates are counted in the ok
+detail; lists older than 2 days are a warning (apt's daily refresh is
+not running); phased updates are not counted; reboot pending (a warning, with the
 packages that want it). DNS resolution is checked with `dig
 @<gateway>` from the workstation (not checked without `dig`; `--no-dns`
 skips both DNS checks). Each check reports ok / warning / failed / not
@@ -1778,6 +1787,49 @@ an nftables policy in the VM.
   The workstation's tailnet path (through the subnet router, which
   masquerades by default, so the guest sees a LAN source) is not yet
   checked from away.
+
+### 9.12 Package upgrades (`vm upgrade`)
+
+Decided 2026-10-25. Unattended upgrades install only the release and
+`-security` pockets (§9.1); bug fixes from `-updates` wait for the
+operator. `vm upgrade VM` installs everything pending through the guest
+agent, on the one pipeline (§8.2), one VM per run — the edge, the router
+and the watchdog included.
+
+- **Read** (nothing changes in the guest): an artoo guest (tag `artoo`,
+  not a template), running, its agent answering. `LC_ALL=C apt-get -s
+  --with-new-pkgs upgrade` on the guest's current package lists; each
+  `Inst` line is one package — name, installed version (none for a new
+  package such as the next kernel), candidate version and pockets
+  (`Inst tmux [3.6a-2ubuntu0.1] (3.6a-2ubuntu0.2
+  Ubuntu:26.04/resolute-updates [amd64])`, seen 2026-10-25); a pocket
+  ending in `-security` makes it a security update. Also read: the
+  lists' age (`/var/lib/apt/periodic/update-success-stamp`), the
+  packages Ubuntu's phased updates defer and those kept back. artoo
+  never runs `apt-get update`: the plan is what the lists say, and their
+  age is in it (apt's daily timer refreshes them).
+- **Plan:** one line per package, `name  old → new`, marked `security`;
+  nothing pending is a no-op (exit 5). Impact: new dependencies are
+  installed (a new kernel), nothing is removed; services that use an
+  upgraded library are restarted (needrestart, `NEEDRESTART_MODE=a`);
+  configuration files keep local changes (`--force-confdef
+  --force-confold`); never a reboot. Notes: the lists' age, the deferred
+  and kept-back counts, and that pinned packages (Alloy, the watchdog's
+  stack, §9.9) stay at their pins. No recovery command: apt has no undo,
+  so a snapshot taken first (`vm snap add VM NAME`) is the way back.
+  The fingerprint is the planned set and the lists' stamp.
+- **Send once:** `apt-get -y --with-new-pkgs upgrade` as root with
+  `DEBIAN_FRONTEND=noninteractive` and `DPkg::Lock::Timeout=300` (an
+  unattended run holding the lock is waited for), its output in
+  `/var/log/artoo-upgrade.log`. apt's status lines (`APT::Status-Fd`)
+  are the step's live detail (`42% Unpacking tmux (amd64)`) through
+  `/run/artoo-upgrade.stage` (§4.4). Deadline 30 minutes: past it the
+  outcome is unknown (exit 7) and apt keeps running in the guest; apt
+  failing is exit 6 with the log's last lines.
+- **Verify:** a fresh simulation shows none of the planned packages
+  still pending at its planned version (a version the lists offer anew
+  does not count). The result names a pending reboot with its packages
+  (`/run/reboot-required`, as §9.4) and `vm reboot VM`.
 
 ## 10. UniFi
 
