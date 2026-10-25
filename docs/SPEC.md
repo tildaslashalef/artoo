@@ -177,7 +177,8 @@ One shared rendering kit (`ui/`) used by every command:
 - **Detail views** (`show`): aligned key/value sections.
 - **Plans**: the preview block (target, current → intended, impact,
   recovery) shown before every confirmation.
-- **Progress**: live step lines for multi-step writes (§4.4).
+- **Progress**: live step lines for multi-step writes (§4.4); an activity
+  line while a command reads before printing (§4.5).
 - Gruvbox dark palette (truecolor, 256-color fallback, none):
 
 | Role | Color |
@@ -280,6 +281,39 @@ ends a step:
   order they are added: the first added step and the step after each
   finished one start automatically, so nothing may prompt once steps are
   added. With `-o json` stdout's text summary is skipped too.
+
+### 4.5 Activity line
+
+A command that reads before it prints (`vm verify --all`, `status`,
+`doctor --connect`, listings, the read and plan phase of a write) shows
+that it is working: one line on **stderr**, erased before anything else
+is printed, so the output is the same as without it.
+- **When:** stderr is a terminal, no `-v`, no `-o json`, and the command
+  is not hidden (`__complete` runs inside the shell's prompt). Nothing
+  appears for the first 400 ms, so quick commands never flicker. Then
+  the line is redrawn about ten times a second, as in §4.4: the spinner,
+  the command path, elapsed time and the latest detail
+  (`⠹ vm verify  12s  4/7 done, waiting on naboo, hoth`), cut to the
+  terminal width.
+- **Central:** dispatch starts it for every command; nothing has to opt
+  in. Commands only add details. The line ends for good at the first
+  output: the first bytes that actually reach stdout or stderr, or any
+  flush (a plan before its question, a prompt, §4.4's step lines, an
+  error). When it ends, the line is erased (`\r` plus clear line) before
+  that output, and nothing stays in scrollback. A command that gives the
+  terminal to a child process (`vm ssh`'s `exec`, `vm cp`'s scp) ends it
+  first. Without concurrency there is no ticker and nothing is drawn.
+- **Details:** `vm verify --all` and `status` count finished guests or
+  sections and name the ones still running (`3/5 done, waiting on edge,
+  tunnel`). `doctor --connect` names the API being probed. Details from
+  concurrent tasks are serialized. Other commands show only the path and
+  elapsed time.
+- **Not a terminal** (pipes, logs, agents), `-v` or `-o json`: nothing is
+  written. Output is unchanged byte for byte.
+- **Testing:** offline, the drawn line is a pure function of (path,
+  detail, seconds, frame, width), the end-on-output writers are
+  asserted exactly (erase before the first bytes, nothing when never
+  drawn), and the counter's detail text is checked.
 
 ## 5. Configuration
 
