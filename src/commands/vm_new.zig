@@ -28,7 +28,8 @@ const vm_ssh = @import("vm_ssh.zig");
 const vendor = @import("../guest/vendor.zig");
 const apt = @import("../guest/apt.zig");
 const names = @import("../guest/names.zig");
-const vm_role = @import("vm.zig").roleOf;
+const vm_cmd = @import("vm.zig");
+const vm_role = vm_cmd.roleOf;
 const exposure = @import("../exposure.zig");
 const activity = @import("../activity.zig");
 const template = @import("template.zig");
@@ -770,6 +771,25 @@ pub const scripts = struct {
     pub const reboot = "if [ -f /run/reboot-required ]; then echo yes; cat /run/reboot-required.pkgs 2>/dev/null; else echo no; fi";
 };
 
+/// SPEC §9.13: Proxmox keys stored for the VM's next start.
+fn configPending(ctx: *Context, c: *pve.Client, v: vms.Vm, running: bool) !Check {
+    const a = ctx.arena;
+    const raw = vms.pendingRaw(c, v.vmid) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            defer ctx.diag = null;
+            return .{ .name = "config pending", .status = .failed, .detail = try k.clean(ctx, ctx.diag orelse @errorName(err)) };
+        },
+    };
+    const waiting = try vms.waiting(a, try vms.keys(a, raw));
+    if (waiting.len == 0) return .{ .name = "config pending", .status = .ok, .detail = "none" };
+    const name = try k.clean(ctx, v.name);
+    return .{ .name = "config pending", .status = .warning, .detail = try std.fmt.allocPrint(a, "{s} — {s}", .{
+        try vm_cmd.pendingSummary(ctx, waiting),
+        if (running) try std.fmt.allocPrint(a, "'artoo vm reboot {s}'", .{name}) else try std.fmt.allocPrint(a, "'artoo vm start {s}'", .{name}),
+    }) };
+}
+
 fn payloadScript(arena: std.mem.Allocator, user: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(arena, "stat -c '%U %n'");
@@ -790,6 +810,7 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
     const st = try vms.status(c, v.vmid);
     const running = std.mem.eql(u8, pve.str(st, "status") orelse "", "running");
     try out.append(a, .{ .name = "VM running", .status = if (running) .ok else .failed, .detail = try k.clean(ctx, pve.str(st, "status") orelse "unknown") });
+    try out.append(a, try configPending(ctx, c, v, running));
     const agent_ok = running and try agent.ping(c, v.vmid);
     try out.append(a, if (!running) .{ .name = "guest agent", .status = .not_checked } else .{ .name = "guest agent", .status = if (agent_ok) .ok else .failed, .detail = if (agent_ok) "" else "no answer" });
 
@@ -1234,6 +1255,7 @@ pub const verify = struct {
     pub const name = "verify";
     pub const summary = "Read-only readiness checks of a guest";
     pub const details =
+        \\From Proxmox: configuration waiting for a restart (warning, SPEC §9.13).
         \\Through the guest agent: cloud-init done, hostname and FQDN, the guest
         \\user's shell and home, payload files owned by it, sudo asking for a
         \\password, sshd without root or password login, Ghostty terminfo for
@@ -1617,24 +1639,25 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
         r(pid), r(try execStatus(a, 0, "yes\nlinux-image-7.0.0-38-generic\nlinux-base\n", "")), // reboot wanted
         r(upid), r(ok), // reboot
         r("{\"data\":{\"result\":{}}}"), // agent back
-        r(pid),                                                                                                                           r(try execStatus(a, 0, "7.0.0-38-generic\n", "")), // kernel, request gone
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "7.0.0-38-generic\n", "")), // kernel, request gone
         r("{\"data\":{\"content\":\"ssh-ed25519 " ++ blob ++ " root@test-01\\n\"}}"),
         // verify
-                                                            r("{\"data\":[{\"vmid\":200,\"name\":\"test-01\",\"status\":\"running\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"template\":1}]}"),
-        r("{\"data\":{\"ipconfig0\":\"ip=192.168.1.204/24,gw=192.168.1.1\",\"net0\":\"virtio=BC:24:11:AB:CD:EF,bridge=vmbr0\"}}"),        r("{\"data\":{\"status\":\"running\"}}"),
-        r("{\"data\":{\"result\":{}}}"),                                                                                                  r(pid),
-        r(try execStatus(a, 2, ci_deprecated, "")),                                                                                       r(pid),
-        r(try execStatus(a, 0, "test-01\ntest-01.lab.example.com\n", "")),                                                                r(pid),
-        r(try execStatus(a, 0, "/home/artoo:/usr/bin/fish\nartoo\n", "")),                                                                r(pid),
-        r(try execStatus(a, 0, payload_out.items, "")),                                                                                   r(pid),
-        r(try execStatus(a, 1, "", "sudo: a password is required\n")),                                                                    r(pid),
-        r(try execStatus(a, 0, "permitrootlogin no\npasswordauthentication no\n", "")),                                                   r(pid),
-        r(try execStatus(a, 0, "256\n", "")),                                                                                             r(pid),
-        r(try execStatus(a, 0, "", "")),                                                                                                  r(pid),
-        r(try execStatus(a, 0, "{\"BackendState\":\"NeedsLogin\"}", "")),                                                                 r(pid),
-        r(try execStatus(a, 0, "periodic 1\nreboot false\nsecurity 2\ntailscale 1\ninstalled yes\ntimer enabled\nlast \nnow 100\n", "")), r(pid),
-        r(try execStatus(a, 0, "lists 90\nnow 100\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n", "")),               r(pid),
-        r(try execStatus(a, 0, "no\n", "")),                                                                                              r("{\"meta\":{\"rc\":\"ok\"},\"data\":[{\"_id\":\"U10\",\"mac\":\"bc:24:11:ab:cd:ef\",\"name\":\"test-01\",\"use_fixedip\":true,\"fixed_ip\":\"192.168.1.204\"}]}"),
+                                                                                               r("{\"data\":[{\"vmid\":200,\"name\":\"test-01\",\"status\":\"running\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"template\":1}]}"),
+        r("{\"data\":{\"ipconfig0\":\"ip=192.168.1.204/24,gw=192.168.1.1\",\"net0\":\"virtio=BC:24:11:AB:CD:EF,bridge=vmbr0\"}}"),                                           r("{\"data\":{\"status\":\"running\"}}"),
+        r("{\"data\":[{\"key\":\"memory\",\"value\":\"2048\"}]}"),                                                                                                           r("{\"data\":{\"result\":{}}}"),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 2, ci_deprecated, "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "test-01\ntest-01.lab.example.com\n", "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "/home/artoo:/usr/bin/fish\nartoo\n", "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, payload_out.items, "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 1, "", "sudo: a password is required\n")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "permitrootlogin no\npasswordauthentication no\n", "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "256\n", "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "", "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "{\"BackendState\":\"NeedsLogin\"}", "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "periodic 1\nreboot false\nsecurity 2\ntailscale 1\ninstalled yes\ntimer enabled\nlast \nnow 100\n", "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "lists 90\nnow 100\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n", "")),
+        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "no\n", "")),
+        r("{\"meta\":{\"rc\":\"ok\"},\"data\":[{\"_id\":\"U10\",\"mac\":\"bc:24:11:ab:cd:ef\",\"name\":\"test-01\",\"use_fixedip\":true,\"fixed_ip\":\"192.168.1.204\"}]}"),
     });
     defer g.deinit();
     try g.tmp.dir.createDirPath(testing.io, ".ssh");
@@ -1702,6 +1725,7 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
         "UniFi client            ✓ ok           test-01, Fixed IP 192.168.1.204",
         "sudo asks password      ✓ ok           sudo -n refused",
         "unattended updates      ✓ ok           security daily, no auto-reboot, not run yet",
+        "config pending          ✓ ok           none\n",
         "pending updates         ✓ ok           none\n",
         "reboot pending          ✓ ok           no",
         "SSH key login           ✓ ok           artoo@192.168.1.204",
@@ -1798,13 +1822,15 @@ test "vm verify --all: every artoo guest, concurrently; templates and foreign VM
         ok("/qemu/101/config ", "{\"data\":{\"tags\":\"artoo\"}}"),
         ok("/qemu/100/status/current ", "{\"data\":{\"status\":\"stopped\"}}"),
         ok("/qemu/101/status/current ", "{\"data\":{\"status\":\"stopped\"}}"),
+        ok("/qemu/100/pending ", "{\"data\":[{\"key\":\"cores\",\"value\":1,\"pending\":2}]}"),
+        ok("/qemu/101/pending ", "{\"data\":[]}"),
     });
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm verify --all --no-dns"));
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     const out = g.h.stdout();
-    for ([_][]const u8{ "naboo (100)\n", "hoth (101)\n", "VM running", "\n2 guest(s): 0 ok, 0 with warnings, 2 failed\n" }) |want| {
+    for ([_][]const u8{ "naboo (100)\n", "hoth (101)\n", "VM running", "config pending          ▲ warning      cores 1 → 2 — 'artoo vm start naboo'\n", "config pending          ✓ ok           none\n", "\n2 guest(s): 0 ok, 0 with warnings, 2 failed\n" }) |want| {
         if (std.mem.find(u8, out, want) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out });
             return error.TestUnexpectedResult;
