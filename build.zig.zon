@@ -2,7 +2,7 @@
     .name = .artoo,
     // Semantic version, the single source for `artoo --version`;
     // `-dev` until a release is tagged (AGENTS.md, releases).
-    .version = "0.5.0-dev",
+    .version = "0.5.0",
     // Regenerated for this fresh package identity (never copied from an
     // upstream project). See build.zig.zon docs.
     .fingerprint = 0xcfd60ada86cce2c2,
