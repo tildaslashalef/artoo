@@ -950,11 +950,12 @@ test "vm show: the fence on, in drift, or a firewall not written by vm fence" {
     const stopped = try std.mem.replaceOwned(u8, a, fenced_list, "\"name\":\"naboo\",\"status\":\"running\"", "\"name\":\"naboo\",\"status\":\"stopped\"");
     const ipset = "{\"data\":[{\"name\":\"ipfilter-net0\"}]}";
     const entries = "{\"data\":[{\"cidr\":\"192.168.1.201\"}]}";
+    const naboo_pending = try vm_cmd.pendingOf(a, cfg_naboo_fenced);
     var routes: std.ArrayList(R) = .empty;
     for ([_][]const u8{ try rulesBody(a, want), empty }) |rules_body| {
         try routes.appendSlice(a, &.{
             ok("GET /api2/json/nodes/pve/qemu ", stopped),
-            ok("/qemu/201/config ", cfg_naboo_fenced),
+            ok("/qemu/201/pending ", naboo_pending),
             ok("/qemu/201/snapshot ", empty),
             ok("GET /api2/json/nodes/pve/qemu ", stopped),
             ok("POST /api2/json/nodes/pve/qemu/200/agent/exec ", pid),
@@ -970,7 +971,7 @@ test "vm show: the fence on, in drift, or a firewall not written by vm fence" {
     }
     try routes.insert(a, 13, ok("/cluster/firewall/options ", "{\"data\":{\"enable\":1}}"));
     const hand = try std.mem.replaceOwned(u8, a, stopped, "artoo;fenced", "artoo");
-    try routes.appendSlice(a, &.{ ok("GET /api2/json/nodes/pve/qemu ", hand), ok("/qemu/201/config ", cfg_naboo_fenced), ok("/qemu/201/snapshot ", empty) });
+    try routes.appendSlice(a, &.{ ok("GET /api2/json/nodes/pve/qemu ", hand), ok("/qemu/201/pending ", naboo_pending), ok("/qemu/201/snapshot ", empty) });
     var g: testkit.Gateway = undefined;
     try g.initRoutes(routes.items);
     defer g.deinit();
