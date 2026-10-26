@@ -103,18 +103,22 @@ pub const Detail = struct {
     agent_note: ?[]const u8,
     /// The `vm fence` state (SPEC §9.11): `on …`, `drift — …`, `off`.
     fence: []const u8 = "off",
+    /// Keys waiting for the next start (SPEC §9.13); `config` is the
+    /// running configuration.
+    pending: []const vms.Key = &.{},
 };
 
 pub fn detail(c: *pve.Client, word: []const u8) !Detail {
     const ctx = c.ctx;
     const v = try vms.resolve(c, word);
-    const cfg = try vms.config(c, v.vmid);
+    const ks = try vms.keys(ctx.arena, try vms.pendingRaw(c, v.vmid));
+    const cfg = try vms.currentConfig(ctx.arena, ks);
     var snaps: std.ArrayList([]const u8) = .empty;
     for (try vms.snapshots(c, v.vmid)) |s| {
         const n = pve.str(s, "name") orelse continue;
         if (!std.mem.eql(u8, n, "current")) try snaps.append(ctx.arena, n);
     }
-    var d: Detail = .{ .vm = v, .config = cfg, .snapshots = snaps.items, .addresses = null, .agent_note = null };
+    var d: Detail = .{ .vm = v, .config = cfg, .snapshots = snaps.items, .addresses = null, .agent_note = null, .pending = try vms.waiting(ctx.arena, ks) };
     d.fence = try fenceText(ctx, c, v, cfg);
     if (!v.running()) {
         d.agent_note = "VM not running";
@@ -165,13 +169,49 @@ pub const show = struct {
 
 fn cfgText(ctx: *Context, cfg: Value, key: []const u8) !?[]const u8 {
     if (cfg != .object) return null;
-    const v = cfg.object.get(key) orelse return null;
+    return valueText(ctx, cfg.object.get(key) orelse return null);
+}
+
+fn valueText(ctx: *Context, v: Value) !?[]const u8 {
     return switch (v) {
         .string => |s| try k.clean(ctx, s),
         .integer => |n| try std.fmt.allocPrint(ctx.arena, "{d}", .{n}),
         .float => |f| try std.fmt.allocPrint(ctx.arena, "{d}", .{f}),
         else => null,
     };
+}
+
+fn waitingKey(d: Detail, key: []const u8) ?vms.Key {
+    for (d.pending) |w| if (std.mem.eql(u8, w.key, key)) return w;
+    return null;
+}
+
+/// `f`, its new side appended in the warning color (SPEC §9.13).
+fn marked(ctx: *Context, d: Detail, f: ui.blocks.Field, new: []const u8) !ui.blocks.Field {
+    return .{ .key = f.key, .value = try std.fmt.allocPrint(ctx.arena, "{s} → {s}  {s}", .{ f.value, new, pendingWord(d.vm) }), .role = .warn };
+}
+
+/// A shown config key: its running value, marked when one waits; null
+/// when neither exists.
+fn configField(ctx: *Context, d: Detail, label: []const u8, key: []const u8) !?ui.blocks.Field {
+    const cur = try cfgText(ctx, d.config, key);
+    if (waitingKey(d, key)) |w| return try marked(ctx, d, .{ .key = label, .value = cur orelse "(unset)" }, try pendingText(ctx, w));
+    return .{ .key = label, .value = cur orelse return null };
+}
+
+/// `sshkeys` as `N key(s)`.
+fn keyCount(ctx: *Context, keys: ?Value) !?[]const u8 {
+    const t = (try valueText(ctx, keys orelse return null)) orelse return null;
+    return try std.fmt.allocPrint(ctx.arena, "{d} key(s)", .{std.mem.count(u8, t, "ssh-")});
+}
+
+/// A count key after the next start: the pending value, `default` when
+/// it is deleted, else `current`.
+fn newInt(d: Detail, key: []const u8, current: i64, default: i64) i64 {
+    const w = waitingKey(d, key) orelse return current;
+    if (w.delete) return default;
+    const f = pve.numberOf(w.pending orelse return current) orelse return current;
+    return @intFromFloat(@trunc(f));
 }
 
 fn render(ctx: *Context, d: Detail) !void {
@@ -191,17 +231,21 @@ fn render(ctx: *Context, d: Detail) !void {
     const cores = pve.int(d.config, "cores") orelse 1;
     const sockets = pve.int(d.config, "sockets") orelse 1;
     var res: std.ArrayList(ui.blocks.Field) = .empty;
-    try res.appendSlice(a, &.{
-        .{ .key = "vCPU", .value = try std.fmt.allocPrint(a, "{d}{s}", .{ cores * sockets, if (v.running() and v.cpu != null) try std.fmt.allocPrint(a, " ({f} used)", .{ui.values.percent(v.cpu)}) else "" }) },
-        .{ .key = "Memory", .value = if (v.running()) try k.usage(ctx, v.mem, v.maxmem) else try k.fmt(ctx, ui.values.bytes(v.maxmem)) },
-        .{ .key = "Disk", .value = try k.fmt(ctx, ui.values.bytes(v.maxdisk)) },
-    });
+    var vcpu: ui.blocks.Field = .{ .key = "vCPU", .value = try std.fmt.allocPrint(a, "{d}{s}", .{ cores * sockets, if (v.running() and v.cpu != null) try std.fmt.allocPrint(a, " ({f} used)", .{ui.values.percent(v.cpu)}) else "" }) };
+    if (waitingKey(d, "cores") != null or waitingKey(d, "sockets") != null)
+        vcpu = try marked(ctx, d, vcpu, try std.fmt.allocPrint(a, "{d}", .{newInt(d, "cores", cores, 1) * newInt(d, "sockets", sockets, 1)}));
+    var mem: ui.blocks.Field = .{ .key = "Memory", .value = if (v.running()) try k.usage(ctx, v.mem, v.maxmem) else try k.fmt(ctx, ui.values.bytes(v.maxmem)) };
+    if (waitingKey(d, "memory")) |w| {
+        const mib = if (w.pending) |p| pve.numberOf(p) else null;
+        mem = try marked(ctx, d, mem, if (mib) |m| try k.fmt(ctx, ui.values.bytes(@intFromFloat(@max(m, 0) * 1024 * 1024))) else try pendingText(ctx, w));
+    }
+    try res.appendSlice(a, &.{ vcpu, mem, .{ .key = "Disk", .value = try k.fmt(ctx, ui.values.bytes(v.maxdisk)) } });
 
     var net: std.ArrayList(ui.blocks.Field) = .empty;
     var i: usize = 0;
     while (i < 8) : (i += 1) {
         const key = try std.fmt.allocPrint(a, "net{d}", .{i});
-        if (try cfgText(ctx, d.config, key)) |n| try net.append(a, .{ .key = key, .value = n });
+        if (try configField(ctx, d, key, key)) |f| try net.append(a, f);
     }
     if (d.addresses) |addrs| {
         var text: std.ArrayList(u8) = .empty;
@@ -216,13 +260,15 @@ fn render(ctx: *Context, d: Detail) !void {
 
     var ci: std.ArrayList(ui.blocks.Field) = .empty;
     for ([_][]const u8{ "ciuser", "ipconfig0", "nameserver", "searchdomain" }) |key| {
-        if (try cfgText(ctx, d.config, key)) |x| try ci.append(a, .{ .key = key, .value = x });
+        if (try configField(ctx, d, key, key)) |f| try ci.append(a, f);
     }
-    if (d.config == .object and d.config.object.get("cipassword") != null) try ci.append(a, .{ .key = "cipassword", .value = "set (hidden)", .role = .muted });
-    if (try cfgText(ctx, d.config, "sshkeys")) |keys| try ci.append(a, .{ .key = "sshkeys", .value = try std.fmt.allocPrint(a, "{d} key(s)", .{std.mem.count(u8, keys, "ssh-")}) });
-    if (try cfgText(ctx, d.config, "cicustom")) |x| try ci.append(a, .{ .key = "cicustom", .value = x });
+    if (waitingKey(d, "cipassword") == null and d.config == .object and d.config.object.get("cipassword") != null) try ci.append(a, .{ .key = "cipassword", .value = "set (hidden)", .role = .muted });
+    if (waitingKey(d, "sshkeys")) |w| {
+        try ci.append(a, try marked(ctx, d, .{ .key = "sshkeys", .value = (try keyCount(ctx, w.value)) orelse "(unset)" }, if (w.delete) "(removed)" else (try keyCount(ctx, w.pending)) orelse "(set)"));
+    } else if (try keyCount(ctx, d.config.object.get("sshkeys"))) |n| try ci.append(a, .{ .key = "sshkeys", .value = n });
+    if (try configField(ctx, d, "cicustom", "cicustom")) |f| try ci.append(a, f);
+    if (waitingKey(d, "cipassword")) |w| try ci.append(a, try marked(ctx, d, .{ .key = "cipassword", .value = if (w.value != null) "set (hidden)" else "(unset)" }, try pendingText(ctx, w)));
     if (ci.items.len == 0) try ci.append(a, .{ .key = "(not configured)", .value = "", .role = .muted });
-
     const snaps = if (d.snapshots.len == 0) "(none)" else try std.mem.join(a, ", ", d.snapshots);
     try ui.blocks.detail(ctx.out, &ctx.ui, &.{
         .{ .title = try std.fmt.allocPrint(a, "VM {s}", .{try k.clean(ctx, if (v.name.len > 0) v.name else "(unnamed)")}), .fields = general.items },
@@ -243,26 +289,59 @@ pub const config = struct {
         var c = try pve.Client.open(ctx);
         defer c.deinit();
         const v = try vms.resolve(&c, args.pos("VM"));
-        const cfg = try vms.config(&c, v.vmid);
-        if (ctx.json()) return ui.json.envelope(ctx.out, .pve, cfg, .{ .collected_at = ctx.ui.now, .node = c.node, .vmid = v.vmid });
+        const raw = try vms.pendingRaw(&c, v.vmid);
+        if (ctx.json()) return ui.json.envelope(ctx.out, .pve, raw, .{ .collected_at = ctx.ui.now, .node = c.node, .vmid = v.vmid });
         try k.header(ctx, &c);
+        const a = ctx.arena;
+        const ks = try vms.keys(a, raw);
         var fields: std.ArrayList(ui.blocks.Field) = .empty;
-        if (cfg == .object) {
-            const keys = try ctx.arena.dupe([]const u8, cfg.object.keys());
-            std.mem.sort([]const u8, keys, {}, struct {
-                fn lt(_: void, x: []const u8, y: []const u8) bool {
-                    return std.mem.lessThan(u8, x, y);
-                }
-            }.lt);
-            for (keys) |key| {
-                const text = (try cfgText(ctx, cfg, key)) orelse continue;
-                const hidden = std.mem.eql(u8, key, "cipassword");
-                try fields.append(ctx.arena, .{ .key = try k.clean(ctx, key), .value = if (hidden) "(hidden)" else text, .role = if (hidden or std.mem.eql(u8, key, "digest")) .muted else .text });
-            }
+        for (ks) |key| {
+            const hidden = std.mem.eql(u8, key.key, "cipassword");
+            const cur = if (hidden) "(hidden)" else if (key.value) |x| (try valueText(ctx, x)) orelse continue else "(unset)";
+            const field: ui.blocks.Field = if (key.waiting()) .{
+                .key = try k.clean(ctx, key.key),
+                .value = try std.fmt.allocPrint(a, "{s} → {s}  {s}", .{ cur, try pendingText(ctx, key), pendingWord(v) }),
+                .role = .warn,
+            } else .{ .key = try k.clean(ctx, key.key), .value = cur, .role = if (hidden or std.mem.eql(u8, key.key, "digest")) .muted else .text };
+            try fields.append(a, field);
         }
-        try ui.blocks.detail(ctx.out, &ctx.ui, &.{.{ .title = try std.fmt.allocPrint(ctx.arena, "VM {d} {s}", .{ v.vmid, try k.clean(ctx, v.name) }), .fields = fields.items }});
+        try ui.blocks.detail(ctx.out, &ctx.ui, &.{.{ .title = try std.fmt.allocPrint(a, "VM {d} {s}", .{ v.vmid, try k.clean(ctx, v.name) }), .fields = fields.items }});
+        const n = (try vms.waiting(a, ks)).len;
+        if (n > 0) try ctx.out.print("\n{s}{s}{s}\n", .{ ctx.ui.palette.on(.warn), try pendingHint(ctx, v, n), ctx.ui.palette.off(.warn) });
     }
 };
+
+/// A pending key's new side: its value, `(removed)` or `(changed)` for
+/// the hidden password (SPEC §9.13).
+fn pendingText(ctx: *Context, key: vms.Key) ![]const u8 {
+    if (key.delete) return "(removed)";
+    if (std.mem.eql(u8, key.key, "cipassword")) return "(changed)";
+    return (try valueText(ctx, key.pending orelse return "(unset)")) orelse "(set)";
+}
+
+fn pendingWord(v: vms.Vm) []const u8 {
+    return if (v.running()) "pending restart" else "pending start";
+}
+
+/// `N change(s) wait for a restart: 'artoo vm reboot VM'`.
+pub fn pendingHint(ctx: *Context, v: vms.Vm, n: usize) ![]const u8 {
+    const name = try k.clean(ctx, v.name);
+    return if (v.running())
+        std.fmt.allocPrint(ctx.arena, "{d} change(s) wait for a restart: 'artoo vm reboot {s}'", .{ n, name })
+    else
+        std.fmt.allocPrint(ctx.arena, "{d} change(s) wait for the next start: 'artoo vm start {s}'", .{ n, name });
+}
+
+/// `memory 4096 → 2048, cores 2 → 4`: the waiting keys in one line.
+pub fn pendingSummary(ctx: *Context, waiting: []const vms.Key) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (waiting, 0..) |key, i| {
+        if (i > 0) try out.appendSlice(ctx.arena, ", ");
+        const cur = if (std.mem.eql(u8, key.key, "cipassword")) "(hidden)" else if (key.value) |x| (try valueText(ctx, x)) orelse "(set)" else "(unset)";
+        try out.print(ctx.arena, "{s} {s} → {s}", .{ try k.clean(ctx, key.key), cur, try pendingText(ctx, key) });
+    }
+    return out.items;
+}
 
 pub const urls = struct {
     pub const name = "urls";
@@ -366,6 +445,34 @@ pub const config_body =
     \\ "cipassword":"**********","ipconfig0":"ip=192.168.1.200/24,gw=192.168.1.1","sshkeys":"ssh-ed25519%20AAAA%20me","digest":"abc123"}}
 ;
 
+/// `config_body` as `GET …/pending` answers it, nothing pending.
+pub const pending_body =
+    \\{"data":[{"key":"name","value":"web-01"},{"key":"cores","value":2},{"key":"sockets","value":1},{"key":"memory","value":"2048"},{"key":"agent","value":"1"},
+    \\ {"key":"net0","value":"virtio=BC:24:11:00:00:01,bridge=vmbr0"},{"key":"ciuser","value":"artoo"},{"key":"cipassword","value":"**********"},
+    \\ {"key":"ipconfig0","value":"ip=192.168.1.200/24,gw=192.168.1.1"},{"key":"sshkeys","value":"ssh-ed25519%20AAAA%20me"},{"key":"digest","value":"abc123"}]}
+;
+/// Memory and cores changed on the running VM, `balloon` deleted, a new
+/// password: all wait for the restart.
+const pending_changed =
+    \\{"data":[{"key":"name","value":"web-01"},{"key":"cores","value":2,"pending":4},{"key":"memory","value":"4096","pending":"2048"},{"key":"balloon","value":"0","delete":1},
+    \\ {"key":"cipassword","value":"**********","pending":"********** "},{"key":"net0","value":"virtio=BC:24:11:00:00:01,bridge=vmbr0"},{"key":"digest","value":"abc123"}]}
+;
+
+/// A `GET …/config` fixture as the `GET …/pending` answer of a VM with
+/// nothing pending.
+pub fn pendingOf(a: std.mem.Allocator, config_json: []const u8) ![]const u8 {
+    const cfg = try std.json.parseFromSliceLeaky(Value, a, config_json, .{});
+    var list: std.json.Array = .init(a);
+    const data = pve.obj(cfg, "data");
+    if (data == .object) for (data.object.keys(), data.object.values()) |key, val| {
+        var m: std.json.ObjectMap = .empty;
+        try m.put(a, "key", .{ .string = key });
+        try m.put(a, "value", val);
+        try list.append(.{ .object = m });
+    };
+    return std.json.Stringify.valueAlloc(a, .{ .data = Value{ .array = list } }, .{});
+}
+
 test "vm ls: templates hidden unless --all; filters" {
     var g: testkit.Gateway = undefined;
     try g.init(&.{
@@ -396,7 +503,7 @@ test "vm show: sections; agent addresses; hidden password" {
     var g: testkit.Gateway = undefined;
     try g.init(&.{
         .{ .respond = .{ .body = resources_body } },
-        .{ .respond = .{ .body = config_body } },
+        .{ .respond = .{ .body = pending_body } },
         .{ .respond = .{ .body = "{\"data\":[{\"name\":\"current\"},{\"name\":\"pre-upgrade\",\"snaptime\":1791600000}]}" } },
         .{ .respond = .{ .body = "{\"data\":{\"result\":[{\"name\":\"lo\",\"ip-addresses\":[{\"ip-address\":\"127.0.0.1\",\"ip-address-type\":\"ipv4\",\"prefix\":8}]},{\"name\":\"eth0\",\"ip-addresses\":[{\"ip-address\":\"192.168.1.200\",\"ip-address-type\":\"ipv4\",\"prefix\":24},{\"ip-address\":\"fe80::1\",\"ip-address-type\":\"ipv6\",\"prefix\":64}]}]}}" } },
     });
@@ -418,6 +525,55 @@ test "vm show: sections; agent addresses; hidden password" {
         }
     }
     try testing.expect(std.mem.find(u8, out, "127.0.0.1") == null);
+}
+
+test "vm show and vm config: pending values marked (SPEC §9.13)" {
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        .{ .respond = .{ .body = resources_body } },
+        .{ .respond = .{ .body = pending_changed } },
+        .{ .respond = .{ .body = "{\"data\":[]}" } },
+        .{ .respond = .{ .body = resources_body } },
+        .{ .respond = .{ .body = pending_changed } },
+        .{ .respond = .{ .body = resources_body } },
+        .{ .respond = .{ .body = pending_changed } },
+        .{ .respond = .{ .body = resources_body } },
+        .{ .respond = .{ .body = pending_body } },
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{group});
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm show web-01"));
+    try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/pending HTTP/1.1", g.request(1));
+    try expectLines(g.h.stdout(), &.{
+        "2 (12.5% used) → 4  pending restart\n",
+        " → 2.0 GiB  pending restart\n",
+        "  cipassword  set (hidden) → (changed)  pending restart\n",
+    });
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "(not configured)") == null);
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm config web-01"));
+    try expectLines(g.h.stdout(), &.{
+        "  balloon     0 → (removed)  pending restart\n",
+        "  cipassword  (hidden) → (changed)  pending restart\n",
+        "  cores       2 → 4  pending restart\n",
+        "  memory      4096 → 2048  pending restart\n",
+        "  net0        virtio=BC:24:11:00:00:01,bridge=vmbr0\n",
+        "\n4 change(s) wait for a restart: 'artoo vm reboot web-01'\n",
+    });
+    // JSON: the `/pending` list, the password masked.
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm config web-01 -o json"));
+    try expectLines(g.h.stdout(), &.{ "\"key\": \"memory\"", "\"pending\": \"2048\"", "\"pending\": \"**********\"" });
+    // Nothing pending: no marker, no footer.
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm config web-01"));
+    const out = g.h.stdout();
+    try expectLines(out, &.{"  memory      2048\n"});
+    try testing.expect(std.mem.find(u8, out, "pending") == null);
+}
+
+fn expectLines(out: []const u8, lines: []const []const u8) !void {
+    for (lines) |line| if (std.mem.find(u8, out, line) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+        return error.TestUnexpectedResult;
+    };
 }
 
 test "vm: unknown and ambiguous targets" {
