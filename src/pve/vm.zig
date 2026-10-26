@@ -199,6 +199,72 @@ pub fn storedConfig(arena: Allocator, ks: []const Key) !Value {
     return .{ .object = m };
 }
 
+/// A running guest's memory (SPEC §9.14), in bytes.
+pub const GuestMem = struct {
+    source: enum { agent, balloon },
+    total: u64,
+    used: u64,
+    /// `MemAvailable`; agent only.
+    available: ?u64 = null,
+    /// `Buffers + Cached`; agent only.
+    cached: ?u64 = null,
+};
+
+/// `/proc/meminfo` (kB lines) as guest memory; null without `MemTotal`
+/// and `MemAvailable`.
+pub fn parseMeminfo(text: []const u8) ?GuestMem {
+    var total: ?u64 = null;
+    var avail: ?u64 = null;
+    var cached: u64 = 0;
+    var lines = std.mem.tokenizeScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const colon = std.mem.findScalar(u8, line, ':') orelse continue;
+        var words = std.mem.tokenizeScalar(u8, line[colon + 1 ..], ' ');
+        const kb = std.fmt.parseInt(u64, words.next() orelse continue, 10) catch continue;
+        const bytes = std.math.mul(u64, kb, 1024) catch continue;
+        const key = line[0..colon];
+        if (std.mem.eql(u8, key, "MemTotal")) total = bytes;
+        if (std.mem.eql(u8, key, "MemAvailable")) avail = bytes;
+        if (std.mem.eql(u8, key, "Buffers") or std.mem.eql(u8, key, "Cached")) cached +|= bytes;
+    }
+    const t = total orelse return null;
+    const a = @min(avail orelse return null, t);
+    return .{ .source = .agent, .total = t, .used = t - a, .available = a, .cached = cached };
+}
+
+/// The balloon driver's figure from `status/current`: page cache counts
+/// as used.
+pub fn balloonMem(st: Value) ?GuestMem {
+    const info = pve.obj(st, "ballooninfo");
+    const total = pve.uint(info, "total_mem") orelse return null;
+    const free = @min(pve.uint(info, "free_mem") orelse return null, total);
+    if (total == 0) return null;
+    return .{ .source = .balloon, .total = total, .used = total - free };
+}
+
+/// Guest memory of a running VM: `/proc/meminfo` through the agent when
+/// `agent_ok` (it answered earlier in this command), else the balloon
+/// figure; null when neither is there. Errors other than OOM/cancel are
+/// absorbed.
+pub fn guestMem(c: *pve.Client, vmid: u32, agent_ok: bool) !?GuestMem {
+    if (agent_ok) {
+        if (@import("agent.zig").readFile(c, vmid, "/proc/meminfo")) |text| {
+            if (parseMeminfo(text)) |m| return m;
+        } else |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => c.ctx.diag = null,
+        }
+    }
+    const st = status(c, vmid) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            c.ctx.diag = null;
+            return null;
+        },
+    };
+    return balloonMem(st);
+}
+
 pub fn status(c: *pve.Client, vmid: u32) !Value {
     return c.get(try c.nodePath("/qemu/{d}/status/current", .{vmid}));
 }
@@ -309,4 +375,20 @@ test "pending keys: sorted, waiting, current and stored configuration" {
     try testing.expect(pve.str(st, "balloon") == null);
     try testing.expectEqualStrings("1", pve.str(st, "onboot").?);
     try testing.expectEqual(@as(i64, 2), pve.int(st, "cores").?);
+}
+
+test "guest memory: meminfo and balloon figures" {
+    const m = parseMeminfo("MemTotal:        4004512 kB\nMemFree:         1475884 kB\nMemAvailable:    3208664 kB\nBuffers:          103228 kB\nCached:          1873108 kB\nSwapCached:            0 kB\n").?;
+    try testing.expectEqual(@as(u64, 4004512 * 1024), m.total);
+    try testing.expectEqual(@as(u64, (4004512 - 3208664) * 1024), m.used);
+    try testing.expectEqual(@as(u64, (103228 + 1873108) * 1024), m.cached.?);
+    try testing.expect(parseMeminfo("MemTotal: 10 kB\n") == null);
+    try testing.expect(parseMeminfo("") == null);
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const st = try std.json.parseFromSliceLeaky(Value, a.allocator(), "{\"ballooninfo\":{\"total_mem\":4100620288,\"free_mem\":1511550976}}", .{});
+    const b = balloonMem(st).?;
+    try testing.expectEqual(@as(u64, 2589069312), b.used);
+    try testing.expect(b.available == null);
+    try testing.expect(balloonMem(.null) == null);
 }
