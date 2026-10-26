@@ -106,6 +106,9 @@ pub const Detail = struct {
     /// Keys waiting for the next start (SPEC §9.13); `config` is the
     /// running configuration.
     pending: []const vms.Key = &.{},
+    /// What a running guest uses (SPEC §9.14); null when stopped or
+    /// unknown.
+    guest_mem: ?vms.GuestMem = null,
 };
 
 pub fn detail(c: *pve.Client, word: []const u8) !Detail {
@@ -134,6 +137,7 @@ pub fn detail(c: *pve.Client, word: []const u8) !Detail {
             },
         };
     }
+    if (v.running()) d.guest_mem = try vms.guestMem(c, v.vmid, d.addresses != null);
     return d;
 }
 
@@ -234,12 +238,20 @@ fn render(ctx: *Context, d: Detail) !void {
     var vcpu: ui.blocks.Field = .{ .key = "vCPU", .value = try std.fmt.allocPrint(a, "{d}{s}", .{ cores * sockets, if (v.running() and v.cpu != null) try std.fmt.allocPrint(a, " ({f} used)", .{ui.values.percent(v.cpu)}) else "" }) };
     if (waitingKey(d, "cores") != null or waitingKey(d, "sockets") != null)
         vcpu = try marked(ctx, d, vcpu, try std.fmt.allocPrint(a, "{d}", .{newInt(d, "cores", cores, 1) * newInt(d, "sockets", sockets, 1)}));
-    var mem: ui.blocks.Field = .{ .key = "Memory", .value = if (v.running()) try k.usage(ctx, v.mem, v.maxmem) else try k.fmt(ctx, ui.values.bytes(v.maxmem)) };
+    var mem: ui.blocks.Field = if (!v.running())
+        .{ .key = "Memory", .value = try k.fmt(ctx, ui.values.bytes(v.maxmem)) }
+    else if (d.guest_mem) |g|
+        .{ .key = "Memory", .value = if (g.source == .balloon) try std.fmt.allocPrint(a, "{s}  incl. cache", .{try k.usage(ctx, g.used, g.total)}) else try k.usage(ctx, g.used, g.total) }
+    else
+        .{ .key = "Memory", .value = "not available (no guest agent or balloon figures)", .role = .muted };
     if (waitingKey(d, "memory")) |w| {
         const mib = if (w.pending) |p| pve.numberOf(p) else null;
         mem = try marked(ctx, d, mem, if (mib) |m| try k.fmt(ctx, ui.values.bytes(@intFromFloat(@max(m, 0) * 1024 * 1024))) else try pendingText(ctx, w));
     }
-    try res.appendSlice(a, &.{ vcpu, mem, .{ .key = "Disk", .value = try k.fmt(ctx, ui.values.bytes(v.maxdisk)) } });
+    try res.appendSlice(a, &.{ vcpu, mem });
+    if (d.guest_mem) |g| if (g.cached) |cache| try res.append(a, .{ .key = "Cache", .value = try std.fmt.allocPrint(a, "{s}  reclaimable", .{try k.fmt(ctx, ui.values.bytes(cache))}), .role = .muted });
+    if (v.running()) try res.append(a, .{ .key = "Host", .value = try std.fmt.allocPrint(a, "{s}  QEMU process on the host", .{try k.fmt(ctx, ui.values.bytes(v.mem))}), .role = .muted });
+    try res.append(a, .{ .key = "Disk", .value = try k.fmt(ctx, ui.values.bytes(v.maxdisk)) });
 
     var net: std.ArrayList(ui.blocks.Field) = .empty;
     var i: usize = 0;
@@ -506,11 +518,13 @@ test "vm show: sections; agent addresses; hidden password" {
         .{ .respond = .{ .body = pending_body } },
         .{ .respond = .{ .body = "{\"data\":[{\"name\":\"current\"},{\"name\":\"pre-upgrade\",\"snaptime\":1791600000}]}" } },
         .{ .respond = .{ .body = "{\"data\":{\"result\":[{\"name\":\"lo\",\"ip-addresses\":[{\"ip-address\":\"127.0.0.1\",\"ip-address-type\":\"ipv4\",\"prefix\":8}]},{\"name\":\"eth0\",\"ip-addresses\":[{\"ip-address\":\"192.168.1.200\",\"ip-address-type\":\"ipv4\",\"prefix\":24},{\"ip-address\":\"fe80::1\",\"ip-address-type\":\"ipv6\",\"prefix\":64}]}]}}" } },
+        .{ .respond = .{ .body = "{\"data\":{\"bytes-read\":120,\"content\":\"MemTotal:        2000000 kB\\nMemFree:          500000 kB\\nMemAvailable:    1500000 kB\\nBuffers:          100000 kB\\nCached:           900000 kB\\n\"}}" } },
     });
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{group});
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm show web-01"));
     try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/agent/network-get-interfaces HTTP/1.1", g.request(3));
+    try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/agent/file-read?file=%2Fproc%2Fmeminfo&decode=1 HTTP/1.1", g.request(4));
     const out = g.h.stdout();
     for ([_][]const u8{
         "VM web-01\n",
@@ -518,6 +532,9 @@ test "vm show: sections; agent addresses; hidden password" {
         "  cipassword  set (hidden)\n",
         "  sshkeys     1 key(s)\n",
         "  Names       pre-upgrade\n",
+        "  Memory      488.3 MiB / 1.9 GiB (25.0%)",
+        "  Cache       976.6 MiB  reclaimable\n",
+        "  Host        1.0 GiB  QEMU process on the host\n",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
@@ -533,6 +550,7 @@ test "vm show and vm config: pending values marked (SPEC §9.13)" {
         .{ .respond = .{ .body = resources_body } },
         .{ .respond = .{ .body = pending_changed } },
         .{ .respond = .{ .body = "{\"data\":[]}" } },
+        .{ .respond = .{ .body = "{\"data\":{\"status\":\"running\",\"ballooninfo\":{\"total_mem\":2147483648,\"free_mem\":536870912}}}" } },
         .{ .respond = .{ .body = resources_body } },
         .{ .respond = .{ .body = pending_changed } },
         .{ .respond = .{ .body = resources_body } },
@@ -546,7 +564,8 @@ test "vm show and vm config: pending values marked (SPEC §9.13)" {
     try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/pending HTTP/1.1", g.request(1));
     try expectLines(g.h.stdout(), &.{
         "2 (12.5% used) → 4  pending restart\n",
-        " → 2.0 GiB  pending restart\n",
+        "1.5 GiB / 2.0 GiB (75.0%)  ████████░░  incl. cache → 2.0 GiB  pending restart\n",
+        "  Host        1.0 GiB  QEMU process on the host\n",
         "  cipassword  set (hidden) → (changed)  pending restart\n",
     });
     try testing.expect(std.mem.find(u8, g.h.stdout(), "(not configured)") == null);
