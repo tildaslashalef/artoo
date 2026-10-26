@@ -272,6 +272,7 @@ const SetOp = struct {
     config: Value = .null,
     digest: []const u8 = "",
     changes: []const Assignment = &.{},
+    result: []const u8 = "configuration applied and verified",
 
     pub fn read(op: *SetOp, ctx: *Context) !void {
         op.vm = try vms.resolve(op.c, op.word);
@@ -326,17 +327,34 @@ const SetOp = struct {
         _ = try op.c.send(.PUT, try op.c.nodePath("/qemu/{d}/config", .{op.vm.?.vmid}), params.items);
     }
 
+    /// The stored configuration must hold every change; one that waits
+    /// for the next start is named in the result (SPEC §9.13).
     pub fn verify(op: *SetOp, ctx: *Context) !bool {
-        op.config = try vms.config(op.c, op.vm.?.vmid);
+        const a = ctx.arena;
+        const ks = try vms.keys(a, try vms.pendingRaw(op.c, op.vm.?.vmid));
+        op.config = try vms.storedConfig(a, ks);
         for (op.changes) |w| {
             const cur = try op.current(ctx, w.key) orelse return false;
             if (!std.mem.eql(u8, cur, w.value)) return false;
         }
+        var later: std.ArrayList([]const u8) = .empty;
+        for (op.changes) |w| for (ks) |key| {
+            if (key.waiting() and std.mem.eql(u8, key.key, @tagName(w.key))) try later.append(a, try std.fmt.allocPrint(a, "{s} {s}", .{ @tagName(w.key), try k.clean(ctx, w.value) }));
+        };
+        if (later.items.len > 0) {
+            const v = op.vm.?;
+            op.result = try std.fmt.allocPrint(a, "configuration saved; {s} pending until {s} — 'artoo vm {s} {s}'", .{
+                try std.mem.join(a, ", ", later.items),
+                if (v.running()) "restart" else "the next start",
+                if (v.running()) "reboot" else "start",
+                op.target,
+            });
+        }
         return true;
     }
 
-    pub fn done(_: *SetOp) []const u8 {
-        return "configuration applied and verified";
+    pub fn done(op: *SetOp) []const u8 {
+        return op.result;
     }
 };
 
@@ -1079,7 +1097,11 @@ test "vm set: validated, digest-guarded PUT of changed keys only" {
         .{ .respond = .{ .body = vm_cmd.resources_body } },
         .{ .respond = .{ .body = vm_cmd.config_body } },
         .{ .respond = .{ .body = "{\"data\":null}" } },
-        .{ .respond = .{ .body = "{\"data\":{\"cores\":2,\"memory\":\"4096\",\"tags\":\"artoo;web\",\"digest\":\"def\"}}" } },
+        .{ .respond = .{ .body = "{\"data\":[{\"key\":\"cores\",\"value\":2},{\"key\":\"memory\",\"value\":\"4096\"},{\"key\":\"tags\",\"value\":\"artoo;web\"},{\"key\":\"digest\",\"value\":\"def\"}]}" } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = "{\"data\":null}" } },
+        .{ .respond = .{ .body = "{\"data\":[{\"key\":\"cores\",\"value\":2},{\"key\":\"memory\",\"value\":\"2048\",\"pending\":\"4096\"},{\"key\":\"digest\",\"value\":\"def\"}]}" } },
     });
     defer g.deinit();
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 bios=ovmf"));
@@ -1090,6 +1112,11 @@ test "vm set: validated, digest-guarded PUT of changed keys only" {
     const out = g.h.stdout();
     try testing.expect(std.mem.find(u8, out, "memory  2048 → 4096") != null);
     try testing.expect(std.mem.find(u8, out, "may stay pending until it restarts") != null);
+    try testing.expect(std.mem.endsWith(u8, out, "✓ configuration applied and verified\n"));
+    try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/pending HTTP/1.1", g.request(3));
+    // Stored, but waiting for the restart (SPEC §9.13): the result says so.
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm set web-01 memory=4G -y"));
+    try testing.expect(std.mem.endsWith(u8, g.h.stdout(), "✓ configuration saved; memory 4096 pending until restart — 'artoo vm reboot web-01'\n"));
 }
 
 test "vm clone: lowest free VMID ≥ 200, full clone, verified" {
