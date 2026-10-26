@@ -1878,6 +1878,44 @@ was lowered with `vm set`: `/pending` answered `{"key":"memory",
 masked); `vm config` and `vm show` marked it and `vm verify` warned
 "memory 4096 → 2048".
 
+### 9.14 Guest memory
+
+Decided 2026-10-26. Proxmox has three "memory used" figures for a
+running VM, and only one answers "does the guest need more memory?"
+(§17.2):
+
+- `/nodes/{node}/qemu` `mem` is the QEMU process's memory on the host
+  (`memhost` on 9.2): it grows towards the assigned size once the guest
+  has touched its pages and does not shrink without ballooning.
+- `status/current` `mem` (the web interface) is the balloon driver's
+  `total_mem − free_mem`: the guest's page cache counts as used.
+- The guest's own `MemTotal − MemAvailable` (`/proc/meminfo`) is what
+  its programs need; the watchdog's `artoo-memory` alert (§9.9) uses the
+  same definition.
+
+artoo reports **guest memory** as the third: `agent/file-read` of
+`/proc/meminfo` — one GET, no command run in the guest
+(`VM.GuestAgent.FileRead`, in `PVEVMAdmin`), and only after the agent has
+answered in the same command, so a guest without one costs no wait.
+Without the agent it falls back to the balloon figure, labelled "incl.
+cache"; without that, it says so. The host's figure is never shown as
+the guest's use.
+
+- **`vm show VM`:** "Memory" is guest memory (used / total, with the
+  bar), then "Cache" (`Buffers + Cached`, reclaimable) and "Host" (the
+  QEMU process). A pending memory change (§9.13) stays marked on it.
+- **`status`:** the guest table's MEMORY column is guest memory, from
+  the agent reads `status` already makes per running guest.
+- **`vm ls`:** unchanged — Proxmox's list figure, one request; per-VM
+  agent reads stay out of `ls`.
+- **`vm set VM memory=…`** on a running VM with an answering agent: the
+  plan notes what the guest uses now and warns (not refuses) when the new
+  size leaves less than 512 MiB above it.
+- `-o json` adds `guest_mem` (`source` `agent` or `balloon`, `total`,
+  `used`, `available` and `cached` in bytes; the last two only from the
+  agent) to `vm show` and to each `status` guest; `mem` and `maxmem` keep
+  Proxmox's values.
+
 ## 10. UniFi
 
 ### 10.1 Access
@@ -1962,7 +2000,7 @@ task per system (`Io.Group`), each with its own `Context` copy (the arena
 is thread-safe, `diag` per task); rendering waits for all (~0.6 s on the
 LAN, from ~0.9 s sequential):
 Proxmox host (CPU %, load 1/5/15, RAM, swap, root FS, uptime, versions),
-guests (running/stopped/templates; per VM: state, vCPU, RAM, CPU %, memory,
+guests (running/stopped/templates; per VM: state, vCPU, RAM, CPU %, guest memory (§9.14),
 uptime, address; stopped → `--`; below the table, guests whose
 `/run/reboot-required` exists — a warning, not a failure, §9.1 — and fenced
 guests whose fence drifted, §9.11), storage (per backend, no invented totals),
@@ -2325,6 +2363,11 @@ procedures in GUIDE.md.
   as if live; `GET …/pending` lists each key with `value` (current),
   `pending` and `delete` (1, or 2 for a forced delete) — §9.13;
   `status/reboot` applies pending changes.
+- **Memory figures (PVE 9.2, seen 2026-10-26):** `/nodes/{node}/qemu`
+  `mem` equals `memhost` (the QEMU process on the host);
+  `status/current` `mem` is `ballooninfo.total_mem − free_mem`, and
+  `ballooninfo` has no available-memory figure; `agent/file-read`
+  (`file`, `decode=1`) returns `/proc/meminfo` as `content` (§9.14).
 - **Tasks:** `stopped` with `OK` or `WARNINGS: n` is success; the
   `errors=1` filter also returns tasks with warnings.
 - **Listing:** `/cluster/resources` is refreshed by pvestatd — a VM created
