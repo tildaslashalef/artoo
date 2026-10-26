@@ -92,7 +92,7 @@ artoo storage ls | show STORAGE
 artoo task  ls [--running|--failed] [-l N] | show TASK | log TASK [--all] | wait TASK
 
 artoo vm ls [--all] [--status S] [--name GLOB]
-artoo vm show VM | config VM
+artoo vm show VM | config VM          pending values marked (§9.13)
 artoo vm urls VM                      service URLs and public hosts that reach the VM
 artoo vm start|shutdown|reboot VM
 artoo vm stop VM                      forced stop (destructive confirmation)
@@ -779,7 +779,8 @@ upgrade VM` — the unattended run installs them within a day, so one that
 stays is the updater falling behind; other updates are counted in the ok
 detail; lists older than 2 days are a warning (apt's daily refresh is
 not running); phased updates are not counted; reboot pending (a warning, with the
-packages that want it). DNS resolution is checked with `dig
+packages that want it); config pending (§9.13: Proxmox keys waiting
+for a restart, a warning). DNS resolution is checked with `dig
 @<gateway>` from the workstation (not checked without `dig`; `--no-dns`
 skips both DNS checks). Each check reports ok / warning / failed / not
 checked; any failure → exit 8.
@@ -1840,6 +1841,37 @@ result said no reboot was needed, `vm verify` then showed "pending updates
 ok none" and every other check unchanged, no unit had failed, and the
 stage and exit-code files were gone.
 
+### 9.13 Pending configuration
+
+Decided 2026-10-26. Proxmox applies some changes to a running VM only at
+its next start (memory or cores beyond what hot-plug allows, cloud-init
+keys): `PUT …/config` stores them as pending, and `GET …/config` returns
+the pending value as if it were live (§17.2). So wherever artoo shows or
+checks a VM's configuration it reads `GET …/pending` — per key the
+current `value`, the `pending` one and a pending `delete` — and names
+the difference instead of hiding it:
+
+- **`vm config VM`:** every key, sorted; a pending key reads `current →
+  pending` with "pending restart" in the warning color (a pending delete
+  `current → (removed)`, a new key `(unset) → value`), and a footer counts
+  them and names `vm reboot VM`. `-o json` is the `/pending` list.
+  `cipassword` stays masked in both.
+- **`vm show VM`:** the vCPU line is the running count, and every shown
+  key with a pending value (vCPU, memory, network, cloud-init) gets the
+  same `→ pending` marker.
+- **`vm verify VM`:** "config pending" (§9.4), read through the API, so
+  it is checked without the guest agent: none is ok; pending keys are a
+  warning naming them (`memory 4096 → 2048`) and `vm reboot VM` (`vm
+  start VM` for a stopped VM).
+- **`vm set VM`:** the fresh read still verifies what was stored
+  (§8.2 step 9); a changed key that stays pending makes the result say
+  so — "configuration saved; memory 2048 pending until restart" with `vm
+  reboot VM` — instead of "applied".
+
+A reboot from inside the guest does not apply them: the QEMU process
+keeps running. `vm reboot VM` (`status/reboot`, which "applies pending
+changes") or a shutdown and start does.
+
 ## 10. UniFi
 
 ### 10.1 Access
@@ -2283,7 +2315,10 @@ procedures in GUIDE.md.
 - **Requests:** writes are form-encoded; GET and DELETE carry parameters
   in the query string and must not have a body (the Zig stdlib asserts).
   Most writes return a UPID; `PUT …/config` is synchronous and accepts
-  `digest` for optimistic locking; `GET …/config` shows pending values.
+  `digest` for optimistic locking; `GET …/config` shows pending values
+  as if live; `GET …/pending` lists each key with `value` (current),
+  `pending` and `delete` (1, or 2 for a forced delete) — §9.13;
+  `status/reboot` applies pending changes.
 - **Tasks:** `stopped` with `OK` or `WARNINGS: n` is success; the
   `errors=1` filter also returns tasks with warnings.
 - **Listing:** `/cluster/resources` is refreshed by pvestatd — a VM created
