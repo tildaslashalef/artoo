@@ -52,6 +52,8 @@ const Guest = struct {
     reboot_packages: []const []const u8 = &.{},
     /// A fenced guest whose fence drifted (SPEC §9.11): what differs.
     fence_drift: ?[]const u8 = null,
+    /// What a running guest uses (SPEC §9.14); `mem` is the host's figure.
+    guest_mem: ?vms.GuestMem = null,
 };
 
 const Gateway = struct {
@@ -126,10 +128,12 @@ fn guests(c: *pve.Client, templates: *usize) ![]const Guest {
         var addr: ?[]const u8 = null;
         var reboot: ?bool = null;
         var pkgs: std.ArrayList([]const u8) = .empty;
+        var agent_ok = false;
         if (v.running()) {
             const cfg = vms.config(c, v.vmid) catch null;
             if (cfg != null and vms.agentEnabled(cfg.?)) {
                 if (vms.agentAddresses(c, v.vmid)) |list| {
+                    agent_ok = true;
                     for (list) |a| if (!a.ipv6) {
                         addr = a.address;
                         break;
@@ -153,8 +157,9 @@ fn guests(c: *pve.Client, templates: *usize) ![]const Guest {
                 }
             }
         }
+        const gm = if (v.running()) try vms.guestMem(c, v.vmid, agent_ok) else null;
         const drift = if (template.taggedWith(v.tags, vm_fence.tag)) try fenceDrift(c, &lab, v) else null;
-        try out.append(ctx.arena, .{ .vmid = v.vmid, .name = v.name, .status = v.status, .vcpus = v.cpus, .cpu = v.cpu, .mem = v.mem, .maxmem = v.maxmem, .uptime = v.uptime, .address = addr, .reboot_pending = reboot, .reboot_packages = pkgs.items, .fence_drift = drift });
+        try out.append(ctx.arena, .{ .vmid = v.vmid, .name = v.name, .status = v.status, .vcpus = v.cpus, .cpu = v.cpu, .mem = v.mem, .maxmem = v.maxmem, .uptime = v.uptime, .address = addr, .reboot_pending = reboot, .reboot_packages = pkgs.items, .fence_drift = drift, .guest_mem = gm });
     }
     return out.items;
 }
@@ -442,7 +447,9 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
                 cells[1] = .{ .text = try k.clean(ctx, g.name) };
                 cells[2] = try k.vmStatus(ctx, g.status, false);
                 cells[3] = .{ .text = if (run and g.cpu != null) try std.fmt.allocPrint(a, "{f} of {d}", .{ ui.values.percent(g.cpu), @as(u64, @intFromFloat(g.vcpus orelse 0)) }) else "--" };
-                cells[4] = .{ .text = if (run) try k.fmt(ctx, ui.values.usedTotal(g.mem, g.maxmem)) else "--" };
+                cells[4] = if (!run) .{ .text = "--" } else if (g.guest_mem) |m| .{
+                    .text = try std.fmt.allocPrint(a, "{s}{s}", .{ try k.fmt(ctx, ui.values.usedTotal(m.used, m.total)), if (m.source == .balloon) "*" else "" }),
+                } else .{ .text = "--" };
                 cells[5] = .{ .text = if (run) try k.fmt(ctx, ui.values.duration(g.uptime)) else "--" };
                 cells[6] = .{ .text = if (g.address) |ad| try k.clean(ctx, ad) else "--" };
                 row.* = cells;
@@ -456,6 +463,10 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
                 .{ .title = "UPTIME", .alignment = .right, .drop = 3 },
                 .{ .title = "ADDRESS", .truncate = false },
             }, rows);
+            for (gs) |g| if (g.guest_mem) |m| if (m.source == .balloon) {
+                try ctx.out.print("  {s}* incl. page cache: the guest agent did not answer{s}\n", .{ u.palette.on(.muted), u.palette.off(.muted) });
+                break;
+            };
             var waiting: std.ArrayList([]const u8) = .empty;
             for (gs) |g| if (g.reboot_pending orelse false) {
                 const shown = g.reboot_packages[0..@min(g.reboot_packages.len, 2)];
@@ -670,6 +681,8 @@ test "status: the whole lab — edge drops first, no router, tunnel and service 
         ok("/qemu/202/agent/network-get-interfaces ", "{\"data\":{\"result\":[]}}"),
         ok("/qemu/202/agent/exec ", pid),
         ok("/qemu/202/agent/exec-status", try agentOut(a, "yes\nlinux-image-7.0.0-39-generic\nlinux-base\nlinux-image-7.0.0-39-generic\n")),
+        ok("/qemu/202/agent/file-read", "{\"data\":{\"content\":\"MemTotal: 2000000 kB\\nMemAvailable: 1500000 kB\\nBuffers: 1000 kB\\nCached: 9000 kB\\n\"}}"),
+        ok("/qemu/200/status/current ", "{\"data\":{\"status\":\"running\",\"ballooninfo\":{\"total_mem\":2147483648,\"free_mem\":536870912}}}"),
         ok("/nodes/pve/storage ", storage.storage_body),
         ok("/tasks?limit=100", no_data),
         ok("errors=1", no_data),
@@ -712,6 +725,9 @@ test "status: the whole lab — edge drops first, no router, tunnel and service 
     const out = g.h.stdout();
     for ([_][]const u8{
         "Guest DNS (lab.example.com): 2 matched\n",
+        "1.5 GiB / 2.0 GiB (75.0%)*",
+        "488.3 MiB / 1.9 GiB",
+        "  * incl. page cache: the guest agent did not answer\n",
         "  ▲ reboot pending: scarif (linux-image-7.0.0-39-generic, linux-base) — 'artoo vm reboot VM'\n",
         "Edge (bespin)\n  ✗ drops to Proxmox  3 packet(s) blocked — investigate\n",
         "Router\n  none (no VM tagged role-router)\n",
