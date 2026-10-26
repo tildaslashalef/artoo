@@ -1872,6 +1872,12 @@ A reboot from inside the guest does not apply them: the QEMU process
 keeps running. `vm reboot VM` (`status/reboot`, which "applies pending
 changes") or a shutdown and start does.
 
+Verified live (2026-10-26, read-only) on a running guest whose memory
+was lowered with `vm set`: `/pending` answered `{"key":"memory",
+"value":"4096","pending":"2048"}` (values as strings, `cipassword`
+masked); `vm config` and `vm show` marked it and `vm verify` warned
+"memory 4096 → 2048".
+
 ## 10. UniFi
 
 ### 10.1 Access
