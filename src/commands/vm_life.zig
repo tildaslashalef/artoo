@@ -11,6 +11,7 @@ const ui = @import("../ui.zig");
 const pve = @import("../pve/client.zig");
 const tasks = @import("../pve/task.zig");
 const vms = @import("../pve/vm.zig");
+const agent = @import("../pve/agent.zig");
 const unifi = @import("../unifi/client.zig");
 const dns = @import("../unifi/dns.zig");
 const classic = @import("../unifi/classic.zig");
@@ -307,6 +308,7 @@ const SetOp = struct {
         op.changes = real.items;
         var notes: std.ArrayList([]const u8) = .empty;
         if (hot and op.vm.?.running()) try notes.append(a, "The VM is running: CPU/memory changes may stay pending until it restarts ('artoo vm config' shows them).");
+        for (op.changes) |w| if (w.key == .memory) try op.memoryNotes(ctx, w.value, &notes);
         try notes.append(a, "Guarded by the config digest: a concurrent change makes Proxmox refuse the write.");
         return .{
             .action = try std.fmt.allocPrint(a, "Configure VM {s} ({d})", .{ op.target, op.vm.?.vmid }),
@@ -318,6 +320,23 @@ const SetOp = struct {
 
     pub fn fingerprint(op: *SetOp) []const u8 {
         return op.digest;
+    }
+
+    /// SPEC §9.14: what a running guest with an answering agent uses now,
+    /// and a warning when the new size (MiB) leaves less than 512 MiB
+    /// above it.
+    fn memoryNotes(op: *SetOp, ctx: *Context, mib_text: []const u8, notes: *std.ArrayList([]const u8)) !void {
+        const v = op.vm.?;
+        if (!v.running() or !vms.agentEnabled(op.config) or !try agent.ping(op.c, v.vmid)) return;
+        const g = (try vms.guestMem(op.c, v.vmid, true)) orelse return;
+        if (g.source != .agent) return;
+        const a = ctx.arena;
+        const used = try k.fmt(ctx, ui.values.bytes(g.used));
+        try notes.append(a, try std.fmt.allocPrint(a, "The guest uses {s} of {s} now (MemTotal − MemAvailable).", .{ used, try k.fmt(ctx, ui.values.bytes(g.total)) }));
+        const mib = std.fmt.parseInt(u64, mib_text, 10) catch return;
+        const margin: u64 = 512 * 1024 * 1024;
+        if (mib * 1024 * 1024 < g.used +| margin)
+            try notes.append(a, try std.fmt.allocPrint(a, "Warning: {d} MiB leaves less than 512 MiB above the {s} the guest uses now.", .{ mib, used }));
     }
 
     pub fn send(op: *SetOp, ctx: *Context) !void {
@@ -1096,10 +1115,14 @@ test "vm set: validated, digest-guarded PUT of changed keys only" {
     try g.init(&.{
         .{ .respond = .{ .body = vm_cmd.resources_body } },
         .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = "{\"data\":{\"result\":{}}}" } },
+        .{ .respond = .{ .body = "{\"data\":{\"content\":\"MemTotal: 4000000 kB\\nMemAvailable: 200000 kB\\n\"}}" } },
         .{ .respond = .{ .body = "{\"data\":null}" } },
         .{ .respond = .{ .body = "{\"data\":[{\"key\":\"cores\",\"value\":2},{\"key\":\"memory\",\"value\":\"4096\"},{\"key\":\"tags\",\"value\":\"artoo;web\"},{\"key\":\"digest\",\"value\":\"def\"}]}" } },
         .{ .respond = .{ .body = vm_cmd.resources_body } },
         .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = "{\"data\":{\"result\":{}}}" } },
+        .{ .respond = .{ .body = "{\"data\":{\"content\":\"MemTotal: 4000000 kB\\nMemAvailable: 1000000 kB\\n\"}}" } },
         .{ .respond = .{ .body = "{\"data\":null}" } },
         .{ .respond = .{ .body = "{\"data\":[{\"key\":\"cores\",\"value\":2},{\"key\":\"memory\",\"value\":\"2048\",\"pending\":\"4096\"},{\"key\":\"digest\",\"value\":\"def\"}]}" } },
     });
@@ -1107,15 +1130,19 @@ test "vm set: validated, digest-guarded PUT of changed keys only" {
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 bios=ovmf"));
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 memory=lots"));
     try testing.expectEqual(Exit.ok, g.h.run(&root, "vm set web-01 memory=4G cores=2 tags=artoo,web -y"));
-    try testing.expectEqualStrings("PUT /api2/json/nodes/pve/qemu/100/config HTTP/1.1", g.request(2));
-    try testing.expectEqualStrings("memory=4096&tags=artoo%3Bweb&digest=abc123", g.body(2));
+    try testing.expectEqualStrings("PUT /api2/json/nodes/pve/qemu/100/config HTTP/1.1", g.request(4));
+    try testing.expectEqualStrings("memory=4096&tags=artoo%3Bweb&digest=abc123", g.body(4));
     const out = g.h.stdout();
     try testing.expect(std.mem.find(u8, out, "memory  2048 → 4096") != null);
     try testing.expect(std.mem.find(u8, out, "may stay pending until it restarts") != null);
     try testing.expect(std.mem.endsWith(u8, out, "✓ configuration applied and verified\n"));
-    try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/pending HTTP/1.1", g.request(3));
+    try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/pending HTTP/1.1", g.request(5));
+    try testing.expect(std.mem.find(u8, out, "The guest uses 3.6 GiB of 3.8 GiB now") != null);
+    try testing.expect(std.mem.find(u8, out, "Warning: 4096 MiB leaves less than 512 MiB above the 3.6 GiB the guest uses now.") != null);
     // Stored, but waiting for the restart (SPEC §9.13): the result says so.
     try testing.expectEqual(Exit.ok, g.h.run(&root, "vm set web-01 memory=4G -y"));
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "The guest uses 2.9 GiB of 3.8 GiB now") != null);
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "Warning:") == null);
     try testing.expect(std.mem.endsWith(u8, g.h.stdout(), "✓ configuration saved; memory 4096 pending until restart — 'artoo vm reboot web-01'\n"));
 }
 
