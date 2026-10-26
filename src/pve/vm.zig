@@ -126,6 +126,79 @@ pub fn config(c: *pve.Client, vmid: u32) !Value {
     return c.get(try c.nodePath("/qemu/{d}/config", .{vmid}));
 }
 
+/// One key of `GET …/pending` (SPEC §9.13): the running value, the one
+/// stored for the next start, and a stored delete.
+pub const Key = struct {
+    key: []const u8,
+    value: ?Value = null,
+    pending: ?Value = null,
+    delete: bool = false,
+
+    /// Waits for the VM's next start.
+    pub fn waiting(k: Key) bool {
+        return k.pending != null or k.delete;
+    }
+};
+
+/// `GET …/pending` as returned, `cipassword` masked in place (Proxmox
+/// masks it too; the copy here does not depend on that).
+pub fn pendingRaw(c: *pve.Client, vmid: u32) !Value {
+    const data = try c.get(try c.nodePath("/qemu/{d}/pending", .{vmid}));
+    for (pve.items(data)) |it| {
+        if (it != .object or !std.mem.eql(u8, pve.str(it, "key") orelse "", "cipassword")) continue;
+        for ([_][]const u8{ "value", "pending" }) |f| {
+            if (it.object.getPtr(f)) |p| p.* = .{ .string = "**********" };
+        }
+    }
+    return data;
+}
+
+/// The keys of a `pendingRaw` answer, sorted by name.
+pub fn keys(arena: Allocator, data: Value) ![]Key {
+    var out: std.ArrayList(Key) = .empty;
+    for (pve.items(data)) |it| {
+        const name = pve.str(it, "key") orelse continue;
+        const get = struct {
+            fn f(v: Value, field: []const u8) ?Value {
+                const x = pve.obj(v, field);
+                return if (x == .null) null else x;
+            }
+        }.f;
+        try out.append(arena, .{ .key = name, .value = get(it, "value"), .pending = get(it, "pending"), .delete = pve.flag(it, "delete") });
+    }
+    std.mem.sort(Key, out.items, {}, struct {
+        fn lt(_: void, x: Key, y: Key) bool {
+            return std.mem.lessThan(u8, x.key, y.key);
+        }
+    }.lt);
+    return out.items;
+}
+
+/// The keys of a `keys` list that wait for the next start.
+pub fn waiting(arena: Allocator, ks: []const Key) ![]const Key {
+    var out: std.ArrayList(Key) = .empty;
+    for (ks) |k| if (k.waiting()) try out.append(arena, k);
+    return out.items;
+}
+
+/// The running configuration, as `GET …/config?current=1`.
+pub fn currentConfig(arena: Allocator, ks: []const Key) !Value {
+    var m: std.json.ObjectMap = .empty;
+    for (ks) |k| if (k.value) |v| try m.put(arena, k.key, v);
+    return .{ .object = m };
+}
+
+/// The stored configuration, as `GET …/config`: a pending value wins and
+/// a pending delete drops the key.
+pub fn storedConfig(arena: Allocator, ks: []const Key) !Value {
+    var m: std.json.ObjectMap = .empty;
+    for (ks) |k| {
+        if (k.delete) continue;
+        if (k.pending orelse k.value) |v| try m.put(arena, k.key, v);
+    }
+    return .{ .object = m };
+}
+
 pub fn status(c: *pve.Client, vmid: u32) !Value {
     return c.get(try c.nodePath("/qemu/{d}/status/current", .{vmid}));
 }
@@ -210,4 +283,30 @@ test "agentEnabled" {
     try testing.expect(agentEnabled(try std.json.parseFromSliceLeaky(Value, ar, "{\"agent\":\"enabled=1,fstrim_cloned_disks=1\"}", .{})));
     try testing.expect(!agentEnabled(try std.json.parseFromSliceLeaky(Value, ar, "{\"agent\":\"0\"}", .{})));
     try testing.expect(!agentEnabled(try std.json.parseFromSliceLeaky(Value, ar, "{}", .{})));
+}
+
+test "pending keys: sorted, waiting, current and stored configuration" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const ar = a.allocator();
+    const data = try std.json.parseFromSliceLeaky(Value, ar,
+        \\[{"key":"memory","value":"4096","pending":"2048"},{"key":"cores","value":2},
+        \\ {"key":"balloon","value":"0","delete":1},{"key":"onboot","pending":"1"}]
+    , .{});
+    const ks = try keys(ar, data);
+    try testing.expectEqual(@as(usize, 4), ks.len);
+    try testing.expectEqualStrings("balloon", ks[0].key);
+    try testing.expectEqualStrings("onboot", ks[3].key);
+    try testing.expect(!ks[1].waiting());
+    const w = try waiting(ar, ks);
+    try testing.expectEqual(@as(usize, 3), w.len);
+    const cur = try currentConfig(ar, ks);
+    try testing.expectEqualStrings("4096", pve.str(cur, "memory").?);
+    try testing.expectEqualStrings("0", pve.str(cur, "balloon").?);
+    try testing.expect(pve.str(cur, "onboot") == null);
+    const st = try storedConfig(ar, ks);
+    try testing.expectEqualStrings("2048", pve.str(st, "memory").?);
+    try testing.expect(pve.str(st, "balloon") == null);
+    try testing.expectEqualStrings("1", pve.str(st, "onboot").?);
+    try testing.expectEqual(@as(i64, 2), pve.int(st, "cores").?);
 }
