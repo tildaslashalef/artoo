@@ -1916,6 +1916,13 @@ the guest's use.
   agent) to `vm show` and to each `status` guest; `mem` and `maxmem` keep
   Proxmox's values.
 
+Verified live (2026-10-26, read-only; `vm set` as a dry run) on six
+running guests: `status` showed 20–36 % where Proxmox's list said up to
+94 % and the web interface 58–85 %, each matching `free -m`'s used
+column in the guest; `vm show` split a 4 GiB guest into 0.8 GiB used,
+1.9 GiB cache and 3.7 GiB held on the host; `vm set … memory=1G -n` on
+it noted the 0.8 GiB and warned.
+
 ## 10. UniFi
 
 ### 10.1 Access
