@@ -2142,7 +2142,8 @@ in CI-equivalent local checks.
   `~/.artoo/live-ledger.txt` or `$ARTOO_LEDGER`, before any destructive
   step; guards abort the run on the first failed precondition). Live
   scripts and `scripts/pve-*.sh` take the Proxmox host from `PVE_SSH`
-  (required, no default). Gateway live tests are read-only unless a plan is approved.
+  (required, no default) and the SSH key from `artoo config get
+  pve.ssh_identity`. Gateway live tests are read-only unless a plan is approved.
 
 ## 14. Delivery phases
 
