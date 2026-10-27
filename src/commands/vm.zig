@@ -440,7 +440,7 @@ pub const group = cli.group("vm", "Virtual machines on Proxmox", &([_]cli.Comman
     cli.leaf(show),
     cli.leaf(config),
     cli.leaf(urls),
-} ++ @import("vm_life.zig").commands ++ @import("vm_new.zig").commands ++ @import("vm_upgrade.zig").commands ++ @import("vm_ssh.zig").commands ++ @import("vm_fence.zig").commands));
+} ++ @import("vm_life.zig").commands ++ @import("vm_new.zig").commands ++ @import("vm_upgrade.zig").commands ++ @import("vm_ssh.zig").commands ++ @import("vm_fence.zig").commands ++ @import("vm_disk.zig").commands));
 
 // ---------------------------------------------------------------- tests
 

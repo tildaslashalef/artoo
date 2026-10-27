@@ -126,6 +126,51 @@ pub fn config(c: *pve.Client, vmid: u32) !Value {
     return c.get(try c.nodePath("/qemu/{d}/config", .{vmid}));
 }
 
+/// A drive's `size=` (`local-zfs:vm-100-disk-0,discard=on,size=20G`) in
+/// bytes.
+pub fn driveSize(drive: []const u8) ?u64 {
+    var it = std.mem.tokenizeScalar(u8, drive, ',');
+    while (it.next()) |part| {
+        const v = std.mem.cutPrefix(u8, part, "size=") orelse continue;
+        if (v.len < 2) return null;
+        const n = std.fmt.parseInt(u64, v[0 .. v.len - 1], 10) catch return null;
+        return switch (v[v.len - 1]) {
+            'T' => n << 40,
+            'G' => n << 30,
+            'M' => n << 20,
+            'K' => n << 10,
+            else => null,
+        };
+    }
+    return null;
+}
+
+/// A drive's storage (`local-zfs:vm-100-disk-0,…` → `local-zfs`).
+pub fn driveStorage(drive: []const u8) ?[]const u8 {
+    const i = std.mem.findScalar(u8, drive, ':') orelse return null;
+    if (std.mem.findScalar(u8, drive[0..i], ',') != null) return null;
+    return drive[0..i];
+}
+
+/// The disk the VM boots from: the first entry of `boot: order=…`, else
+/// the legacy `bootdisk`.
+pub fn bootDisk(cfg: Value) ?[]const u8 {
+    if (pve.str(cfg, "boot")) |b| if (std.mem.cutPrefix(u8, b, "order=")) |order| {
+        return order[0 .. std.mem.findAny(u8, order, ";,") orelse order.len];
+    };
+    return pve.str(cfg, "bootdisk");
+}
+
+/// `PUT …/resize` (SPEC §17.2): grow `disk` to `size` (`\d+[KMGT]?`,
+/// absolute), guarded by the config digest. The answer is the task's
+/// UPID (or null from an older, synchronous Proxmox).
+pub fn resizeDisk(c: *pve.Client, vmid: u32, disk: []const u8, size: []const u8, digest: ?[]const u8) !Value {
+    var params: std.ArrayList(pve.Param) = .empty;
+    try params.appendSlice(c.ctx.arena, &.{ .{ .name = "disk", .value = disk }, .{ .name = "size", .value = size } });
+    if (digest) |d| try params.append(c.ctx.arena, .{ .name = "digest", .value = d });
+    return c.send(.PUT, try c.nodePath("/qemu/{d}/resize", .{vmid}), params.items);
+}
+
 /// One key of `GET …/pending` (SPEC §9.13): the running value, the one
 /// stored for the next start, and a stored delete.
 pub const Key = struct {
