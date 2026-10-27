@@ -5,7 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 host=${PVE_SSH:?set PVE_SSH=root@<Proxmox host address>}
-ssh_opts=(-i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10)
+# The SSH key is artoo's (pve.ssh_identity), so the scripts follow its config.
+identity=$(artoo config get pve.ssh_identity) || { echo "cannot read pve.ssh_identity (artoo on PATH? make install)" >&2; exit 1; }
+ssh_opts=(-i "$identity" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10)
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
