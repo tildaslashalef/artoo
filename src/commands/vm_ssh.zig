@@ -31,14 +31,10 @@ pub fn path(ctx: *Context) ![]const u8 {
 /// The settings every block shares, from the config.
 pub fn settings(ctx: *Context) !ssh_config.Settings {
     const cfg = try ctx.config();
-    const public = files.expandHome(ctx.arena, ctx.env, cfg.guests.ssh_public_key) catch
-        return ctx.fail(error.ConfigInvalid, "cannot expand guests.ssh_public_key: HOME is not set", .{});
-    const identity = std.mem.cutSuffix(u8, public, ".pub") orelse
-        return ctx.fail(error.ConfigInvalid, "guests.ssh_public_key '{s}' does not end in .pub; cannot name its private key", .{cfg.guests.ssh_public_key});
     const s: ssh_config.Settings = .{
         .domain = cfg.guests.domain,
         .user = cfg.guests.user,
-        .identity = identity,
+        .identity = try known_hosts.guestIdentity(ctx),
         .known_hosts = try known_hosts.path(ctx),
         .proxy = try known_hosts.proxyCommand(ctx),
     };
@@ -870,9 +866,10 @@ test "vm ssh-config: one block per artoo guest; pins a running guest; an unpinne
 /// `ssh` argv for a fixed script on naboo (`vm cp`'s probes and hashes).
 fn nabooSsh(a: std.mem.Allocator, home: []const u8, script: []const u8) ![]const []const u8 {
     return a.dupe([]const u8, &.{
-        "/usr/bin/ssh",      "-o",                        "HostKeyAlias=naboo", "-o",            try std.fmt.allocPrint(a, "UserKnownHostsFile={s}/.artoo/known_hosts", .{home}),
-        "-o",                "StrictHostKeyChecking=yes", "-o",                 "BatchMode=yes", "-o",
-        "ConnectTimeout=10", "artoo@192.168.1.230",       "--",                 script,
+        "/usr/bin/ssh",              "-i",                 try std.fmt.allocPrint(a, "{s}/.ssh/id_ed25519", .{home}), "-o",                                                                            "IdentitiesOnly=yes",
+        "-o",                        "HostKeyAlias=naboo", "-o",                                                      try std.fmt.allocPrint(a, "UserKnownHostsFile={s}/.artoo/known_hosts", .{home}), "-o",
+        "StrictHostKeyChecking=yes", "-o",                 "BatchMode=yes",                                           "-o",                                                                            "ConnectTimeout=10",
+        "artoo@192.168.1.230",       "--",                 script,
     });
 }
 
@@ -995,17 +992,18 @@ test "vm cp: guest to guest is relayed (-3); trees are compared file by file" {
     try g.tmp.dir.createDirPath(testing.io, ".artoo");
     try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/known_hosts", .data = "bespin ssh-ed25519 " ++ blob ++ "\nnaboo ssh-ed25519 " ++ blob ++ "\n" });
     const proxy = try std.fmt.allocPrint(a, "ProxyCommand=/usr/bin/ssh -i {s}/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -W %h:%p root@192.168.1.10", .{home});
+    const id = try std.fmt.allocPrint(a, "{s}/.ssh/id_ed25519", .{home});
     const kh = try std.fmt.allocPrint(a, "UserKnownHostsFile={s}/.artoo/known_hosts", .{home});
     const ds = struct {
-        fn argv(al: std.mem.Allocator, khv: []const u8, px: []const u8, script: []const u8) ![]const []const u8 {
-            return al.dupe([]const u8, &.{ "/usr/bin/ssh", "-o", "HostKeyAlias=bespin", "-o", khv, "-o", "StrictHostKeyChecking=yes", "-o", px, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "artoo@192.168.1.200", "--", script });
+        fn argv(al: std.mem.Allocator, idv: []const u8, khv: []const u8, px: []const u8, script: []const u8) ![]const []const u8 {
+            return al.dupe([]const u8, &.{ "/usr/bin/ssh", "-i", idv, "-o", "IdentitiesOnly=yes", "-o", "HostKeyAlias=bespin", "-o", khv, "-o", "StrictHostKeyChecking=yes", "-o", px, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "artoo@192.168.1.200", "--", script });
         }
     };
     var fake: FakeRunner = .{ .arena = a };
-    try fake.expect(try ds.argv(a, kh, proxy, probe_script), "site\n", .{ .stdout = "dir\n" });
+    try fake.expect(try ds.argv(a, id, kh, proxy, probe_script), "site\n", .{ .stdout = "dir\n" });
     try fake.expect(try nabooSsh(a, home, probe_script), "site\n", .{ .stdout = "none\n" });
     try fake.expect(&.{ "/usr/bin/scp", "-F", try std.fmt.allocPrint(a, "{s}/.artoo/ssh_config", .{home}), "-p", "-r", "-3", "--", "bespin:site", "naboo:site" }, null, .{});
-    try fake.expect(try ds.argv(a, kh, proxy, tree_script), "site\n", .{ .stdout = hello_sum ++ "  ./index.html\n" ++ world_sum ++ "  ./css/a.css\n" });
+    try fake.expect(try ds.argv(a, id, kh, proxy, tree_script), "site\n", .{ .stdout = hello_sum ++ "  ./index.html\n" ++ world_sum ++ "  ./css/a.css\n" });
     try fake.expect(try nabooSsh(a, home, tree_script), "site\n", .{ .stdout = world_sum ++ "  ./css/a.css\n" ++ hello_sum ++ "  ./index.html\n" });
     g.h.hooks.runner = fake.runner();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
