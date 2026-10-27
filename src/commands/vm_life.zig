@@ -133,19 +133,23 @@ const PowerOp = struct {
         // `qmreboot` ends once the guest has shut down; Proxmox starts it
         // again right after (live 2026-10-10), so a reboot is given a
         // short grace period to show `running`.
-        const tries: usize = if (op.action == .reboot) 30 else 1;
-        for (0..tries) |i| {
-            if (i > 0) try ctx.io.sleep(.fromMilliseconds(@intCast(ctx.test_hooks.poll_ms orelse 1000)), .awake);
-            const st = try vms.status(op.c, op.vm.?.vmid);
-            if (std.mem.eql(u8, pve.str(st, "status") orelse "", op.action.expected())) return true;
-        }
-        return false;
+        return waitStatus(ctx, op.c, op.vm.?.vmid, op.action.expected(), if (op.action == .reboot) 30 else 1);
     }
 
     pub fn done(op: *PowerOp) []const u8 {
         return std.fmt.allocPrint(op.c.ctx.arena, "{s} is {s} ({s})", .{ op.target, op.action.expected(), op.result }) catch "done";
     }
 };
+
+/// Poll the VM's status (once a second) until it is `want`.
+fn waitStatus(ctx: *Context, c: *pve.Client, vmid: u32, want: []const u8, tries: usize) !bool {
+    for (0..tries) |i| {
+        if (i > 0) try ctx.io.sleep(.fromMilliseconds(@intCast(ctx.test_hooks.poll_ms orelse 1000)), .awake);
+        const st = try vms.status(c, vmid);
+        if (std.mem.eql(u8, pve.str(st, "status") orelse "", want)) return true;
+    }
+    return false;
+}
 
 fn PowerCmd(comptime action: Power) type {
     const destructive = action == .stop;
@@ -178,27 +182,95 @@ const Key = enum {
     name,
     description,
     tags,
+    onboot,
+    startup,
+    protection,
     cores,
     sockets,
+    vcpus,
+    cpulimit,
+    cpuunits,
     memory,
     balloon,
-    onboot,
+    numa,
+    hotplug,
 
+    /// May wait for the next start on a running VM (SPEC §9.13).
     fn hot(key: Key) bool {
         return switch (key) {
-            .cores, .sockets, .memory, .balloon => true,
+            .cores, .sockets, .vcpus, .memory, .balloon, .numa => true,
             else => false,
         };
     }
+
+    const allowed = blk: {
+        var s: []const u8 = "";
+        for (std.meta.fieldNames(Key), 0..) |n, i| s = s ++ (if (i > 0) ", " else "") ++ n;
+        break :blk s;
+    };
 };
 
 const Assignment = struct { key: Key, value: []const u8 };
+
+/// `yes`/`no` (and `1`/`0`, `true`/`false`) → `1`/`0`.
+fn parseBool(raw: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, raw, "1") or std.ascii.eqlIgnoreCase(raw, "yes") or std.ascii.eqlIgnoreCase(raw, "true")) return "1";
+    if (std.mem.eql(u8, raw, "0") or std.ascii.eqlIgnoreCase(raw, "no") or std.ascii.eqlIgnoreCase(raw, "false")) return "0";
+    return null;
+}
+
+/// `2`, `order=2,up=30` or `up=30,order=2` → `order=2,up=30` (Proxmox's
+/// `[[order=]\d+] [,up=\d+] [,down=\d+]`).
+fn parseStartup(arena: std.mem.Allocator, raw: []const u8) !?[]const u8 {
+    const names = [_][]const u8{ "order", "up", "down" };
+    var vals: [3]?u32 = .{ null, null, null };
+    var it = std.mem.splitScalar(u8, raw, ',');
+    var first = true;
+    while (it.next()) |part| : (first = false) {
+        const eq = std.mem.findScalar(u8, part, '=');
+        const name = if (eq) |i| part[0..i] else if (first) "order" else return null;
+        const num = if (eq) |i| part[i + 1 ..] else part;
+        const i = for (names, 0..) |n, j| {
+            if (std.mem.eql(u8, n, name)) break j;
+        } else return null;
+        if (vals[i] != null or num.len == 0) return null;
+        vals[i] = std.fmt.parseInt(u32, num, 10) catch return null;
+    }
+    var out: std.ArrayList(u8) = .empty;
+    for (names, vals) |n, v| if (v) |x| try out.print(arena, "{s}{s}={d}", .{ if (out.items.len > 0) "," else "", n, x });
+    return if (out.items.len == 0) null else out.items;
+}
+
+/// `cpu,memory` → itself; `0` (none) and `1` (Proxmox's default) kept.
+fn parseHotplug(arena: std.mem.Allocator, raw: []const u8) !?[]const u8 {
+    if (std.mem.eql(u8, raw, "0") or std.mem.eql(u8, raw, "1")) return raw;
+    const known = [_][]const u8{ "network", "disk", "usb", "cpu", "memory", "cloudinit" };
+    var out: std.ArrayList(u8) = .empty;
+    var it = std.mem.tokenizeScalar(u8, raw, ',');
+    while (it.next()) |t| {
+        for (known) |x| {
+            if (std.ascii.eqlIgnoreCase(x, t)) break;
+        } else return null;
+        if (hasFeature(out.items, t)) continue;
+        if (out.items.len > 0) try out.append(arena, ',');
+        for (t) |ch| try out.append(arena, std.ascii.toLower(ch));
+    }
+    return if (out.items.len == 0) null else out.items;
+}
+
+/// `feature` is on in a `hotplug` value (`1` = `network,disk,usb`).
+fn hasFeature(hotplug: []const u8, feature: []const u8) bool {
+    if (std.mem.eql(u8, hotplug, "1")) return hasFeature("network,disk,usb", feature);
+    var it = std.mem.tokenizeScalar(u8, hotplug, ',');
+    while (it.next()) |t| if (std.ascii.eqlIgnoreCase(t, feature)) return true;
+    return false;
+}
 
 /// Validate and normalize `KEY=VALUE` (sizes to MiB, booleans to 0/1).
 fn parseAssignment(ctx: *Context, word: []const u8) !Assignment {
     const eq = std.mem.findScalar(u8, word, '=') orelse return ctx.fail(error.Usage, "expected KEY=VALUE, got '{s}'", .{word});
     const key = std.meta.stringToEnum(Key, word[0..eq]) orelse
-        return ctx.fail(error.Usage, "'{s}' cannot be set here (allowed: name, description, tags, cores, sockets, memory, balloon, onboot)", .{word[0..eq]});
+        return ctx.fail(error.Usage, "'{s}' cannot be set here (allowed: {s})", .{ word[0..eq], Key.allowed });
     const raw = word[eq + 1 ..];
     const a = ctx.arena;
     const value: []const u8 = switch (key) {
@@ -228,15 +300,28 @@ fn parseAssignment(ctx: *Context, word: []const u8) !Assignment {
             break :blk raw;
         },
         .memory, .balloon => blk: {
+            if (key == .balloon and std.mem.eql(u8, raw, "0")) break :blk "0";
             const mib = parseMiB(raw) orelse return ctx.fail(error.Usage, "{t} must be a size like 2048, 2G or 512M (MiB without a unit), got '{s}'", .{ key, raw });
             if (key == .memory and mib < 16) return ctx.fail(error.Usage, "memory must be at least 16 MiB", .{});
             break :blk try std.fmt.allocPrint(a, "{d}", .{mib});
         },
-        .onboot => blk: {
-            if (std.mem.eql(u8, raw, "1") or std.ascii.eqlIgnoreCase(raw, "yes") or std.ascii.eqlIgnoreCase(raw, "true")) break :blk "1";
-            if (std.mem.eql(u8, raw, "0") or std.ascii.eqlIgnoreCase(raw, "no") or std.ascii.eqlIgnoreCase(raw, "false")) break :blk "0";
-            return ctx.fail(error.Usage, "onboot must be yes or no, got '{s}'", .{raw});
+        .onboot, .protection, .numa => parseBool(raw) orelse return ctx.fail(error.Usage, "{t} must be yes or no, got '{s}'", .{ key, raw }),
+        .startup => (try parseStartup(a, raw)) orelse
+            return ctx.fail(error.Usage, "startup must be order=N[,up=SECONDS][,down=SECONDS] (or just N), got '{s}'", .{raw}),
+        .vcpus, .cpuunits => blk: {
+            const n = std.fmt.parseInt(u32, raw, 10) catch return ctx.fail(error.Usage, "{t} must be a whole number, got '{s}'", .{ key, raw });
+            const max: u32 = if (key == .vcpus) 512 else 10000;
+            if (n < 1 or n > max) return ctx.fail(error.Usage, "{t} must be 1-{d}, got {d}", .{ key, max, n });
+            break :blk raw;
         },
+        .cpulimit => blk: {
+            for (raw) |ch| if (!std.ascii.isDigit(ch) and ch != '.') return ctx.fail(error.Usage, "cpulimit must be a number of CPUs 0-128 (0 = no limit), got '{s}'", .{raw});
+            const v = std.fmt.parseFloat(f64, raw) catch return ctx.fail(error.Usage, "cpulimit must be a number of CPUs 0-128 (0 = no limit), got '{s}'", .{raw});
+            if (v > 128) return ctx.fail(error.Usage, "cpulimit must be 0-128, got '{s}'", .{raw});
+            break :blk try std.fmt.allocPrint(a, "{d}", .{v});
+        },
+        .hotplug => (try parseHotplug(a, raw)) orelse
+            return ctx.fail(error.Usage, "hotplug must be a comma list of network, disk, usb, cpu, memory, cloudinit — or 0 (none) or 1 (network,disk,usb) — got '{s}'", .{raw}),
     };
     return .{ .key = key, .value = value };
 }
@@ -273,6 +358,9 @@ const SetOp = struct {
     config: Value = .null,
     digest: []const u8 = "",
     changes: []const Assignment = &.{},
+    /// `--reboot`: apply changes that wait for a restart (SPEC §9.13).
+    reboot: bool = false,
+    rebooted: ?[]const u8 = null,
     result: []const u8 = "configuration applied and verified",
 
     pub fn read(op: *SetOp, ctx: *Context) !void {
@@ -288,8 +376,57 @@ const SetOp = struct {
         return switch (v) {
             .string => |s| s,
             .integer => |n| try std.fmt.allocPrint(ctx.arena, "{d}", .{n}),
+            .float => |f| try std.fmt.allocPrint(ctx.arena, "{d}", .{f}),
             else => null,
         };
+    }
+
+    /// The value after this change: the one given, else the stored one.
+    fn effective(op: *SetOp, ctx: *Context, key: Key) !?[]const u8 {
+        for (op.wanted) |w| if (w.key == key) return w.value;
+        return op.current(ctx, key);
+    }
+
+    fn effectiveInt(op: *SetOp, ctx: *Context, key: Key, default: u64) !u64 {
+        const t = (try op.effective(ctx, key)) orelse return default;
+        // `memory` may be stored as `current=2048`.
+        return std.fmt.parseInt(u64, std.mem.cutPrefix(u8, t, "current=") orelse t, 10) catch default;
+    }
+
+    /// Checks across keys, against what is stored: what Proxmox would only
+    /// refuse at the next start (or not at all) is refused here.
+    fn check(op: *SetOp, ctx: *Context) !void {
+        var cpu = false;
+        var mem = false;
+        var plug = false;
+        for (op.changes) |w| switch (w.key) {
+            .cores, .sockets, .vcpus => cpu = true,
+            .memory, .balloon => mem = true,
+            .hotplug, .numa => plug = true,
+            else => {},
+        };
+        if (cpu) {
+            const cores = try op.effectiveInt(ctx, .cores, 1);
+            const sockets = try op.effectiveInt(ctx, .sockets, 1);
+            const total = cores * sockets;
+            if (try op.effective(ctx, .vcpus)) |_| {
+                const vcpus = try op.effectiveInt(ctx, .vcpus, total);
+                if (vcpus > total) return ctx.fail(error.Usage, "vcpus {d} is more than cores × sockets = {d}", .{ vcpus, total });
+            }
+            const host = try op.c.get(try op.c.nodePath("/status", .{}));
+            if (pve.uint(pve.obj(host, "cpuinfo"), "cpus")) |n| if (total > n)
+                return ctx.fail(error.Usage, "cores × sockets = {d} vCPUs, but the host has {d} CPUs; Proxmox would refuse to start the VM", .{ total, n });
+        }
+        if (mem) {
+            const memory = try op.effectiveInt(ctx, .memory, 512);
+            const balloon = try op.effectiveInt(ctx, .balloon, 0);
+            if (balloon > memory) return ctx.fail(error.Usage, "balloon {d} MiB (the least RAM the guest keeps) is more than memory {d} MiB", .{ balloon, memory });
+        }
+        if (plug) {
+            const hotplug = (try op.effective(ctx, .hotplug)) orelse "1";
+            if (hasFeature(hotplug, "memory") and !std.mem.eql(u8, (try op.effective(ctx, .numa)) orelse "0", "1"))
+                return ctx.fail(error.Usage, "memory hotplug needs NUMA: add numa=yes", .{});
+        }
     }
 
     pub fn plan(op: *SetOp, ctx: *Context) !?exec.Plan {
@@ -306,14 +443,28 @@ const SetOp = struct {
         }
         if (real.items.len == 0) return null;
         op.changes = real.items;
+        try op.check(ctx);
+        const v = op.vm.?;
         var notes: std.ArrayList([]const u8) = .empty;
-        if (hot and op.vm.?.running()) try notes.append(a, "The VM is running: CPU/memory changes may stay pending until it restarts ('artoo vm config' shows them).");
+        var impact: std.ArrayList([]const u8) = .empty;
+        if (op.reboot) {
+            op.reboot = hot and v.running();
+            if (!v.running())
+                try notes.append(a, try std.fmt.allocPrint(a, "--reboot: the VM is {s}; the changes apply when it starts ('artoo vm start {s}').", .{ try k.clean(ctx, v.status), op.target }))
+            else if (!hot)
+                try notes.append(a, "--reboot: none of these changes waits for a restart; the VM is not rebooted.")
+            else {
+                try changes.append(a, .{ .field = "status", .from = "running", .to = "rebooted, if a change waits for it" });
+                try impact.append(a, "If a change stays pending, Proxmox reboots the VM (stop and start); its services are briefly unavailable");
+            }
+        } else if (hot and v.running()) try notes.append(a, "The VM is running: CPU/memory changes may stay pending until it restarts ('artoo vm config' shows them; --reboot applies them).");
         for (op.changes) |w| if (w.key == .memory) try op.memoryNotes(ctx, w.value, &notes);
         try notes.append(a, "Guarded by the config digest: a concurrent change makes Proxmox refuse the write.");
         return .{
-            .action = try std.fmt.allocPrint(a, "Configure VM {s} ({d})", .{ op.target, op.vm.?.vmid }),
+            .action = try std.fmt.allocPrint(a, "Configure VM {s} ({d})", .{ op.target, v.vmid }),
             .target = try nodeTarget(ctx, op.c),
             .changes = changes.items,
+            .impact = impact.items,
             .notes = notes.items,
         };
     }
@@ -346,6 +497,35 @@ const SetOp = struct {
         _ = try op.c.send(.PUT, try op.c.nodePath("/qemu/{d}/config", .{op.vm.?.vmid}), params.items);
     }
 
+    /// `--reboot`: when a change waits for the restart, reboot through
+    /// Proxmox (a reboot inside the guest would not apply it, SPEC §9.13).
+    pub fn track(op: *SetOp, ctx: *Context) !void {
+        if (!op.reboot) return;
+        const v = op.vm.?;
+        const ks = try vms.keys(ctx.arena, try vms.pendingRaw(op.c, v.vmid));
+        var waits = false;
+        for (op.changes) |w| for (ks) |key| {
+            waits = waits or (key.waiting() and std.mem.eql(u8, key.key, @tagName(w.key)));
+        };
+        if (!waits) return;
+        op.rebootNow(ctx) catch |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => {
+                ctx.diag = try std.fmt.allocPrint(ctx.arena, "configuration saved, but the reboot failed: {s}; 'artoo vm reboot {s}'", .{ ctx.diag orelse @errorName(err), op.target });
+                return err;
+            },
+        };
+    }
+
+    fn rebootNow(op: *SetOp, ctx: *Context) !void {
+        const c = op.c;
+        const id = op.vm.?.vmid;
+        const upid = try tasks.upidOf(c, try c.send(.POST, try c.nodePath("/qemu/{d}/status/reboot", .{id}), &.{}), "the reboot");
+        const task = try waitTask(c, upid, Power.reboot.deadline());
+        if (!try waitStatus(ctx, c, id, "running", 30)) return ctx.fail(error.Partial, "the reboot ran ({s}), but {s} is not running", .{ task, op.target });
+        op.rebooted = task;
+    }
+
     /// The stored configuration must hold every change; one that waits
     /// for the next start is named in the result (SPEC §9.13).
     pub fn verify(op: *SetOp, ctx: *Context) !bool {
@@ -360,7 +540,10 @@ const SetOp = struct {
         for (op.changes) |w| for (ks) |key| {
             if (key.waiting() and std.mem.eql(u8, key.key, @tagName(w.key))) try later.append(a, try std.fmt.allocPrint(a, "{s} {s}", .{ @tagName(w.key), try k.clean(ctx, w.value) }));
         };
-        if (later.items.len > 0) {
+        if (op.rebooted) |task| {
+            if (later.items.len > 0) return ctx.fail(error.Partial, "{s} rebooted ({s}), but {s} still pending", .{ op.target, task, try std.mem.join(a, ", ", later.items) });
+            op.result = try std.fmt.allocPrint(a, "configuration applied; {s} rebooted ({s})", .{ op.target, task });
+        } else if (later.items.len > 0) {
             const v = op.vm.?;
             op.result = try std.fmt.allocPrint(a, "configuration saved; {s} pending until {s} — 'artoo vm {s} {s}'", .{
                 try std.mem.join(a, ", ", later.items),
@@ -381,21 +564,35 @@ pub const set = struct {
     pub const name = "set";
     pub const summary = "Change allowlisted config keys (digest-guarded)";
     pub const details =
-        \\Keys: name, description, tags (comma list), cores, sockets, memory and
-        \\balloon (MiB, or 512M/2G), onboot (yes/no). Unchanged keys are left out;
-        \\nothing to change exits 5.
+        \\Keys: name, description, tags (comma list), onboot, protection and
+        \\numa (yes/no), startup (order=N[,up=S][,down=S]), cores, sockets,
+        \\vcpus, cpulimit, cpuunits, memory and balloon (MiB, or 512M/2G;
+        \\balloon=0 turns ballooning off), hotplug (network,disk,usb,cpu,
+        \\memory,cloudinit; 0 or 1). Checked together: cores × sockets within
+        \\the host's CPUs, vcpus within cores × sockets, balloon within memory,
+        \\memory hotplug with numa. Unchanged keys are left out; nothing to
+        \\change exits 5. CPU and memory changes on a running VM may wait for
+        \\a restart: --reboot then reboots it through Proxmox.
     ;
     pub const positionals = [_]cli.Positional{ vm_arg, .{ .name = "KEY=VALUE", .help = "One or more assignments", .variadic = true, .choices = &.{
         .{ .text = "name=", .help = "Rename (a DNS label)" },
         .{ .text = "description=", .help = "Notes shown in Proxmox" },
         .{ .text = "tags=", .help = "Comma list; replaces all tags (keep artoo, role-ROLE)" },
+        .{ .text = "onboot=", .help = "Start with the host (yes/no)", .values = &.{ "yes", "no" } },
+        .{ .text = "startup=", .help = "Boot order and delays: order=N[,up=S][,down=S]" },
+        .{ .text = "protection=", .help = "Proxmox refuses to destroy the VM (yes/no)", .values = &.{ "yes", "no" } },
         .{ .text = "cores=", .help = "vCPU cores per socket (1-128)" },
         .{ .text = "sockets=", .help = "CPU sockets (1-4)" },
+        .{ .text = "vcpus=", .help = "vCPUs online (up to cores × sockets)" },
+        .{ .text = "cpulimit=", .help = "CPU cap in CPUs (0-128, 0 = none)" },
+        .{ .text = "cpuunits=", .help = "CPU weight under load (1-10000, default 100)" },
         .{ .text = "memory=", .help = "RAM in MiB, or 512M/2G" },
-        .{ .text = "balloon=", .help = "Minimum RAM in MiB, or 512M/2G" },
-        .{ .text = "onboot=", .help = "Start with the host (yes/no)", .values = &.{ "yes", "no" } },
+        .{ .text = "balloon=", .help = "Least RAM ballooning leaves (MiB, 512M/2G; 0 = off)" },
+        .{ .text = "numa=", .help = "NUMA (yes/no; needed for memory hotplug)", .values = &.{ "yes", "no" } },
+        .{ .text = "hotplug=", .help = "Live-pluggable: network,disk,usb,cpu,memory,cloudinit (0/1)" },
     } } };
-    pub const examples = [_][]const u8{ "artoo vm set web-01 memory=4G cores=2", "artoo vm set 100 tags=artoo,web onboot=yes" };
+    pub const flags = [_]cli.Flag{.{ .long = "reboot", .help = "Reboot through Proxmox when a change waits for a restart" }};
+    pub const examples = [_][]const u8{ "artoo vm set web-01 memory=4G cores=2 --reboot", "artoo vm set 100 tags=artoo,web onboot=yes startup=order=1,up=30", "artoo vm set web-01 protection=yes" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const words = args.rest("KEY=VALUE");
@@ -408,7 +605,7 @@ pub const set = struct {
         }
         var c = try pve.Client.open(ctx);
         defer c.deinit();
-        var op: SetOp = .{ .c = &c, .word = args.pos("VM"), .wanted = wanted.items };
+        var op: SetOp = .{ .c = &c, .word = args.pos("VM"), .wanted = wanted.items, .reboot = args.has("reboot") };
         try exec.run(ctx, &op, .{});
         try refreshSshBlock(ctx, &op);
     }
@@ -1144,6 +1341,108 @@ test "vm set: validated, digest-guarded PUT of changed keys only" {
     try testing.expect(std.mem.find(u8, g.h.stdout(), "The guest uses 2.9 GiB of 3.8 GiB now") != null);
     try testing.expect(std.mem.find(u8, g.h.stdout(), "Warning:") == null);
     try testing.expect(std.mem.endsWith(u8, g.h.stdout(), "✓ configuration saved; memory 4096 pending until restart — 'artoo vm reboot web-01'\n"));
+}
+
+test "parseStartup, parseHotplug, hasFeature" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("order=2", (try parseStartup(a, "2")).?);
+    try testing.expectEqualStrings("order=1,up=30,down=60", (try parseStartup(a, "down=60,up=30,order=1")).?);
+    try testing.expectEqualStrings("up=30", (try parseStartup(a, "up=30")).?);
+    for ([_][]const u8{ "", "x", "order=", "order=1,order=2", "up=30,5", "order=-1", "boot=1" }) |bad| try testing.expect(try parseStartup(a, bad) == null);
+    try testing.expectEqualStrings("cpu,memory", (try parseHotplug(a, "CPU,memory,cpu")).?);
+    try testing.expectEqualStrings("0", (try parseHotplug(a, "0")).?);
+    try testing.expect(try parseHotplug(a, "cpu,ram") == null);
+    try testing.expect(try parseHotplug(a, "") == null);
+    try testing.expect(hasFeature("1", "disk") and !hasFeature("1", "cpu") and hasFeature("network,cpu", "cpu") and !hasFeature("0", "network"));
+}
+
+const host_status = "{\"data\":{\"cpuinfo\":{\"cpus\":16,\"cores\":8,\"sockets\":1}}}";
+
+test "vm set: new keys normalized; cross-key checks refuse before any write" {
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = host_status } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+    });
+    defer g.deinit();
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 startup=first"));
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 cpuunits=0"));
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 cpulimit=200"));
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 hotplug=ram"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "hotplug must be a comma list") != null);
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 machine=q35"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "allowed: name, description, tags, onboot, startup, protection, cores, sockets, vcpus, cpulimit, cpuunits, memory, balloon, numa, hotplug") != null);
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 cores=32 -y"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "cores × sockets = 32 vCPUs, but the host has 16 CPUs") != null);
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 vcpus=3 -y"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "vcpus 3 is more than cores × sockets = 2") != null);
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 balloon=4G -y"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "balloon 4096 MiB (the least RAM the guest keeps) is more than memory 2048 MiB") != null);
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm set web-01 hotplug=network,disk,cpu,memory -y"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "memory hotplug needs NUMA: add numa=yes") != null);
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm set web-01 hotplug=network,disk,cpu,memory numa=yes startup=2,up=30 protection=yes cpulimit=1.50 cpuunits=200 balloon=0 -n"));
+    const out = g.h.stdout();
+    for ([_][]const u8{
+        "hotplug     (none) → network,disk,cpu,memory\n",
+        "numa        (none) → 1\n",
+        "startup     (none) → order=2,up=30\n",
+        "protection  (none) → 1\n",
+        "cpulimit    (none) → 1.5\n",
+        "cpuunits    (none) → 200\n",
+        "balloon     (none) → 0\n",
+        "Dry run: nothing was sent.",
+    }) |line| {
+        if (std.mem.find(u8, out, line) == null) {
+            std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+            return error.TestUnexpectedResult;
+        }
+    }
+    for (0..g.sent()) |i| try testing.expect(!std.mem.startsWith(u8, g.request(i), "PUT"));
+}
+
+test "vm set --reboot: a change that waits for the restart is applied by a Proxmox reboot" {
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = host_status } },
+        .{ .respond = .{ .body = "{\"data\":null}" } },
+        .{ .respond = .{ .body = "{\"data\":[{\"key\":\"cores\",\"value\":2,\"pending\":4},{\"key\":\"digest\",\"value\":\"def\"}]}" } },
+        .{ .respond = .{ .body = upid_body } },
+        .{ .respond = .{ .body = task_ok } },
+        .{ .respond = .{ .body = "{\"data\":{\"status\":\"running\"}}" } },
+        .{ .respond = .{ .body = "{\"data\":[{\"key\":\"cores\",\"value\":4},{\"key\":\"digest\",\"value\":\"def\"}]}" } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = host_status } },
+    });
+    defer g.deinit();
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm set web-01 cores=4 --reboot -y"));
+    try testing.expectEqualStrings("PUT /api2/json/nodes/pve/qemu/100/config HTTP/1.1", g.request(3));
+    try testing.expectEqualStrings("cores=4&digest=abc123", g.body(3));
+    try testing.expectEqualStrings("POST /api2/json/nodes/pve/qemu/100/status/reboot HTTP/1.1", g.request(5));
+    const out = g.h.stdout();
+    try testing.expect(std.mem.find(u8, out, "status  running → rebooted, if a change waits for it\n") != null);
+    try testing.expect(std.mem.find(u8, out, "If a change stays pending, Proxmox reboots the VM") != null);
+    try testing.expect(std.mem.find(u8, out, "✓ configuration applied; web-01 rebooted (task qmstart:101@") != null);
+    // Nothing waits for a restart, or the VM is stopped: no reboot.
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm set web-01 tags=artoo,web --reboot -n"));
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "--reboot: none of these changes waits for a restart; the VM is not rebooted.") != null);
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm set db-01 cores=4 --reboot -n"));
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "--reboot: the VM is stopped; the changes apply when it starts ('artoo vm start db-01').") != null);
 }
 
 test "vm clone: lowest free VMID ≥ 200, full clone, verified" {
