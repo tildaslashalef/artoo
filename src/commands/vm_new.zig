@@ -228,21 +228,7 @@ fn secretName(ctx: *Context, name: []const u8) ![]const u8 {
 
 /// `scsi0: …,size=20G` → bytes.
 pub fn diskBytes(cfg: Value) ?u64 {
-    const s = pve.str(cfg, "scsi0") orelse return null;
-    var it = std.mem.tokenizeScalar(u8, s, ',');
-    while (it.next()) |part| {
-        const v = std.mem.cutPrefix(u8, part, "size=") orelse continue;
-        if (v.len < 2) return null;
-        const n = std.fmt.parseInt(u64, v[0 .. v.len - 1], 10) catch return null;
-        return switch (v[v.len - 1]) {
-            'T' => n << 40,
-            'G' => n << 30,
-            'M' => n << 20,
-            'K' => n << 10,
-            else => null,
-        };
-    }
-    return null;
+    return vms.driveSize(pve.str(cfg, "scsi0") orelse return null);
 }
 
 // ---------------------------------------------------------------- vm new
@@ -545,10 +531,7 @@ const NewOp = struct {
         }
         if (s_resize) |i| {
             l.set(i, .unknown, "");
-            const data = try c.send(.PUT, try c.nodePath("/qemu/{d}/resize", .{op.vmid}), &.{
-                .{ .name = "disk", .value = "scsi0" },
-                .{ .name = "size", .value = try std.fmt.allocPrint(a, "{d}G", .{op.disk}) },
-            });
+            const data = try vms.resizeDisk(c, op.vmid, "scsi0", try std.fmt.allocPrint(a, "{d}G", .{op.disk}), null);
             l.set(i, .done, if (data == .null) "done" else try k.waitTask(c, try tasks.upidOf(c, data, "the resize"), 300));
         }
         if (s_start) |i| {
