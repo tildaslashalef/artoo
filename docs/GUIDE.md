@@ -229,6 +229,10 @@ artoo vm stop VM --yes --confirm NAME    # power cut
 artoo vm set VM memory=4G cores=2 onboot=1 tags=artoo,web -y   # allowlisted keys, digest-guarded
                                          # running VM: CPU/memory may stay pending (SPEC §9.13);
                                          # 'vm config VM' marks them, 'vm reboot VM' applies them
+artoo vm set VM cores=4 --reboot -y      # ... or reboot through Proxmox in the same command
+artoo vm set VM startup=order=1,up=30 protection=yes -y   # boot order; refuse 'vm rm' (SPEC §9.15)
+artoo vm disk grow VM +20G -n            # final: Proxmox cannot shrink a disk (SPEC §9.15)
+artoo vm disk grow VM +20G -y            # boot disk, agent answering: / grows at once
 artoo vm snap add VM pre-upgrade -y
 artoo vm snap rollback VM pre-upgrade --yes --confirm NAME@pre-upgrade
 artoo vm snap rm VM pre-upgrade --yes --confirm NAME@pre-upgrade
