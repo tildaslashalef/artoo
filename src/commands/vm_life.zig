@@ -777,6 +777,8 @@ const RmOp = struct {
         op.config = try vms.config(op.c, v.vmid);
         op.state = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ v.status, pve.str(op.config, "digest") orelse "" });
         if (v.template) return ctx.fail(error.Refused, "{s} is a template; use 'artoo template rm'", .{op.target});
+        // Proxmox would refuse the destroy only after the forced stop.
+        if (pve.flag(op.config, "protection")) return ctx.fail(error.Refused, "{s} is protected; 'artoo vm set {s} protection=no' first", .{ op.target, op.target });
         if (v.name.len > 0) {
             const used = try svc.pointingAt(ctx, op.c, v.name);
             if (used.names.len > 0) return ctx.fail(error.Refused, "service(s) {s} point at {s}; move them ('artoo svc set NAME VM:PORT') or remove them ('artoo svc rm NAME') first", .{ try std.mem.join(ctx.arena, ", ", used.names), op.target });
@@ -1538,6 +1540,18 @@ test "vm rm: stop, destroy, matching DNS record, Keychain entry, metrics on the 
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "vm rm: a protected VM is refused before anything is stopped" {
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = "{\"data\":{\"name\":\"web-01\",\"protection\":1,\"digest\":\"abc123\"}}" } },
+    });
+    defer g.deinit();
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "web-01 is protected; 'artoo vm set web-01 protection=no' first") != null);
+    try testing.expectEqual(@as(usize, 2), g.sent());
 }
 
 test "vm snap add: POST with name, verified in the list" {
