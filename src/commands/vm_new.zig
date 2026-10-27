@@ -1651,9 +1651,10 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
     const home = g.h.env.get("HOME").?;
     var fake: FakeRunner = .{ .arena = a };
     try fake.expect(&.{
-        "/usr/bin/ssh",      "-o",                        "HostKeyAlias=test-01", "-o",            try std.fmt.allocPrint(a, "UserKnownHostsFile={s}/.artoo/known_hosts", .{home}),
-        "-o",                "StrictHostKeyChecking=yes", "-o",                   "BatchMode=yes", "-o",
-        "ConnectTimeout=10", "artoo@192.168.1.204",       "--",                   "true",
+        "/usr/bin/ssh",              "-i",                   try std.fmt.allocPrint(a, "{s}/.ssh/id_ed25519", .{home}), "-o",                                                                            "IdentitiesOnly=yes",
+        "-o",                        "HostKeyAlias=test-01", "-o",                                                      try std.fmt.allocPrint(a, "UserKnownHostsFile={s}/.artoo/known_hosts", .{home}), "-o",
+        "StrictHostKeyChecking=yes", "-o",                   "BatchMode=yes",                                           "-o",                                                                            "ConnectTimeout=10",
+        "artoo@192.168.1.204",       "--",                   "true",
     }, null, .{});
     g.h.hooks.runner = fake.runner();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});

@@ -67,13 +67,28 @@ pub fn record(ctx: *Context, alias: []const u8, key: ?[]const u8) !void {
     };
 }
 
-/// `ssh` to `<guests.user>@address`, host key checked strictly against the
-/// recorded key of `alias`.
+/// The guest user's private key: `guests.ssh_public_key` without `.pub`
+/// (expanded; SPEC §9.3).
+pub fn guestIdentity(ctx: *Context) ![]const u8 {
+    const cfg = try ctx.config();
+    const public = files.expandHome(ctx.arena, ctx.env, cfg.guests.ssh_public_key) catch
+        return ctx.fail(error.ConfigInvalid, "cannot expand guests.ssh_public_key: HOME is not set", .{});
+    return std.mem.cutSuffix(u8, public, ".pub") orelse
+        ctx.fail(error.ConfigInvalid, "guests.ssh_public_key '{s}' does not end in .pub; cannot name its private key", .{cfg.guests.ssh_public_key});
+}
+
+/// `ssh` to `<guests.user>@address` with the guest identity only (not
+/// ssh's default keys), host key checked strictly against the recorded
+/// key of `alias`.
 pub fn sshArgv(ctx: *Context, alias: []const u8, address: []const u8, batch: bool, jump: bool, command: []const []const u8) ![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     const a = ctx.arena;
     try argv.appendSlice(a, &.{
         "/usr/bin/ssh",
+        "-i",
+        try guestIdentity(ctx),
+        "-o",
+        "IdentitiesOnly=yes",
         "-o",
         try std.fmt.allocPrint(a, "HostKeyAlias={s}", .{alias}),
         "-o",
@@ -149,9 +164,12 @@ test "sshArgv: the jump runs through root on Proxmox with artoo's Proxmox SSH se
     var ctx: Context = .{ .arena = h.arena.allocator(), .gpa = testing.allocator, .io = testing.io, .out = &h.out.writer, .err = &h.err.writer, .env = &h.env };
     ctx.loaded = .{ .ok = .{ .path = "", .exists = false, .config = .{}, .tree = .empty } };
     const argv = try sshArgv(&ctx, "bespin", "192.168.1.200", true, true, &.{"true"});
+    try testing.expectEqualStrings("-i", argv[1]);
+    try testing.expectEqualStrings("/home/me/.ssh/id_ed25519", argv[2]);
+    try testing.expectEqualStrings("IdentitiesOnly=yes", argv[4]);
     try testing.expectEqualStrings(
         "ProxyCommand=/usr/bin/ssh -i /home/me/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -W %h:%p root@192.168.1.10",
-        argv[8],
+        argv[12],
     );
     try testing.expectEqualStrings("artoo@192.168.1.200", argv[argv.len - 3]);
     const direct = try sshArgv(&ctx, "naboo", "192.168.1.201", true, false, &.{});
