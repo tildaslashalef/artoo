@@ -10,7 +10,9 @@
 
 set -euo pipefail
 
-SSH=(ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes
+# The SSH key is artoo's (pve.ssh_identity), so the run follows its config.
+identity=$(artoo config get pve.ssh_identity) || { echo "cannot read pve.ssh_identity (artoo on PATH? make install)" >&2; exit 1; }
+SSH=(ssh -i "$identity" -o IdentitiesOnly=yes -o BatchMode=yes
      -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "${PVE_SSH:?set PVE_SSH=root@<Proxmox host address>}")
 LEDGER="${ARTOO_LEDGER:-$HOME/.artoo/live-ledger.txt}"
 VMID=${1:-990}

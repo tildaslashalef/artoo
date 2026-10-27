@@ -16,7 +16,9 @@ set -euo pipefail
 address=${1:?usage: scripts/pve-metrics.sh ADDRESS}
 [[ $address =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "ADDRESS must be an IPv4 address (the watchdog VM)" >&2; exit 2; }
 host=${PVE_SSH:?set PVE_SSH=root@<Proxmox host address>}
-ssh_opts=(-i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10)
+# The SSH key is artoo's (pve.ssh_identity), so the scripts follow its config.
+identity=$(artoo config get pve.ssh_identity) || { echo "cannot read pve.ssh_identity (artoo on PATH? make install)" >&2; exit 1; }
+ssh_opts=(-i "$identity" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10)
 
 log() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 

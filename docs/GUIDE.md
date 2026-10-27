@@ -513,7 +513,8 @@ ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
   (`scripts/pve-shell.sh`, backs up first).
 - The host scripts `scripts/pve-*.sh` and the live tests in
   `scripts/live/` need `PVE_SSH=root@<host address>` (there is no
-  default). Live tests record the resources they own in
+  default) and the installed `artoo` on `PATH`: they log in with its
+  `pve.ssh_identity`. Live tests record the resources they own in
   `~/.artoo/live-ledger.txt` (or `$ARTOO_LEDGER`).
 
 ## 15. Credentials and certificates (SPEC §6, §7, §15)
