@@ -96,7 +96,8 @@ artoo vm show VM | config VM          pending values marked (§9.13)
 artoo vm urls VM                      service URLs and public hosts that reach the VM
 artoo vm start|shutdown|reboot VM
 artoo vm stop VM                      forced stop (destructive confirmation)
-artoo vm set VM KEY=VALUE…            allowlisted config keys, digest-guarded
+artoo vm set VM KEY=VALUE… [--reboot] allowlisted config keys, digest-guarded (§9.13)
+artoo vm disk grow VM SIZE [--disk SLOT]  grow a disk and the guest's root filesystem (§9.15)
 artoo vm clone VM NEWNAME [--id N]
 artoo vm rm VM [--keep-dns]           destroy VM + disks (+ its DNS record)
 artoo vm snap ls VM | add VM NAME | rm VM NAME | rollback VM NAME
@@ -749,7 +750,9 @@ record, removes its DNS record (unless `--keep-dns`), any public
 record/tunnel route, and, after confirmation, its Keychain entry and its
 metrics on the watchdog (§9.9). It
 refuses while a service name (§9.6) points at the VM, listing them
-(`svc set` or `svc rm` first).
+(`svc set` or `svc rm` first), and for a VM with `protection` set
+(`vm set VM protection=no` first) — before its forced stop, since
+Proxmox would refuse only the destroy.
 
 ### 9.4 `vm verify VM`
 
@@ -1866,7 +1869,13 @@ the difference instead of hiding it:
 - **`vm set VM`:** the fresh read still verifies what was stored
   (§8.2 step 9); a changed key that stays pending makes the result say
   so — "configuration saved; memory 2048 pending until restart" with `vm
-  reboot VM` — instead of "applied".
+  reboot VM` — instead of "applied". With `--reboot`, a running VM
+  whose change stays pending is rebooted through Proxmox in the same
+  command: the plan shows "status running → rebooted, if a change waits
+  for it" (the one confirmation covers it), the reboot task is tracked,
+  the VM must be running again, and `/pending` must then hold none of
+  the changes. Without a change that can wait (or on a stopped VM) the
+  plan says no reboot happens. There is no second prompt after the write.
 
 A reboot from inside the guest does not apply them: the QEMU process
 keeps running. `vm reboot VM` (`status/reboot`, which "applies pending
@@ -1922,6 +1931,55 @@ running guests: `status` showed 20–36 % where Proxmox's list said up to
 column in the guest; `vm show` split a 4 GiB guest into 0.8 GiB used,
 1.9 GiB cache and 3.7 GiB held on the host; `vm set … memory=1G -n` on
 it noted the 0.8 GiB and warned.
+
+### 9.15 Disk growth (`vm disk grow`) and `vm set` keys
+
+Decided 2026-10-27. CPU and memory are configuration keys (`PUT
+…/config`: digest-guarded, reversible, possibly pending, §9.13) and stay
+in `vm set`; a disk grows through its own endpoint (`PUT …/resize`, a
+task) and cannot shrink, so it is its own command.
+
+**`vm disk grow VM SIZE [--disk SLOT]`.** `SIZE` is the growth (`+20G`)
+or the new size (`80G`): `M`, `G`, `T`, no unit is GiB, whole MiB, at
+most 64 TiB. `SLOT` (default `scsi0`) is a `scsiN`/`virtioN`/`sataN`/`ideN`
+slot of the VM that is not a CD-ROM.
+
+- Refused before any write: a template, a missing slot (the VM's disks
+  listed), a CD-ROM, a smaller size ("Proxmox cannot shrink a disk"),
+  growth beyond the storage's free space. The same size is a no-op (exit 5).
+- The plan shows slot and size (`20.0 GiB → 40.0 GiB`), "Final: Proxmox
+  cannot shrink a disk", the space used on the storage, "Recovery none",
+  and what happens to the filesystem.
+- One `PUT …/resize` with the absolute size in MiB and the config
+  `digest`; the returned task is tracked; the fresh config must show
+  the new `size=`.
+- **The guest's filesystem.** On the boot disk (first of `boot:
+  order=`) of a running VM whose agent answers, a step grows the root
+  filesystem through the agent: `growpart` on `/`'s partition (exit 1,
+  "nothing to grow", is fine), then `resize2fs` (ext4) or `xfs_growfs`;
+  `/` on anything but a `/dev/sd*` or `/dev/vd*` partition, or another
+  filesystem, fails the step. The step reports `/` before and after (`df`);
+  an unchanged size is a failed step (exit 8) naming the next move:
+  grow it in the guest, or reboot (cloud-init's growpart runs at every
+  boot). The boot disk of a stopped VM or one without an answering agent
+  grows its filesystem at the next boot; another disk's partitions are
+  the operator's to grow — the plan and the result say which.
+
+**`vm set` keys.** Beyond `name`, `description`, `tags`, `onboot`,
+`cores`, `sockets`, `memory`, `balloon`: `startup`
+(`order=N[,up=S][,down=S]`, a bare `N` is the order; normalized in that
+key order), `protection` and `numa` (yes/no), `vcpus` (1–512),
+`cpulimit` (0–128 CPUs, 0 = none), `cpuunits` (1–10000, the cgroup v2
+range), `hotplug` (a list of `network`, `disk`, `usb`, `cpu`, `memory`,
+`cloudinit`, or `0`/`1`); `balloon=0` turns ballooning off. Checked
+together with what is stored, so Proxmox's start-time refusals come
+before the write: `cores × sockets` within the host's CPUs
+(`/nodes/{node}/status` `cpuinfo.cpus`), `vcpus` within `cores ×
+sockets`, `balloon` within `memory`, memory hotplug only with `numa=1`.
+Network, cloud-init, disk-option and hardware keys stay out (`net0`,
+`ipconfig0`, `bios`, `machine`, …). `vm show` lists "Boot" (onboot and
+startup), "Protection", "Hot vCPUs", "CPU limit", "CPU weight",
+"Balloon", "NUMA" and "Hotplug" when set, pending values marked.
 
 ## 10. UniFi
 
@@ -2369,7 +2427,14 @@ procedures in GUIDE.md.
   `digest` for optimistic locking; `GET …/config` shows pending values
   as if live; `GET …/pending` lists each key with `value` (current),
   `pending` and `delete` (1, or 2 for a forced delete) — §9.13;
-  `status/reboot` applies pending changes.
+  `status/reboot` applies pending changes. `PUT …/resize` (`disk`,
+  `size` `\+?\d+(\.\d+)?[KMGT]?` — absolute without `+`, bytes without
+  a unit — and `digest`) returns a UPID, needs `VM.Config.Disk`, and
+  refuses to shrink; the drive's `size=` in the config shows the result.
+  Which `vm set` key waits for the next start on a running VM is read
+  from `/pending` afterwards (§9.13), never assumed; memory hotplug needs
+  `numa=1` (Proxmox refuses the start otherwise). Not yet verified live
+  (resize, the new keys, `--reboot`).
 - **Memory figures (PVE 9.2, seen 2026-10-26):** `/nodes/{node}/qemu`
   `mem` equals `memhost` (the QEMU process on the host);
   `status/current` `mem` is `ballooninfo.total_mem − free_mem`, and
