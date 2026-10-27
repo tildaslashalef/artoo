@@ -231,6 +231,16 @@ fn render(ctx: *Context, d: Detail) !void {
     });
     if (v.lock) |l| try general.append(a, .{ .key = "Lock", .value = try k.clean(ctx, l), .role = .warn });
     if (try cfgText(ctx, d.config, "description")) |desc| try general.append(a, .{ .key = "Description", .value = desc });
+    if (!v.template) {
+        const onboot = pve.flag(d.config, "onboot");
+        const startup = try cfgText(ctx, d.config, "startup");
+        try general.append(a, .{
+            .key = "Boot",
+            .value = if (!onboot) "no" else if (startup) |su| try std.fmt.allocPrint(a, "yes ({s})", .{su}) else "yes",
+            .role = if (onboot) .text else .muted,
+        });
+    }
+    if (pve.flag(d.config, "protection")) try general.append(a, .{ .key = "Protection", .value = "on: Proxmox refuses to destroy it" });
 
     const cores = pve.int(d.config, "cores") orelse 1;
     const sockets = pve.int(d.config, "sockets") orelse 1;
@@ -248,7 +258,16 @@ fn render(ctx: *Context, d: Detail) !void {
         const mib = if (w.pending) |p| pve.numberOf(p) else null;
         mem = try marked(ctx, d, mem, if (mib) |m| try k.fmt(ctx, ui.values.bytes(@intFromFloat(@max(m, 0) * 1024 * 1024))) else try pendingText(ctx, w));
     }
-    try res.appendSlice(a, &.{ vcpu, mem });
+    try res.append(a, vcpu);
+    for ([_][2][]const u8{ .{ "Hot vCPUs", "vcpus" }, .{ "CPU limit", "cpulimit" }, .{ "CPU weight", "cpuunits" } }) |kv|
+        if (try configField(ctx, d, kv[0], kv[1])) |f| try res.append(a, f);
+    try res.append(a, mem);
+    if (try configField(ctx, d, "Balloon", "balloon")) |f| try res.append(a, if (f.role == .warn) f else .{
+        .key = f.key,
+        .value = if (std.mem.eql(u8, f.value, "0")) "off" else try std.fmt.allocPrint(a, "{s} MiB at least", .{f.value}),
+    });
+    for ([_][2][]const u8{ .{ "NUMA", "numa" }, .{ "Hotplug", "hotplug" } }) |kv|
+        if (try configField(ctx, d, kv[0], kv[1])) |f| try res.append(a, f);
     if (d.guest_mem) |g| if (g.cached) |cache| try res.append(a, .{ .key = "Cache", .value = try std.fmt.allocPrint(a, "{s}  reclaimable", .{try k.fmt(ctx, ui.values.bytes(cache))}), .role = .muted });
     if (v.running()) try res.append(a, .{ .key = "Host", .value = try std.fmt.allocPrint(a, "{s}  QEMU process on the host", .{try k.fmt(ctx, ui.values.bytes(v.mem))}), .role = .muted });
     try res.append(a, .{ .key = "Disk", .value = try k.fmt(ctx, ui.values.bytes(v.maxdisk)) });
@@ -535,6 +554,7 @@ test "vm show: sections; agent addresses; hidden password" {
         "  Memory      488.3 MiB / 1.9 GiB (25.0%)",
         "  Cache       976.6 MiB  reclaimable\n",
         "  Host        1.0 GiB  QEMU process on the host\n",
+        "  Boot        no\n",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
@@ -542,6 +562,27 @@ test "vm show: sections; agent addresses; hidden password" {
         }
     }
     try testing.expect(std.mem.find(u8, out, "127.0.0.1") == null);
+}
+
+test "vm show: boot order, protection, CPU and memory options" {
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        .{ .respond = .{ .body = resources_body } },
+        .{ .respond = .{ .body = "{\"data\":[{\"key\":\"onboot\",\"value\":1},{\"key\":\"startup\",\"value\":\"order=2,up=30\"},{\"key\":\"protection\",\"value\":1},{\"key\":\"cores\",\"value\":2},{\"key\":\"vcpus\",\"value\":1},{\"key\":\"cpulimit\",\"value\":\"1.5\"},{\"key\":\"balloon\",\"value\":1024},{\"key\":\"numa\",\"value\":1},{\"key\":\"hotplug\",\"value\":\"network,disk,cpu,memory\"}]}" } },
+        .{ .respond = .{ .body = "{\"data\":[]}" } },
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{group});
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm show db-01"));
+    try expectLines(g.h.stdout(), &.{
+        "  Boot              yes (order=2,up=30)\n",
+        "  Protection        on: Proxmox refuses to destroy it\n",
+        "  Hot vCPUs         1\n",
+        "  CPU limit         1.5\n",
+        "  Balloon           1024 MiB at least\n",
+        "  NUMA              1\n",
+        "  Hotplug           network,disk,cpu,memory\n",
+    });
 }
 
 test "vm show and vm config: pending values marked (SPEC §9.13)" {
