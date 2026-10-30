@@ -738,6 +738,13 @@ pub const scripts = struct {
     /// The edge VM has no Tailscale (SPEC §9.7).
     const tools_edge = "for t in fish tmux vim starship zoxide eza fzf rg fdfind jq htop git curl unzip; do command -v $t >/dev/null || printf '%s ' $t; done";
     const tailscale_absent = "command -v tailscale || echo absent";
+    /// A `tailnet` guest's node, as one JSON object of the fields
+    /// `judgeTailscaleNode` reads; nothing else leaves the guest.
+    const tailscale_node =
+        \\s=$(tailscale status --json --peers=false) || exit 1
+        \\p=$(tailscale debug prefs) || exit 1
+        \\printf '%s\n%s\n' "$s" "$p" | jq -sc '{state: .[0].BackendState, tags: (.[0].Self.Tags // []), route_all: .[1].RouteAll, ssh: .[1].RunSSH, exit_node: .[1].ExitNodeID, routes: (.[1].AdvertiseRoutes // [])}'
+    ;
     /// `key value` lines for `judgeUpdates` (SPEC §9.1).
     const updates =
         \\d=$(apt-config dump)
@@ -805,6 +812,8 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
     // The edge and the watchdog run without Tailscale (SPEC §9.7, §9.9).
     const edge = if (vm_role(pve.str(cfg, "tags") orelse "")) |r| std.mem.eql(u8, r, "edge") or std.mem.eql(u8, r, watch.role) else false;
     const router = if (vm_role(pve.str(cfg, "tags") orelse "")) |r| std.mem.eql(u8, r, "router") else false;
+    // A guest the operator put on the tailnet on purpose (SPEC §9.6).
+    const tailnet = hasTailnetTag(pve.str(cfg, "tags") orelse "");
     const guest_checks = [_]Guest{
         .{ .name = "cloud-init done", .argv = &.{ "sh", "-c", scripts.cloud_init }, .judge = judgeCloudInit },
         .{ .name = "hostname", .argv = &.{ "sh", "-c", scripts.names }, .judge = judgeNames },
@@ -814,10 +823,14 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
         .{ .name = "sshd hardening", .argv = &.{ "sh", "-c", scripts.sshd }, .judge = judgeSshd },
         .{ .name = "Ghostty terminfo", .argv = &.{ "sh", "-c", try scripts.terminfo(a, user) }, .judge = judgeTerminfo },
         .{ .name = "tools", .argv = &.{ "sh", "-c", if (edge) scripts.tools_edge else scripts.tools }, .judge = judgeTools },
-        if (edge)
+        if (edge and tailnet)
+            .{ .name = "tailscale removed", .argv = &.{ "sh", "-c", scripts.tailscale_absent }, .judge = judgeTailnetOnEdge }
+        else if (edge)
             .{ .name = "tailscale removed", .argv = &.{ "sh", "-c", scripts.tailscale_absent }, .judge = judgeTailscaleAbsent }
         else if (router)
             .{ .name = "tailscale router", .argv = &.{ "tailscale", "status", "--json" }, .judge = judgeTailscaleRouter }
+        else if (tailnet)
+            .{ .name = "tailscale node", .argv = &.{ "sh", "-c", scripts.tailscale_node }, .judge = judgeTailscaleNode }
         else
             .{ .name = "tailscale not enrolled", .argv = &.{ "tailscale", "status", "--json" }, .judge = judgeTailscale },
         .{ .name = "unattended updates", .argv = &.{ "sh", "-c", scripts.updates }, .judge = judgeUpdates },
@@ -1218,6 +1231,46 @@ fn judgeTailscaleRouter(ctx: *Context, r: agent.Result, _: []const u8, _: []cons
     return .{ .name = "", .status = .warning, .detail = try std.fmt.allocPrint(ctx.arena, "{s} — next: 'artoo router setup'", .{try k.clean(ctx, state)}) };
 }
 
+/// The guest tag that admits a tailnet node (SPEC §9.6).
+pub const tailnet_tag = "tailnet";
+
+fn hasTailnetTag(tags: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, tags, ";, ");
+    while (it.next()) |t| if (std.mem.eql(u8, t, tailnet_tag)) return true;
+    return false;
+}
+
+/// The edge and the watchdog never join the tailnet, whatever their tags.
+fn judgeTailnetOnEdge(_: *Context, _: agent.Result, _: []const u8, _: []const u8) !Check {
+    return .{ .name = "", .status = .failed, .detail = "tag tailnet on the edge or watchdog, which run without Tailscale" };
+}
+
+/// A guest tagged `tailnet` (SPEC §9.6): enrolled as a tagged node that
+/// accepts no routes, advertises none, uses no exit node and runs no
+/// Tailscale SSH. Not enrolled yet is a warning.
+fn judgeTailscaleNode(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !Check {
+    const Node = struct {
+        state: []const u8 = "unknown",
+        tags: []const []const u8 = &.{},
+        route_all: bool = false,
+        ssh: bool = false,
+        exit_node: []const u8 = "",
+        routes: []const []const u8 = &.{},
+    };
+    const n = std.json.parseFromSliceLeaky(Node, ctx.arena, r.out, .{ .ignore_unknown_fields = true }) catch
+        return .{ .name = "", .status = .failed, .detail = try k.clean(ctx, firstLine(if (r.err.len > 0) r.err else r.out)) };
+    if (!std.mem.eql(u8, n.state, "Running"))
+        return .{ .name = "", .status = .warning, .detail = try std.fmt.allocPrint(ctx.arena, "{s} — tag tailnet, not enrolled yet", .{try k.clean(ctx, n.state)}) };
+    var bad: std.ArrayList([]const u8) = .empty;
+    if (n.tags.len == 0) try bad.append(ctx.arena, "enrolled as a person, not a tag");
+    if (n.route_all) try bad.append(ctx.arena, "accepts routes");
+    if (n.routes.len > 0) try bad.append(ctx.arena, "advertises routes");
+    if (n.exit_node.len > 0) try bad.append(ctx.arena, "uses an exit node");
+    if (n.ssh) try bad.append(ctx.arena, "runs Tailscale SSH");
+    if (bad.items.len > 0) return .{ .name = "", .status = .failed, .detail = try k.clean(ctx, try std.mem.join(ctx.arena, ", ", bad.items)) };
+    return .{ .name = "", .status = .ok, .detail = try std.fmt.allocPrint(ctx.arena, "enrolled as {s}, no routes, no SSH", .{try k.clean(ctx, try std.mem.join(ctx.arena, ",", n.tags))}) };
+}
+
 pub fn renderChecks(ctx: *Context, checks: []const Check) !void {
     const rows = try ctx.arena.alloc([]const ui.table.Cell, checks.len);
     for (checks, rows) |ch, *row| {
@@ -1243,7 +1296,8 @@ pub const verify = struct {
         \\user's shell and home, payload files owned by it, sudo asking for a
         \\password, sshd without root or password login, Ghostty terminfo for
         \\root and the user,
-        \\baseline tools, Tailscale installed but not enrolled, unattended security
+        \\baseline tools, Tailscale installed but not enrolled (a guest tagged
+        \\tailnet: enrolled as a tagged node, no routes, no Tailscale SSH), unattended security
         \\updates without automatic reboot, a pending reboot (warning), Alloy enrolled when a
         \\watchdog exists (SPEC §9.9). From here: SSH key
         \\login with the pinned host key, the DNS record on UniFi and its
@@ -1541,6 +1595,17 @@ test "judges" {
     try testing.expectEqual(ui.style.Status.failed, (try judgeTools(&ctx, .{ .code = 0, .out = "eza ", .err = "" }, "", "")).status);
     try testing.expectEqual(ui.style.Status.ok, (try judgeTailscale(&ctx, .{ .code = 0, .out = "{\"BackendState\":\"NeedsLogin\"}", .err = "" }, "", "")).status);
     try testing.expectEqual(ui.style.Status.failed, (try judgeTailscale(&ctx, .{ .code = 0, .out = "{\"BackendState\":\"Running\"}", .err = "" }, "", "")).status);
+    const node_ok = try judgeTailscaleNode(&ctx, .{ .code = 0, .out = "{\"state\":\"Running\",\"tags\":[\"tag:rex\"],\"route_all\":false,\"ssh\":false,\"exit_node\":\"\",\"routes\":[]}", .err = "" }, "", "");
+    try testing.expectEqual(ui.style.Status.ok, node_ok.status);
+    try testing.expectEqualStrings("enrolled as tag:rex, no routes, no SSH", node_ok.detail);
+    try testing.expectEqual(ui.style.Status.warning, (try judgeTailscaleNode(&ctx, .{ .code = 0, .out = "{\"state\":\"NeedsLogin\",\"tags\":[],\"route_all\":false,\"ssh\":false,\"exit_node\":\"\",\"routes\":[]}", .err = "" }, "", "")).status);
+    const node_bad = try judgeTailscaleNode(&ctx, .{ .code = 0, .out = "{\"state\":\"Running\",\"tags\":[],\"route_all\":true,\"ssh\":true,\"exit_node\":\"n1\",\"routes\":[\"0.0.0.0/0\"]}", .err = "" }, "", "");
+    try testing.expectEqual(ui.style.Status.failed, node_bad.status);
+    try testing.expectEqualStrings("enrolled as a person, not a tag, accepts routes, advertises routes, uses an exit node, runs Tailscale SSH", node_bad.detail);
+    try testing.expectEqual(ui.style.Status.failed, (try judgeTailscaleNode(&ctx, .{ .code = 1, .out = "", .err = "jq: not found\n" }, "", "")).status);
+    try testing.expectEqual(ui.style.Status.failed, (try judgeTailnetOnEdge(&ctx, .{ .code = 0, .out = "absent\n", .err = "" }, "", "")).status);
+    try testing.expect(hasTailnetTag("artoo;dev;tailnet"));
+    try testing.expect(!hasTailnetTag("artoo;tailnets"));
     var lines: std.ArrayList(u8) = .empty;
     for (vendor.payload) |f| try lines.print(ctx.arena, "artoo {s}\n", .{f.path});
     try lines.appendSlice(ctx.arena, "artoo /home/artoo/.local/bin/fd\n");

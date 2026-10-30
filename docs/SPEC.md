@@ -767,7 +767,10 @@ xterm-ghostty colors` prints 256; SSH key login from the workstation works (stri
 key handling keyed by VM name); UniFi client record for the VM's MAC
 with the VM's name and its address as Fixed IP; DNS record present and
 resolving via UniFi; for public guests the Cloudflare record and tunnel route exist;
-Tailscale installed and not enrolled; also `sudo -n` refused for the
+Tailscale installed and not enrolled — on a guest tagged `tailnet`
+(§9.6) instead enrolled as a tagged node with no accepted or advertised
+routes, no exit node and no Tailscale SSH (not enrolled yet is a warning;
+the tag on an edge or watchdog fails); also `sudo -n` refused for the
 guest user, `sshd -T` showing no root and no password login, the guest
 user's shell fish ("user account": home and shell), the baseline tools
 present, and Alloy enrolled and running when a `role-watch` VM exists (§9.9; not checked otherwise); the fence of a
@@ -838,6 +841,13 @@ reservations; the classic calls live in `src/unifi/classic.zig` only.
 - **Remote access.** Tailscale only: remote SSH and private access through
   a subnet router plus split DNS for `lab.example.com`. Tailnet ACL,
   subnet-router and enrollment changes are separate approvals.
+  A guest joins the tailnet itself only when the operator tags it
+  `tailnet` (`vm set NAME tags=…,tailnet`), for a program that identifies
+  callers by their tailnet login: a tagged node, `--accept-routes=false`,
+  no advertised routes, no Tailscale SSH, reachable only on the ports
+  the tailnet policy grants. Every other guest stays installed but not
+  enrolled (§9.1), and `vm verify` holds both (§9.4). Never the edge or
+  the watchdog (§9.7, §9.9).
 - **Public access is per service** (decided 2026-10-11): `vm new` → `svc add` → `cf tunnel route add HOST
   SERVICE`, each its own plan. Public names reach a service through
   **Cloudflare Tunnel** (Tailscale Funnel serves only `ts.net` names);
