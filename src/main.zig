@@ -16,6 +16,7 @@ test {
     _ = @import("commands/registry.zig");
     _ = @import("dispatch.zig");
     _ = @import("proc.zig");
+    _ = @import("clipboard.zig");
     _ = @import("secrets.zig");
     _ = @import("setup_file.zig");
     _ = @import("prompt.zig");

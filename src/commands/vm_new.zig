@@ -10,6 +10,7 @@ const config = @import("../config.zig");
 const exec = @import("../exec.zig");
 const files = @import("../files.zig");
 const proc = @import("../proc.zig");
+const clipboard = @import("../clipboard.zig");
 const prompt = @import("../prompt.zig");
 const ui = @import("../ui.zig");
 const pve = @import("../pve/client.zig");
@@ -1488,14 +1489,17 @@ fn hasAlias(text: []const u8, alias: []const u8) bool {
 
 pub const password = struct {
     pub const name = "password";
-    pub const summary = "Show the guest user's sudo password (terminal only)";
-    pub const details = "For sudo and the console. Printed only to a terminal, after confirmation; never in JSON.";
+    pub const summary = "Copy the guest user's sudo password to the clipboard (terminal only)";
+    pub const details = "For sudo and the console. Copied to the clipboard (pbcopy; wl-copy, xclip or xsel), or with --show printed after confirmation; only from a terminal, never in JSON.";
     pub const positionals = [_]cli.Positional{vm_arg};
-    pub const examples = [_][]const u8{"artoo vm password web-01"};
+    pub const flags = [_]cli.Flag{
+        .{ .long = "show", .help = "Print the password instead (after confirmation)" },
+    };
+    pub const examples = [_][]const u8{ "artoo vm password web-01", "artoo vm password web-01 --show" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         if (ctx.json()) return ctx.fail(error.Usage, "the password is never printed as JSON", .{});
-        if (ctx.ui.width == null) return ctx.fail(error.Refused, "the password is printed only to a terminal", .{});
+        if (ctx.ui.width == null) return ctx.fail(error.Refused, "the password is revealed only to a terminal", .{});
         const word = args.pos("VM");
         const store = try ctx.secretStore();
         // Accept a name without asking Proxmox when the entry exists.
@@ -1506,8 +1510,16 @@ pub const password = struct {
         };
         const secret_name = try secretName(ctx, nm);
         const pw = (try store.get(ctx.io, ctx.arena, secret_name)) orelse return ctx.fail(error.SecretMissing, "no stored password {s}", .{secret_name});
-        try ctx.confirm("Show the password of {s}?", .{nm});
-        try ctx.out.print("{s}\n", .{pw});
+        if (args.has("show")) {
+            try ctx.confirm("Show the password of {s}?", .{nm});
+            try ctx.out.print("{s}\n", .{pw});
+            return;
+        }
+        clipboard.copy(ctx.io, ctx.arena, ctx.env, pw, ctx.test_hooks.runner) catch |err| switch (err) {
+            error.ClipboardUnavailable => return ctx.fail(error.Refused, "no clipboard helper worked (pbcopy; wl-copy, xclip or xsel with a display); use --show", .{}),
+            else => |e| return e,
+        };
+        try ctx.out.print("Copied the password of {s} to the clipboard.\n", .{nm});
     }
 };
 

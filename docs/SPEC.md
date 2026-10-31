@@ -108,7 +108,7 @@ artoo vm upgrade VM                   install the guest's pending package update
 artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
 artoo vm ssh-config                   write ~/.artoo/ssh_config: strict plain ssh/scp/rsync (§9.10)
 artoo vm cp SRC DST [-r] [--force]    copy as <user> to, from or between guests, SHA-256 checked (§9.10)
-artoo vm password VM                  print the guest user's password (TTY only, §7)
+artoo vm password VM [--show]         copy the guest user's password to the clipboard; --show prints it (TTY only, §7)
 artoo vm fence VM [--off]             Proxmox NIC firewall around a guest (§9.11)
 
 artoo template ls | show T | build T [--id N] | rm T | vendor [T]
@@ -494,8 +494,10 @@ One token, built-in roles.
   operator-approved host change over the root SSH key, fed to `artoo auth
   set pve --stdin`.
 
-`vm password VM` reveals a guest password only on an interactive TTY, after
-confirmation, never in JSON.
+`vm password VM` reveals a guest password only on an interactive TTY, never
+in JSON: by default it copies it to the clipboard through the platform's
+helper on stdin (`pbcopy`; `wl-copy`, `xclip` or `xsel` with a display),
+and refuses when none works; `--show` prints it after confirmation.
 
 ## 8. Transport and mutation pipeline
 
