@@ -151,7 +151,7 @@ artoo status
 `naboo.lab.example.com`, waits for cloud-init (several minutes on first
 boot, one reboot if the updates ask for it), pins the SSH host key and
 runs `vm verify`. The guest user gets your SSH key and a generated sudo
-password (`artoo vm password naboo`, terminal only). Its shell setup is
+password (`artoo vm password naboo` copies it to the clipboard; `--show` prints it). Its shell setup is
 the author's own — fish, starship, tmux, Vim — from
 [src/guest/payload/](../src/guest/payload/); change it in your fork.
 
