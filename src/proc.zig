@@ -99,6 +99,37 @@ pub fn runInherited(io: Io, argv: []const []const u8) Error!?u8 {
     };
 }
 
+/// Feed `stdin` to `argv` and wait, its output discarded: for helpers
+/// that fork a daemon holding their stdout open (xclip, wl-copy).
+/// Exit status; null when killed by a signal.
+pub fn feed(io: Io, argv: []const []const u8, stdin: []const u8) Error!?u8 {
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.NotFound,
+        error.Canceled => return error.Canceled,
+        else => return error.Failed,
+    };
+    const in = child.stdin.?;
+    in.writeStreamingAll(io, stdin) catch {};
+    in.close(io);
+    child.stdin = null;
+    const term = child.wait(io) catch |err| switch (err) {
+        error.Canceled => {
+            child.kill(io);
+            return error.Canceled;
+        },
+        else => return error.Failed,
+    };
+    return switch (term) {
+        .exited => |c| c,
+        else => null,
+    };
+}
+
 const testing = std.testing;
 
 test "runReal: stdin in, stdout/stderr out, exit codes" {
@@ -112,4 +143,10 @@ test "runReal: stdin in, stdout/stderr out, exit codes" {
     try testing.expectEqual(@as(?u8, 44), sh.code);
     try testing.expectEqualStrings("oops\n", sh.stderr);
     try testing.expectError(error.NotFound, r.run(testing.io, a.allocator(), &.{"/nonexistent/artoo-helper"}, null));
+}
+
+test "feed: stdin in, exit codes" {
+    try testing.expectEqual(@as(?u8, 0), try feed(testing.io, &.{ "sh", "-c", "test \"$(cat)\" = secret" }, "secret"));
+    try testing.expectEqual(@as(?u8, 1), try feed(testing.io, &.{ "sh", "-c", "test \"$(cat)\" = other" }, "secret"));
+    try testing.expectError(error.NotFound, feed(testing.io, &.{"/nonexistent/artoo-helper"}, "x"));
 }

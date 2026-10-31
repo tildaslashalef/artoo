@@ -185,7 +185,7 @@ artoo vm new hoth --ip 192.168.1.230 --no-dns -y
 artoo vm verify naboo                    # read-only checks; exit 8 on any failure
 artoo vm verify --all                    # every artoo guest at once (updates, pending reboots, …)
 artoo vm ssh naboo [-- CMD]              # host key pinned through the guest agent
-artoo vm password naboo                  # the guest user's sudo/console password (terminal only)
+artoo vm password naboo [--show]         # the guest user's sudo/console password to the clipboard (terminal only)
 artoo vm ssh-config                      # ~/.artoo/ssh_config: plain ssh/scp/rsync as strict as vm ssh
 artoo vm cp ./bin/tool naboo:bin/        # copy as the guest user; SHA-256 checked on the far side
 artoo vm cp -r bespin:site naboo:        # guest to guest, relayed through the workstation (scp -3)
