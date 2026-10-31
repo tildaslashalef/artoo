@@ -5,7 +5,8 @@
 #                   + leak-check (private terms, when the list exists)
 #   make leak-check private words from ../homelab/private-terms
 #   make install    ReleaseSafe build → ~/.local/bin/artoo + fish completion
-#                   (COMPLETION=zsh|bash|none to change or skip it)
+#                   (COMPLETION=zsh|bash|none to change or skip it); on a Mac
+#                   with an "Apple Development" certificate, signed with it
 #   make run ARGS="gw info"
 
 ZIG    ?= zig
@@ -20,6 +21,12 @@ COMPLETION_fish := $(XDG_CONFIG_HOME)/fish/completions/artoo.fish
 COMPLETION_zsh  := $(PREFIX)/share/zsh/site-functions/_artoo
 COMPLETION_bash := $(PREFIX)/share/bash-completion/completions/artoo
 COMPLETION_FILE := $(COMPLETION_$(COMPLETION))
+
+# On macOS the installed binary is signed with the keychain's Apple
+# Development certificate when there is one (by hash: a renewal can leave
+# two with the same name), else it keeps the linker's ad hoc signature.
+SIGN_ID := $(shell security find-identity -p codesigning 2>/dev/null | awk '/"Apple Development: /{print $$2; exit}')
+SIGN    := $(if $(SIGN_ID),codesign --force --identifier artoo --sign $(SIGN_ID),true)
 
 .DEFAULT_GOAL := build
 .PHONY: build test fmt install run clean leak-check
@@ -45,6 +52,7 @@ endif
 	@$(ZIG) build -Doptimize=ReleaseSafe --prefix zig-out/release
 	@install -d $(BINDIR)
 	@install -m 0755 zig-out/release/bin/artoo $(BINDIR)/.artoo.tmp
+	@$(SIGN) $(BINDIR)/.artoo.tmp
 	@mv $(BINDIR)/.artoo.tmp $(BINDIR)/artoo
 	@echo "installed $(BINDIR)/artoo ($$($(BINDIR)/artoo --version))"
 ifneq ($(COMPLETION),none)
