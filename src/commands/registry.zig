@@ -60,6 +60,7 @@ test {
     _ = @import("vm_life.zig");
     _ = @import("vm_new.zig");
     _ = @import("vm_upgrade.zig");
+    _ = @import("snapguard.zig");
     _ = @import("vm_ssh.zig");
     _ = @import("../guest/ssh_config.zig");
     _ = @import("../pve/agent.zig");
