@@ -73,7 +73,27 @@ owned "$CLONE_ID" "$CLONE"
 log "rm clone";          artoo vm rm "$CLONE" --yes --confirm "$CLONE"
 ledger "$CLONE_ID" "$CLONE" "destroyed (artoo vm rm)"
 owned "$VMID" "$NAME"
-log "snapshot rm";       artoo vm snap rm "$NAME" s1 --yes --confirm "$NAME@s1"
+# SPEC §9.16 on the OS-less guest: the parts that need no guest agent.
+log "reserved snapshot prefix (refused → exit 2)"
+if artoo vm snap add "$NAME" artoo-mine -y; then fail "artoo- prefix accepted"; else [ $? -eq 2 ] || fail "reserved prefix: wrong exit"; fi
+log "rollback past a newer snapshot (refused → exit 5)"
+artoo vm snap add "$NAME" s2 -y
+if artoo vm snap rollback "$NAME" s1 --yes --confirm "$NAME@s1"; then fail "rollback past s2 ran"; else [ $? -eq 5 ] || fail "blocked rollback: wrong exit"; fi
+owned "$VMID" "$NAME"
+artoo vm snap rm "$NAME" s2 --yes --confirm "$NAME@s2"
+log "prune artoo snapshots"
+owned "$VMID" "$NAME"
+"${SSH[@]}" "qm snapshot $VMID artoo-live-a --description 'artoo live test $STAMP' && sleep 2 && qm snapshot $VMID artoo-live-b --description 'artoo live test $STAMP'"
+artoo vm snap ls "$NAME"
+artoo vm snap prune "$NAME" -n
+artoo vm snap prune "$NAME" --keep 1 --yes --confirm "$NAME"
+artoo vm snap ls "$NAME" | grep -q 'artoo-live-b' || fail "prune removed the newest"
+if artoo vm snap ls "$NAME" | grep -q 'artoo-live-a'; then fail "prune kept the oldest"; fi
+artoo vm snap prune "$NAME" --keep 0 --yes --confirm "$NAME"
+if artoo vm snap ls "$NAME" | grep -q 'artoo-'; then fail "prune --keep 0 left a snapshot"; fi
+artoo vm snap ls "$NAME" | grep -q 's1' || fail "prune touched the operator's s1"
+owned "$VMID" "$NAME"
+log "snapshot rm";      artoo vm snap rm "$NAME" s1 --yes --confirm "$NAME@s1"
 owned "$VMID" "$NAME"
 log "rm";                artoo vm rm "$NAME" --yes --confirm "$NAME"
 ledger "$VMID" "$NAME" "destroyed (artoo vm rm)"
