@@ -101,10 +101,12 @@ artoo vm disk grow VM SIZE [--disk SLOT]  grow a disk and the guest's root files
 artoo vm clone VM NEWNAME [--id N]
 artoo vm rm VM [--keep-dns]           destroy VM + disks (+ its DNS record)
 artoo vm snap ls VM | add VM NAME | rm VM NAME | rollback VM NAME
+artoo vm snap prune VM|--all [--keep N] [--older-than DAYS]
+                                      delete artoo-owned snapshots beyond the cap or age (§9.16)
 artoo vm new NAME [--size S] [--cores N] [--memory SIZE] [--disk SIZE] [--ip ADDR]
                  [--id N] [--template T] [--no-dns]
 artoo vm verify VM|--all [--no-dns]   read-only readiness checks (§9.4)
-artoo vm upgrade VM                   install the guest's pending package updates (§9.12)
+artoo vm upgrade VM [--snapshot]      install the guest's pending package updates (§9.12, §9.16)
 artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
 artoo vm ssh-config                   write ~/.artoo/ssh_config: strict plain ssh/scp/rsync (§9.10)
 artoo vm cp SRC DST [-r] [--force]    copy as <user> to, from or between guests, SHA-256 checked (§9.10)
@@ -138,7 +140,7 @@ Command availability follows delivery: a command is absent from the table
 
 - Normal mutations: preview, then `Proceed? [y/N]`. Non-interactive without
   `--yes` refuses (exit 5).
-- **Destructive** (`vm rm`, `vm stop`, `vm snap rollback|rm`, `template rm`,
+- **Destructive** (`vm rm`, `vm stop`, `vm snap rollback|rm|prune`, `template rm`,
   gateway deletes, firewall/ACL/network/Wi-Fi changes, generic `gw api`
   writes): interactive mode requires typing the target's name; non-interactive
   mode requires `--yes --confirm TARGET` where `TARGET` equals the resolved
@@ -360,12 +362,14 @@ is printed, so the output is the same as without it.
     "gateway": "192.168.1.1/24",
     "user": "artoo",
     "reserved_names": "",
-    "fence_allow_out": ""
+    "fence_allow_out": "",
+    "snapshot_keep": 2,
+    "snapshot_max_age_days": 14
   }
 }
 ```
 
-The values shown are the defaults. Four `guests` keys need a word:
+The values shown are the defaults. Six `guests` keys need a word:
 
 - `guests.user` (default `artoo`): the account `vm new` creates on every
   guest — SSH key login, `sudo` with a generated password kept in the
@@ -385,6 +389,12 @@ The values shown are the defaults. Four `guests` keys need a word:
   that are never published (§9.1, §9.6).
 - `guests.fence_allow_out` (default empty): outbound exceptions for
   fenced guests, `VM PEER PROTO PORTS` entries separated by `;` (§9.11).
+- `guests.snapshot_keep` (default 2, 1–10): how many artoo-owned
+  snapshots (`artoo-…`) a guest may hold; `--snapshot` refuses at the cap
+  and `vm snap prune` keeps this many (§9.16).
+- `guests.snapshot_max_age_days` (default 14, 1–365): an artoo-owned
+  snapshot older than this is a warning in `status`, `vm verify` and
+  `vm snap ls`, and `vm snap prune` selects it (§9.16).
 
 `config show` prints an empty value as `--`.
 
@@ -1831,8 +1841,9 @@ and the watchdog included.
   configuration files keep local changes (`--force-confdef
   --force-confold`); never a reboot. Notes: the lists' age, the deferred
   and kept-back counts, and that pinned packages (Alloy, the watchdog's
-  stack, §9.9) stay at their pins. No recovery command: apt has no undo,
-  so a snapshot taken first (`vm snap add VM NAME`) is the way back.
+  stack, §9.9) stay at their pins. apt has no undo: with `--snapshot`
+  (§9.16) the plan's recovery is the rollback to the snapshot taken
+  first; without it there is no recovery command.
   The fingerprint is the planned set and the lists' stamp.
 - **Send once:** `apt-get -y --with-new-pkgs upgrade` as root with
   `DEBIAN_FRONTEND=noninteractive` and `DPkg::Lock::Timeout=300` (an
@@ -1992,6 +2003,85 @@ Network, cloud-init, disk-option and hardware keys stay out (`net0`,
 `ipconfig0`, `bios`, `machine`, …). `vm show` lists "Boot" (onboot and
 startup), "Protection", "Hot vCPUs", "CPU limit", "CPU weight",
 "Balloon", "NUMA" and "Hotplug" when set, pending values marked.
+
+### 9.16 Snapshots before changes (`--snapshot`, `vm snap prune`)
+
+Decided 2026-11-05; not implemented yet. A snapshot is a rollback point
+for a change, not a backup: it lives on the same storage as the guest
+(backups stay out of scope, §1). artoo never schedules snapshots — it
+runs on a workstation, and Proxmox has no snapshot scheduler (only
+backup jobs). Instead, the commands that change a guest can take one
+first, and bounded retention keeps them from eating the pool.
+
+**Why bounded.** On a thin-provisioned ZFS pool (`sparse 1`) a RAM-less
+snapshot costs almost nothing when taken and grows with every block the
+guest rewrites afterwards: age, not count, is what fills the pool. A
+snapshot with RAM costs the VM's memory each time. ZFS rolls back only
+to a volume's newest snapshot (§17.2), so many snapshots of one guest
+add cost without adding rollback points.
+
+**Ownership.** Snapshots artoo takes are named `artoo-<action>-<UTC>`
+(`artoo-upgrade-20261105T0545Z`; at most 40 characters, §17.2), never
+include RAM, and carry the description `artoo <version>: <command>`.
+The prefix `artoo-` is reserved: `vm snap add` refuses it, so cleanup
+can never select a snapshot the operator named. Operator snapshots are
+untouched by everything below except the age report.
+
+**`--snapshot` on a guest-changing workflow.** `vm upgrade` (§9.12),
+`edge setup` (§9.7), `router setup` (§9.8) and `watch setup` (§9.9).
+Not on `vm fence` (the NIC firewall file is not part of a VM snapshot)
+or `vm disk grow` (a disk cannot shrink, §9.15).
+
+- **Read/plan:** the guest's snapshots and the status of every storage
+  that holds one of its disks (`/nodes/{node}/storage/{storage}/status`).
+  Refused before any write (exit 5): the guest already holds
+  `guests.snapshot_keep` artoo-owned snapshots ("naboo holds 2 artoo
+  snapshots (keep 2): 'artoo vm snap prune naboo'") — artoo never
+  deletes one to make room; a storage above 80 % used. The plan's first
+  change line is the snapshot (`snapshot (none) → artoo-upgrade-… (no
+  RAM)`) and its recovery is `artoo vm snap rollback VM NAME`.
+- **Send:** the snapshot is the workflow's first ledger step (`POST
+  …/snapshot`, `vmstate` off), its task tracked and the snapshot
+  verified in the listing before the change's own steps run. A failed
+  or unknown snapshot step stops the workflow with the change unsent
+  (exit 6 / 7). A re-run takes a new snapshot; the cap bounds it.
+- **Result:** success, failure and unknown outcomes alike print the
+  rollback command with the exact snapshot name. Rolling back the edge
+  also rolls back its route files: `svc ls` reports routes added since
+  as missing and `svc add` restores them (§9.7).
+
+**`vm snap prune VM|--all [--keep N] [--older-than DAYS]`.** Selects
+artoo-owned snapshots only: beyond the newest `N`
+(`guests.snapshot_keep` by default) and any older than `DAYS`
+(`guests.snapshot_max_age_days` by default). The plan lists each one
+with its age and parent; nothing selected is a no-op (exit 5).
+Destructive (§3.4): the typed VM name, or `--yes --confirm VM`; `--all`
+covers every artoo guest, is high-impact and takes `--confirm all`. One
+`DELETE …/snapshot/{name}` per snapshot, oldest first, each task
+tracked and the snapshot verified gone; the first failure stops the
+run (exit 6, or 8 when some were removed). Never `force`.
+
+**Rollback (`vm snap rollback`).** The plan reads the snapshot tree and
+the guest's disk storages: where a newer snapshot would block Proxmox's
+rollback (ZFS, §17.2) it refuses up front and names the blockers ("Remove
+them first — they are lost by this rollback anyway"). A guest that was
+running is started again (`start=1`) when the snapshot has no RAM; the
+plan says so, and verify waits for `running`.
+
+**Visibility.** `vm snap ls` gains AGE and an owner mark (`artoo`,
+operator). `status` adds one storage line (`snapshots 3 on 2 VMs, oldest
+16 d`) and warns per artoo-owned snapshot past the age limit; `vm
+verify` adds a "snapshots" check that warns the same way. The Proxmox
+API reports no per-snapshot size (§17.2), so artoo shows age and the
+storage's usage, never a guessed size.
+
+**Testing.** Offline: name generation and the reserved prefix, the cap
+and headroom refusals, prune selection (keep, age, operator snapshots
+excluded), rollback blockers from a snapshot tree, and the ledger
+stopping on a failed snapshot step. Live (`scripts/live/vm-lifecycle.sh`,
+a disposable guest): two `vm upgrade --snapshot` runs, the third refused
+at the cap, prune to one, a rollback blocked by a newer snapshot, then
+a rollback that leaves the guest running.
 
 ## 10. UniFi
 
@@ -2459,7 +2549,19 @@ procedures in GUIDE.md.
   seconds ago appears with its VMID but no name or status; per-node
   `/nodes/{node}/qemu` reads configs and live status directly.
 - **Guests:** a guest without an OS ignores ACPI shutdown (the task times
-  out); rolling back a RAM-less snapshot leaves the VM stopped.
+  out); rolling back a RAM-less snapshot leaves the VM stopped unless
+  the rollback sends `start=1`.
+- **Snapshots** (`apidoc.js` and pve-manager 9.2.21, checked
+  2026-11-05): `snapname` is a `pve-configid` of at most 40 characters;
+  the listing (`GET …/snapshot`) returns `name` (`current` is the live
+  VM), `parent`, `snaptime`, `vmstate` and `description` — no size, on
+  any endpoint; `DELETE` has `force` (drops the config entry even when
+  removing the disk snapshots fails — artoo never sends it); `POST
+  …/rollback` has `start`. On ZFS, `volume_rollback_is_possible`
+  (`ZFSPoolPlugin.pm`) lists every snapshot created after the target
+  as a blocker: only the newest snapshot can be rolled back to.
+  `GET /nodes/{node}/storage/{storage}/status` returns `total`, `used`,
+  `avail` (bytes), `type`, `active`, `enabled`, `shared`.
 - **Provisioning constraints:** no API endpoint uploads snippets
   (`download-url` allows only `iso|vztmpl|import`) — hence §9.2's SSH
   placement; `local` = dir `/var/lib/vz` (import, snippets, backup,
