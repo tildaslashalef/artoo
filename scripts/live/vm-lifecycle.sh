@@ -85,7 +85,7 @@ log "prune artoo snapshots"
 owned "$VMID" "$NAME"
 "${SSH[@]}" "qm snapshot $VMID artoo-live-a --description 'artoo live test $STAMP' && sleep 2 && qm snapshot $VMID artoo-live-b --description 'artoo live test $STAMP'"
 artoo vm snap ls "$NAME"
-artoo vm snap prune "$NAME" -n
+artoo vm snap prune "$NAME" --keep 1 -n
 artoo vm snap prune "$NAME" --keep 1 --yes --confirm "$NAME"
 artoo vm snap ls "$NAME" | grep -q 'artoo-live-b' || fail "prune removed the newest"
 if artoo vm snap ls "$NAME" | grep -q 'artoo-live-a'; then fail "prune kept the oldest"; fi
