@@ -30,6 +30,7 @@ const template = @import("template.zig");
 const cf = @import("../cloudflare/client.zig");
 const tunnels = @import("../cloudflare/tunnel.zig");
 const activity = @import("../activity.zig");
+const snapguard = @import("snapguard.zig");
 
 const Context = app.Context;
 
@@ -54,6 +55,11 @@ const Guest = struct {
     fence_drift: ?[]const u8 = null,
     /// What a running guest uses (SPEC §9.14); `mem` is the host's figure.
     guest_mem: ?vms.GuestMem = null,
+    /// Snapshots (SPEC §9.16): how many, the oldest's time, and the
+    /// artoo-owned ones past `guests.snapshot_max_age_days`.
+    snaps: usize = 0,
+    oldest_snap: ?i64 = null,
+    stale_snaps: []const snapguard.Snap = &.{},
 };
 
 const Gateway = struct {
@@ -120,6 +126,7 @@ fn guests(c: *pve.Client, templates: *usize) ![]const Guest {
     const ctx = c.ctx;
     var out: std.ArrayList(Guest) = .empty;
     var lab: ?vm_fence.Lab = null;
+    const max_age: i64 = @as(i64, (try ctx.config()).guests.snapshot_max_age_days) * 86400;
     for (try vms.list(c)) |v| {
         if (v.template) {
             templates.* += 1;
@@ -159,7 +166,16 @@ fn guests(c: *pve.Client, templates: *usize) ![]const Guest {
         }
         const gm = if (v.running()) try vms.guestMem(c, v.vmid, agent_ok) else null;
         const drift = if (template.taggedWith(v.tags, vm_fence.tag)) try fenceDrift(c, &lab, v) else null;
-        try out.append(ctx.arena, .{ .vmid = v.vmid, .name = v.name, .status = v.status, .vcpus = v.cpus, .cpu = v.cpu, .mem = v.mem, .maxmem = v.maxmem, .uptime = v.uptime, .address = addr, .reboot_pending = reboot, .reboot_packages = pkgs.items, .fence_drift = drift, .guest_mem = gm });
+        var snaps: []const snapguard.Snap = &.{};
+        if (snapguard.read(c, v.vmid)) |ss| snaps = ss else |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => ctx.diag = null,
+        }
+        var oldest: ?i64 = null;
+        for (snaps) |s| if (s.time) |t| {
+            oldest = if (oldest) |o| @min(o, t) else t;
+        };
+        try out.append(ctx.arena, .{ .vmid = v.vmid, .name = v.name, .status = v.status, .vcpus = v.cpus, .cpu = v.cpu, .mem = v.mem, .maxmem = v.maxmem, .uptime = v.uptime, .address = addr, .reboot_pending = reboot, .reboot_packages = pkgs.items, .fence_drift = drift, .guest_mem = gm, .snaps = snaps.len, .oldest_snap = oldest, .stale_snaps = try snapguard.stale(ctx.arena, snaps, max_age, ctx.ui.now) });
     }
     return out.items;
 }
@@ -484,7 +500,23 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
     if (r.storage) |ss| {
         var fields: std.ArrayList(ui.blocks.Field) = .empty;
         for (ss) |s| try fields.append(a, .{ .key = try std.fmt.allocPrint(a, "  {s}", .{try k.clean(ctx, s.name)}), .value = try k.usage(ctx, s.used, s.total) });
+        // Snapshots (SPEC §9.16): one line, then each artoo-owned one past its age.
+        var n_snaps: usize = 0;
+        var n_vms: usize = 0;
+        var oldest: ?i64 = null;
+        if (r.guests) |gs| for (gs) |g| if (g.snaps > 0) {
+            n_snaps += g.snaps;
+            n_vms += 1;
+            if (g.oldest_snap) |t| oldest = if (oldest) |o| @min(o, t) else t;
+        };
+        if (n_snaps > 0) try fields.append(a, .{ .key = "  snapshots", .value = try std.fmt.allocPrint(a, "{d} on {d} VM(s){s}", .{
+            n_snaps, n_vms, if (oldest) |t| try std.fmt.allocPrint(a, ", oldest {f}", .{ui.values.duration(@intCast(@max(ctx.ui.now - t, 0)))}) else "",
+        }) });
         try ui.blocks.detail(ctx.out, u, &.{.{ .fields = fields.items }});
+        if (r.guests) |gs| for (gs) |g| for (g.stale_snaps) |s| {
+            const name = try k.clean(ctx, g.name);
+            try ctx.out.print("  {s}{s} old snapshot: {s}@{s} ({f}) — 'artoo vm snap prune {s}'{s}\n", .{ u.palette.on(.warn), u.glyphs.warn, name, try k.clean(ctx, s.name), ui.values.duration(@intCast(@max(ctx.ui.now - (s.time orelse ctx.ui.now), 0))), name, u.palette.off(.warn) });
+        };
     } else try failLine(ctx, unavailable(errors, "storage") orelse unavailable(errors, "pve") orelse "--");
 
     // Tasks.
@@ -609,6 +641,7 @@ test "status: Proxmox and UniFi sections; a failed section exits 8" {
         .{ .match = "/api2/json/version ", .behavior = .{ .respond = .{ .body = host.version_body } } },
         .{ .match = "/nodes/pve/qemu ", .behavior = .{ .respond = .{ .body = qemu_plain } } },
         .{ .match = "/nodes/pve/storage ", .behavior = .{ .respond = .{ .body = storage.storage_body } } },
+        .{ .match = "/qemu/100/snapshot ", .behavior = .{ .respond = .{ .body = "{\"data\":[{\"name\":\"current\"}]}" } } },
         .{ .match = "/tasks?limit=100", .behavior = .{ .respond = .{ .body = "{\"data\":[]}" } } },
         .{ .match = "errors=1", .behavior = .{ .respond = .{ .status = 500, .body = "{\"data\":null}", .reason = "boom" } } },
         .{ .match = "/v1/info ", .behavior = .{ .respond = .{ .body = "{\"applicationVersion\":\"10.6.106\"}" } } },
@@ -684,6 +717,8 @@ test "status: the whole lab — edge drops first, no router, tunnel and service 
         ok("/qemu/202/agent/file-read", "{\"data\":{\"content\":\"MemTotal: 2000000 kB\\nMemAvailable: 1500000 kB\\nBuffers: 1000 kB\\nCached: 9000 kB\\n\"}}"),
         ok("/qemu/200/status/current ", "{\"data\":{\"status\":\"running\",\"ballooninfo\":{\"total_mem\":2147483648,\"free_mem\":536870912}}}"),
         ok("/nodes/pve/storage ", storage.storage_body),
+        ok("/qemu/200/snapshot ", "{\"data\":[{\"name\":\"current\"}]}"),
+        ok("/qemu/202/snapshot ", "{\"data\":[{\"name\":\"current\"},{\"name\":\"pre-watch\",\"snaptime\":1577836800},{\"name\":\"artoo-watch-20200102T0000Z\",\"snaptime\":1577923200}]}"),
         ok("/tasks?limit=100", no_data),
         ok("errors=1", no_data),
         // Edge: VM, agent, probe, status script, host firewall, address, routes
@@ -729,6 +764,9 @@ test "status: the whole lab — edge drops first, no router, tunnel and service 
         "488.3 MiB / 1.9 GiB",
         "  * incl. page cache: the guest agent did not answer\n",
         "  ▲ reboot pending: scarif (linux-image-7.0.0-39-generic, linux-base) — 'artoo vm reboot VM'\n",
+        "  snapshots  2 on 1 VM(s), oldest ",
+        "  ▲ old snapshot: scarif@artoo-watch-20200102T0000Z (",
+        ") — 'artoo vm snap prune scarif'\n",
         "Edge (bespin)\n  ✗ drops to Proxmox  3 packet(s) blocked — investigate\n",
         "Router\n  none (no VM tagged role-router)\n",
         "Tunnel\n  lab: healthy, 2 connection(s), 1 public route(s)\n  ▲ blog.example.com → service blog: the service does not exist\n",

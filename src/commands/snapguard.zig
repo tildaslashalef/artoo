@@ -266,6 +266,32 @@ pub const Guard = struct {
     }
 };
 
+/// `vm verify`'s "snapshots" check (SPEC §9.16): how many, and a
+/// warning per artoo-owned snapshot past `guests.snapshot_max_age_days`.
+pub const Verdict = struct { status: ui.style.Status, detail: []const u8 };
+
+pub fn verifyCheck(ctx: *Context, c: *pve.Client, vm: []const u8, vmid: u32) !Verdict {
+    const a = ctx.arena;
+    const snaps = read(c, vmid) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            const why = try k.clean(ctx, ctx.diag orelse @errorName(err));
+            ctx.diag = null;
+            return .{ .status = .failed, .detail = why };
+        },
+    };
+    if (snaps.len == 0) return .{ .status = .ok, .detail = "none" };
+    const max_age: i64 = @as(i64, (try ctx.config()).guests.snapshot_max_age_days) * 86400;
+    const old = try stale(a, snaps, max_age, ctx.ui.now);
+    if (old.len > 0) {
+        std.mem.sort(Snap, old, {}, olderFirst);
+        return .{ .status = .warning, .detail = try std.fmt.allocPrint(a, "{s} is {f} old{s} — 'artoo vm snap prune {s}'", .{
+            try k.clean(ctx, old[0].name), ui.values.duration(@intCast(ctx.ui.now - (old[0].time orelse ctx.ui.now))), if (old.len > 1) try std.fmt.allocPrint(a, " (+{d} more)", .{old.len - 1}) else "", vm,
+        }) };
+    }
+    return .{ .status = .ok, .detail = try std.fmt.allocPrint(a, "{d} ({d} artoo)", .{ snaps.len, ownedCount(snaps) }) };
+}
+
 const read_ = read;
 
 /// `--snapshot`, shared by the workflows that take one.

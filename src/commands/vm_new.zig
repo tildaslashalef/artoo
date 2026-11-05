@@ -857,6 +857,8 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
     }
     try out.append(a, try alloyCheck(ctx, c, v, agent_ok, watched));
     try out.append(a, try @import("vm_fence.zig").check(ctx, c, v));
+    const sv = try @import("snapguard.zig").verifyCheck(ctx, c, try k.clean(ctx, v.name), v.vmid);
+    try out.append(a, .{ .name = "snapshots", .status = sv.status, .detail = sv.detail });
 
     // From the workstation.
     if (address == null or !running) {
@@ -1699,24 +1701,25 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
         r(pid), r(try execStatus(a, 0, "yes\nlinux-image-7.0.0-38-generic\nlinux-base\n", "")), // reboot wanted
         r(upid), r(ok), // reboot
         r("{\"data\":{\"result\":{}}}"), // agent back
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "7.0.0-38-generic\n", "")), // kernel, request gone
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "7.0.0-38-generic\n", "")), // kernel, request gone
         r("{\"data\":{\"content\":\"ssh-ed25519 " ++ blob ++ " root@test-01\\n\"}}"),
         // verify
-                                                                                               r("{\"data\":[{\"vmid\":200,\"name\":\"test-01\",\"status\":\"running\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"template\":1}]}"),
-        r("{\"data\":{\"ipconfig0\":\"ip=192.168.1.204/24,gw=192.168.1.1\",\"net0\":\"virtio=BC:24:11:AB:CD:EF,bridge=vmbr0\"}}"),                                           r("{\"data\":{\"status\":\"running\"}}"),
-        r("{\"data\":[{\"key\":\"memory\",\"value\":\"2048\"}]}"),                                                                                                           r("{\"data\":{\"result\":{}}}"),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 2, ci_deprecated, "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "test-01\ntest-01.lab.example.com\n", "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "/home/artoo:/usr/bin/fish\nartoo\n", "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, payload_out.items, "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 1, "", "sudo: a password is required\n")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "permitrootlogin no\npasswordauthentication no\n", "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "256\n", "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "", "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "{\"BackendState\":\"NeedsLogin\"}", "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "periodic 1\nreboot false\nsecurity 2\ntailscale 1\ninstalled yes\ntimer enabled\nlast \nnow 100\n", "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "lists 90\nnow 100\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n", "")),
-        r(pid),                                                                                                                                                              r(try execStatus(a, 0, "no\n", "")),
+                                                     r("{\"data\":[{\"vmid\":200,\"name\":\"test-01\",\"status\":\"running\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"template\":1}]}"),
+        r("{\"data\":{\"ipconfig0\":\"ip=192.168.1.204/24,gw=192.168.1.1\",\"net0\":\"virtio=BC:24:11:AB:CD:EF,bridge=vmbr0\"}}"), r("{\"data\":{\"status\":\"running\"}}"),
+        r("{\"data\":[{\"key\":\"memory\",\"value\":\"2048\"}]}"),                                                                 r("{\"data\":{\"result\":{}}}"),
+        r(pid),                                                                                                                    r(try execStatus(a, 2, ci_deprecated, "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "test-01\ntest-01.lab.example.com\n", "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "/home/artoo:/usr/bin/fish\nartoo\n", "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, payload_out.items, "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 1, "", "sudo: a password is required\n")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "permitrootlogin no\npasswordauthentication no\n", "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "256\n", "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "", "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "{\"BackendState\":\"NeedsLogin\"}", "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "periodic 1\nreboot false\nsecurity 2\ntailscale 1\ninstalled yes\ntimer enabled\nlast \nnow 100\n", "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "lists 90\nnow 100\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n", "")),
+        r(pid),                                                                                                                    r(try execStatus(a, 0, "no\n", "")),
+        r("{\"data\":[{\"name\":\"current\"}]}"), // snapshots
         r("{\"meta\":{\"rc\":\"ok\"},\"data\":[{\"_id\":\"U10\",\"mac\":\"bc:24:11:ab:cd:ef\",\"name\":\"test-01\",\"use_fixedip\":true,\"fixed_ip\":\"192.168.1.204\"}]}"),
     });
     defer g.deinit();
@@ -1885,13 +1888,15 @@ test "vm verify --all: every artoo guest, concurrently; templates and foreign VM
         ok("/qemu/101/status/current ", "{\"data\":{\"status\":\"stopped\"}}"),
         ok("/qemu/100/pending ", "{\"data\":[{\"key\":\"cores\",\"value\":1,\"pending\":2}]}"),
         ok("/qemu/101/pending ", "{\"data\":[]}"),
+        ok("/qemu/100/snapshot ", "{\"data\":[{\"name\":\"current\"},{\"name\":\"artoo-upgrade-20200101T0000Z\",\"snaptime\":1577836800}]}"),
+        ok("/qemu/101/snapshot ", "{\"data\":[{\"name\":\"current\"}]}"),
     });
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm verify --all --no-dns"));
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     const out = g.h.stdout();
-    for ([_][]const u8{ "naboo (100)\n", "hoth (101)\n", "VM running", "config pending          ▲ warning      cores 1 → 2 — 'artoo vm start naboo'\n", "config pending          ✓ ok           none\n", "\n2 guest(s): 0 ok, 0 with warnings, 2 failed\n" }) |want| {
+    for ([_][]const u8{ "naboo (100)\n", "hoth (101)\n", "VM running", "config pending          ▲ warning      cores 1 → 2 — 'artoo vm start naboo'\n", "config pending          ✓ ok           none\n", "snapshots               ▲ warning      artoo-upgrade-20200101T0000Z is ", " old — 'artoo vm snap prune naboo'\n", "snapshots               ✓ ok           none\n", "\n2 guest(s): 0 ok, 0 with warnings, 2 failed\n" }) |want| {
         if (std.mem.find(u8, out, want) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out });
             return error.TestUnexpectedResult;
