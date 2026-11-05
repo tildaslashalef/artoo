@@ -309,37 +309,39 @@ test "config: show renders sections, marks defaults" {
         \\ARTOO · config  ~/.artoo/config.json
         \\
         \\Output
-        \\  format           table  (default)
-        \\  color            auto  (default)
+        \\  format                 table  (default)
+        \\  color                  auto  (default)
         \\
         \\Credentials
-        \\  store            auto  (default)
+        \\  store                  auto  (default)
         \\
         \\Proxmox (pve)
-        \\  endpoint         https://pve.home.arpa:8006  (default)
-        \\  node             pve  (default)
-        \\  token_id         artoo@pve!cli  (default)
-        \\  ca_bundle        ~/.artoo/tls/rootCA.pem  (default)
-        \\  timeout_seconds  15  (default)
-        \\  ssh_host         192.168.1.10  (default)
-        \\  ssh_identity     ~/.ssh/id_ed25519  (default)
+        \\  endpoint               https://pve.home.arpa:8006  (default)
+        \\  node                   pve  (default)
+        \\  token_id               artoo@pve!cli  (default)
+        \\  ca_bundle              ~/.artoo/tls/rootCA.pem  (default)
+        \\  timeout_seconds        15  (default)
+        \\  ssh_host               192.168.1.10  (default)
+        \\  ssh_identity           ~/.ssh/id_ed25519  (default)
         \\
         \\UniFi (unifi)
-        \\  endpoint         https://unifi.home.arpa/proxy/network/integration  (default)
-        \\  site             default  (default)
-        \\  ca_bundle        ~/.artoo/tls/rootCA.pem  (default)
-        \\  timeout_seconds  20
+        \\  endpoint               https://unifi.home.arpa/proxy/network/integration  (default)
+        \\  site                   default  (default)
+        \\  ca_bundle              ~/.artoo/tls/rootCA.pem  (default)
+        \\  timeout_seconds        20
         \\
         \\Guests
-        \\  domain           lab.example.com  (default)
-        \\  template         ubuntu-2604  (default)
-        \\  ssh_public_key   ~/.ssh/id_ed25519.pub  (default)
-        \\  extra_ssh_keys   --  (default)
-        \\  address_pool     192.168.1.200-192.168.1.254  (default)
-        \\  gateway          192.168.1.1/24  (default)
-        \\  user             artoo  (default)
-        \\  reserved_names   --  (default)
-        \\  fence_allow_out  --  (default)
+        \\  domain                 lab.example.com  (default)
+        \\  template               ubuntu-2604  (default)
+        \\  ssh_public_key         ~/.ssh/id_ed25519.pub  (default)
+        \\  extra_ssh_keys         --  (default)
+        \\  address_pool           192.168.1.200-192.168.1.254  (default)
+        \\  gateway                192.168.1.1/24  (default)
+        \\  user                   artoo  (default)
+        \\  reserved_names         --  (default)
+        \\  fence_allow_out        --  (default)
+        \\  snapshot_keep          2  (default)
+        \\  snapshot_max_age_days  14  (default)
         \\
     , h.stdout());
 }
