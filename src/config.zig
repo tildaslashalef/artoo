@@ -75,10 +75,16 @@ pub const Config = struct {
         /// Outbound exceptions of fenced guests (SPEC §9.11): `VM PEER
         /// PROTO PORTS` entries separated by `;`.
         fence_allow_out: []const u8 = "",
+        /// artoo-owned snapshots a guest may hold (SPEC §9.16): the
+        /// `--snapshot` cap and what `vm snap prune` keeps.
+        snapshot_keep: u32 = 2,
+        /// Age in days past which an artoo-owned snapshot is a warning
+        /// and `vm snap prune` selects it (SPEC §9.16).
+        snapshot_max_age_days: u32 = 14,
     };
 };
 
-pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list };
+pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, snapshot_keep, days, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list };
 
 pub const Key = struct {
     name: []const u8,
@@ -114,6 +120,8 @@ pub const keys = [_]Key{
     .{ .name = "guests.user", .help = "Account created on every guest", .check = .username },
     .{ .name = "guests.reserved_names", .help = "Host and equipment names never used or published (comma-separated)", .check = .label_list },
     .{ .name = "guests.fence_allow_out", .help = "Fenced guests' outbound exceptions: 'VM PEER tcp|udp PORTS' entries separated by ';'", .check = .fence_list },
+    .{ .name = "guests.snapshot_keep", .help = "artoo-owned snapshots a guest may hold (--snapshot cap, prune keeps)", .check = .snapshot_keep },
+    .{ .name = "guests.snapshot_max_age_days", .help = "Days after which an artoo-owned snapshot is a warning and pruned", .check = .days },
 };
 
 comptime {
@@ -256,8 +264,14 @@ pub fn unknownKeyMessage(arena: Allocator, name: []const u8) Allocator.Error![]c
 }
 
 fn checkInt(arena: Allocator, k: Key, n: i64, msg: *[]const u8) Allocator.Error!bool {
-    if (k.check == .seconds and (n < 1 or n > 3600)) {
-        msg.* = try std.fmt.allocPrint(arena, "{s}: expected 1..3600 seconds, got {d}", .{ k.name, n });
+    const lo: i64, const hi: i64, const unit = switch (k.check) {
+        .seconds => .{ 1, 3600, " seconds" },
+        .snapshot_keep => .{ 1, 10, " snapshots" },
+        .days => .{ 1, 365, " days" },
+        else => .{ 0, std.math.maxInt(u32), "" },
+    };
+    if (n < lo or n > hi) {
+        msg.* = try std.fmt.allocPrint(arena, "{s}: expected {d}..{d}{s}, got {d}", .{ k.name, lo, hi, unit, n });
         return false;
     }
     return true;
@@ -265,7 +279,7 @@ fn checkInt(arena: Allocator, k: Key, n: i64, msg: *[]const u8) Allocator.Error!
 
 fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Allocator.Error!bool {
     const ok = switch (k.check) {
-        .none, .seconds => true,
+        .none, .seconds, .snapshot_keep, .days => true,
         .https_url => validHttpsUrl(s),
         .path => s.len > 0 and std.mem.findScalar(u8, s, 0) == null,
         .ident => s.len > 0 and allChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"),
