@@ -9,6 +9,7 @@ const app = @import("../app.zig");
 const cli = @import("../cli.zig");
 const config = @import("../config.zig");
 const exec = @import("../exec.zig");
+const snapguard = @import("snapguard.zig");
 const prompt = @import("../prompt.zig");
 const ui = @import("../ui.zig");
 const pve = @import("../pve/client.zig");
@@ -395,6 +396,8 @@ const SetupOp = struct {
     host_steps: edge.HostSteps = .{},
     ledger: exec.Ledger = .{},
     fp: []const u8 = "",
+    /// `--snapshot` (SPEC §9.16).
+    guard: ?snapguard.Guard = null,
 
     pub fn read(op: *SetupOp, ctx: *Context) !void {
         op.vm = try watchVm(ctx, op.c);
@@ -439,13 +442,18 @@ const SetupOp = struct {
         var notes: std.ArrayList([]const u8) = .empty;
         if (op.lab.services.len == 0) try notes.append(a, "No service names to probe yet; add 'artoo svc add grafana " ++ "<vm>:3000' and 'ntfy <vm>:2586', then run setup again.");
         try notes.append(a, "Commands run as root through the guest agent; steps stop at the first failure and re-running continues.");
-        return .{
+        const pl: exec.Plan = .{
             .action = try std.fmt.allocPrint(a, "Set up watchdog VM {s} ({d})", .{ op.vm.name, op.vm.vmid }),
             .target = try k.nodeTarget(ctx, op.c),
             .changes = changes.items,
             .impact = try a.dupe([]const u8, &.{"The watchdog's firewall, packages and services change, and its own Proxmox firewall rules on Proxmox; other guests and Proxmox's settings are untouched"}),
             .notes = notes.items,
         };
+        if (op.guard) |*g| {
+            try g.read(ctx, op.c, op.vm);
+            return try g.decorate(ctx, pl);
+        }
+        return pl;
     }
 
     pub fn fingerprint(op: *SetupOp) []const u8 {
@@ -458,6 +466,8 @@ const SetupOp = struct {
         const id = op.vm.vmid;
         const s = op.steps;
         const l = &op.ledger;
+        errdefer if (op.guard) |*g| g.annotate(ctx);
+        if (op.guard) |*g| try g.take(ctx, c, l);
         const s_ts = if (s.tailscale) try l.add(a, "remove tailscale") else null;
         const s_acct = if (s.accounts) try l.add(a, "accounts") else null;
         const s_write = if (s.write.len > 0) try l.add(a, "write files") else null;
@@ -558,7 +568,8 @@ const SetupOp = struct {
     }
 
     pub fn done(op: *SetupOp) []const u8 {
-        return std.fmt.allocPrint(op.c.ctx.arena, "{s} set up — next: 'artoo watch secret grafana', 'artoo watch secret phone', 'artoo watch enroll --all', then 'artoo watch status'", .{op.vm.name}) catch "done";
+        const snap = if (op.guard) |*g| g.doneSuffix(op.c.ctx.arena) else "";
+        return std.fmt.allocPrint(op.c.ctx.arena, "{s} set up — next: 'artoo watch secret grafana', 'artoo watch secret phone', 'artoo watch enroll --all', then 'artoo watch status'{s}", .{ op.vm.name, snap }) catch "done";
     }
 };
 
@@ -575,12 +586,14 @@ pub const setup = struct {
         \\rules, and the same policy as the VM's Proxmox firewall on Proxmox.
         \\Only the steps the observed state needs are planned.
     ;
-    pub const examples = [_][]const u8{ "artoo watch setup -n", "artoo watch setup -y" };
+    pub const flags = [_]cli.Flag{snapguard.flag};
+    pub const examples = [_][]const u8{ "artoo watch setup -n", "artoo watch setup --snapshot -y" };
 
-    pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
         defer c.deinit();
         var op: SetupOp = .{ .c = &c };
+        if (args.has("snapshot")) op.guard = .{ .action = "watch", .command = "watch setup" };
         try exec.run(ctx, &op, .{});
     }
 };

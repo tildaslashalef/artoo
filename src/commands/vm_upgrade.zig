@@ -15,6 +15,7 @@ const apt = @import("../guest/apt.zig");
 const template = @import("template.zig");
 const vm_new = @import("vm_new.zig");
 const k = @import("node.zig");
+const snapguard = @import("snapguard.zig");
 
 const Context = app.Context;
 
@@ -34,6 +35,8 @@ const UpgradeOp = struct {
     ledger: exec.Ledger = .{},
     /// `/run/reboot-required.pkgs` after the run; null when no reboot is wanted.
     reboot: ?[]const []const u8 = null,
+    /// `--snapshot` (SPEC §9.16).
+    guard: ?snapguard.Guard = null,
 
     pub fn read(op: *UpgradeOp, ctx: *Context) !void {
         const a = ctx.arena;
@@ -71,7 +74,7 @@ const UpgradeOp = struct {
         if (p.kept_back > 0) try notes.append(a, try std.fmt.allocPrint(a, "{d} package(s) kept back (they would need a removal) are not touched.", .{p.kept_back}));
         try notes.append(a, "Pinned packages (Alloy, the watchdog's stack) stay at their pins.");
         const sec = p.security();
-        return .{
+        const pl: exec.Plan = .{
             .action = try std.fmt.allocPrint(a, "Upgrade {d} package(s) on {s} ({d}){s}", .{
                 p.packages.len,                                                           op.target, v.vmid,
                 if (sec > 0) try std.fmt.allocPrint(a, ", {d} security", .{sec}) else "",
@@ -82,10 +85,15 @@ const UpgradeOp = struct {
                 "Installed with apt as listed, new dependencies too (a new kernel); nothing is removed",
                 "Services that use an upgraded library are restarted (needrestart); configuration files keep local changes",
                 try std.fmt.allocPrint(a, "No reboot: a kernel or core library update leaves 'reboot pending' ('artoo vm reboot {s}')", .{op.target}),
-                try std.fmt.allocPrint(a, "No undo: a snapshot taken first ('artoo vm snap add {s} pre-upgrade') is the way back", .{op.target}),
+                if (op.guard != null) "apt has no undo: the snapshot taken first is the way back" else "No undo: run with --snapshot to take a snapshot first",
             }),
             .notes = notes.items,
         };
+        if (op.guard) |*g| {
+            try g.read(ctx, op.c, v);
+            return try g.decorate(ctx, pl);
+        }
+        return pl;
     }
 
     pub fn fingerprint(op: *UpgradeOp) []const u8 {
@@ -96,6 +104,8 @@ const UpgradeOp = struct {
         const a = ctx.arena;
         const l = &op.ledger;
         const vmid = op.vm.?.vmid;
+        errdefer if (op.guard) |*g| g.annotate(ctx);
+        if (op.guard) |*g| try g.take(ctx, op.c, l);
         const i = try l.add(a, "apt-get upgrade");
         const argv: []const []const u8 = &.{ "sh", "-c", apt.upgrade_script };
         const pid = agent.start(op.c, vmid, argv, null) catch |err| {
@@ -155,7 +165,8 @@ const UpgradeOp = struct {
                 if (shown.len > 0) " (" else "", list, more, if (shown.len > 0) ")" else "", op.target,
             }) catch "; reboot pending";
         } else "; no reboot needed";
-        return std.fmt.allocPrint(a, "{d} package(s) upgraded on {s}{s}", .{ n, op.target, rest }) catch "upgraded";
+        const snap = if (op.guard) |*g| g.doneSuffix(a) else "";
+        return std.fmt.allocPrint(a, "{d} package(s) upgraded on {s}{s}{s}", .{ n, op.target, rest, snap }) catch "upgraded";
     }
 };
 
@@ -175,12 +186,14 @@ pub const upgrade = struct {
     pub const name = "upgrade";
     pub const summary = "Install a guest's pending package updates (apt, through the guest agent; never a reboot)";
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name" }};
-    pub const examples = [_][]const u8{ "artoo vm upgrade naboo -n", "artoo vm upgrade naboo", "artoo vm upgrade naboo -y" };
+    pub const flags = [_]cli.Flag{snapguard.flag};
+    pub const examples = [_][]const u8{ "artoo vm upgrade naboo -n", "artoo vm upgrade naboo --snapshot", "artoo vm upgrade naboo -y" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
         defer c.deinit();
         var op: UpgradeOp = .{ .c = &c, .word = args.pos("VM") };
+        if (args.has("snapshot")) op.guard = .{ .action = "upgrade", .command = "vm upgrade" };
         try exec.run(ctx, &op, .{});
     }
 };
@@ -279,4 +292,85 @@ test "vm upgrade: nothing pending, dry run, refusals, apt failing, a package lef
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm upgrade naboo -y"));
     try expectAll(g.h.stderr(), &.{"artoo: 1 planned package(s) still pending on naboo: tmux (log: /var/log/artoo-upgrade.log)\n"});
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
+}
+
+const snap_upid = "{\"data\":\"UPID:pve:0006B482:00B442ED:6ACA1C3A:qmsnapshot:205:artoo@pve!cli:\"}";
+const task_ok = "{\"data\":{\"status\":\"stopped\",\"exitstatus\":\"OK\"}}";
+const naboo_config = "{\"data\":{\"scsi0\":\"local-zfs:vm-205-disk-0,size=20G\"}}";
+
+/// The listing after the snapshot step: the names for this minute and
+/// the next, so the run's own name is in it whenever it starts.
+fn listingWithOwnName(a: std.mem.Allocator) ![]const u8 {
+    const now: i64 = @intCast(@divFloor(std.Io.Clock.real.now(testing.io).nanoseconds, std.time.ns_per_s));
+    return std.fmt.allocPrint(a, "{{\"data\":[{{\"name\":\"current\"}},{{\"name\":\"{s}\"}},{{\"name\":\"{s}\"}}]}}", .{
+        try snapguard.snapName(a, "upgrade", now), try snapguard.snapName(a, "upgrade", now + 60),
+    });
+}
+
+test "vm upgrade --snapshot: the snapshot is planned, taken first and named in the result" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(list_body), ans(ping_body), ans(pid_body), ans(try execStatus(a, 0, apt.sample, "")), // read
+        ans("{\"data\":[{\"name\":\"current\"},{\"name\":\"mine\",\"snaptime\":1}]}"), ans(naboo_config), ans(@import("storage.zig").storage_body), // guard
+        ans(snap_upid), ans(task_ok), ans(try listingWithOwnName(a)), // snapshot step
+        ans(pid_body), ans("{\"data\":{\"exited\":0}}"), ans("{\"data\":{\"content\":\"\"}}"), ans(try execStatus(a, 0, "", "")), // upgrade
+        ans(pid_body), ans(try execStatus(a, 0, "lists 4700\nnow 4800\n", "")), // verify
+        ans(pid_body), ans(try execStatus(a, 0, "no\n", "")), // no reboot
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm upgrade naboo --snapshot -y"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expectEqualStrings("POST /api2/json/nodes/pve/qemu/205/snapshot HTTP/1.1", g.request(7));
+    try testing.expect(std.mem.startsWith(u8, g.body(7), "snapname=artoo-upgrade-20"));
+    try testing.expect(std.mem.find(u8, g.body(7), "&description=artoo%20") != null);
+    try testing.expect(std.mem.find(u8, g.body(7), "vmstate") == null);
+    try expectAll(g.h.stdout(), &.{
+        "snapshot                      (none) → artoo-upgrade-20",
+        "(no RAM), taken first",
+        "Recovery  artoo vm snap rollback naboo artoo-upgrade-20",
+        "apt has no undo: the snapshot taken first is the way back",
+        "not its Proxmox firewall rules",
+        "kept ('artoo vm snap prune naboo' when no longer needed)",
+    });
+}
+
+test "vm upgrade --snapshot: refused at the cap and above the storage headroom, nothing sent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sim = try execStatus(a, 0, apt.sample, "");
+    const full = "{\"data\":[{\"active\":1,\"enabled\":1,\"storage\":\"local-zfs\",\"type\":\"zfspool\",\"total\":1000,\"used\":900}]}";
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(list_body),                                                                                                                                                ans(ping_body),                             ans(pid_body),     ans(sim),
+        ans("{\"data\":[{\"name\":\"current\"},{\"name\":\"artoo-upgrade-20261101T0100Z\",\"snaptime\":1},{\"name\":\"artoo-edge-20261102T0100Z\",\"snaptime\":2}]}"), ans(list_body),                             ans(ping_body),    ans(pid_body),
+        ans(sim),                                                                                                                                                      ans("{\"data\":[{\"name\":\"current\"}]}"), ans(naboo_config), ans(full),
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm upgrade naboo --snapshot -y"));
+    try testing.expectEqualStrings("artoo: naboo holds 2 artoo snapshot(s) (keep 2): 'artoo vm snap prune naboo' first, or run without --snapshot\n", g.h.stderr());
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm upgrade naboo --snapshot -y"));
+    try testing.expectEqualStrings("artoo: storage local-zfs is 90% used (above 80%): no snapshot is taken there; free space first, or run without --snapshot\n", g.h.stderr());
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+}
+
+test "vm upgrade --snapshot: a failing apt names the rollback" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(list_body),                             ans(ping_body),                 ans(pid_body),                            ans(try execStatus(a, 0, apt.sample, "")),
+        ans("{\"data\":[{\"name\":\"current\"}]}"), ans(naboo_config),              ans(@import("storage.zig").storage_body), ans(snap_upid),
+        ans(task_ok),                               ans(try listingWithOwnName(a)), ans(pid_body),                            ans(try execStatus(a, 100, "", "E: dpkg was interrupted\n")),
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.task_failed, g.h.run(&root, "vm upgrade naboo --snapshot -y"));
+    try expectAll(g.h.stderr(), &.{ "apt-get upgrade failed on naboo (exit 100): E: dpkg was interrupted", " — the snapshot taken first is the way back: artoo vm snap rollback naboo artoo-upgrade-20" });
 }

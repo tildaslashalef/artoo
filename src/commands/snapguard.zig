@@ -251,6 +251,12 @@ pub const Guard = struct {
         return ctx.fail(error.Partial, "the snapshot task of {s} finished, but '{s}' is not in its snapshot list; nothing else was changed", .{ g.label, g.name });
     }
 
+    /// Appended to the workflow's success line.
+    pub fn doneSuffix(g: *const Guard, arena: Allocator) []const u8 {
+        if (!g.taken) return "";
+        return std.fmt.allocPrint(arena, "; snapshot {s} kept ('artoo vm snap prune {s}' when no longer needed)", .{ g.name, g.label }) catch "";
+    }
+
     /// After a later step failed or its outcome is unknown: the error
     /// message names the way back.
     pub fn annotate(g: *const Guard, ctx: *Context) void {
