@@ -233,13 +233,25 @@ artoo vm set VM cores=4 --reboot -y      # ... or reboot through Proxmox in the 
 artoo vm set VM startup=order=1,up=30 protection=yes -y   # boot order; refuse 'vm rm' (SPEC §9.15)
 artoo vm disk grow VM +20G -n            # final: Proxmox cannot shrink a disk (SPEC §9.15)
 artoo vm disk grow VM +20G -y            # boot disk, agent answering: / grows at once
-artoo vm snap add VM pre-upgrade -y
+artoo vm upgrade VM --snapshot -y        # an artoo-owned snapshot first (SPEC §9.16); also on
+                                         # edge setup, router setup, watch setup
+artoo vm snap add VM pre-upgrade -y      # your own name; 'artoo-' is reserved
 artoo vm snap rollback VM pre-upgrade --yes --confirm NAME@pre-upgrade
 artoo vm snap rm VM pre-upgrade --yes --confirm NAME@pre-upgrade
+artoo vm snap prune VM -n                # artoo-owned snapshots beyond guests.snapshot_keep or
+                                         # older than guests.snapshot_max_age_days
 artoo vm clone SOURCE NEWNAME [--id N] -y
 artoo vm rm VM --yes --confirm NAME      # stops, destroys disks, forgets its client and DNS records,
                                          # stored password and pinned host key
 ```
+
+Snapshots are rollback points, not backups: they live on the guest's own
+storage. `--snapshot` refuses at the cap (`guests.snapshot_keep`, default
+2) or above 80 % storage use, and never deletes one to make room —
+`vm snap prune` does that, with the destructive confirmation. On ZFS a
+rollback only reaches the newest snapshot: `vm snap rollback` names the
+newer ones to remove first. A running guest without RAM state is started
+again after the rollback.
 
 `vm rm` **refuses** while a service name points at the VM: move it
 (`svc set`) or remove it (`svc rm`) first.

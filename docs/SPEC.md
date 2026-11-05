@@ -2006,7 +2006,7 @@ startup), "Protection", "Hot vCPUs", "CPU limit", "CPU weight",
 
 ### 9.16 Snapshots before changes (`--snapshot`, `vm snap prune`)
 
-Decided 2026-11-05; not implemented yet. A snapshot is a rollback point
+Decided 2026-11-05; implemented, live acceptance pending. A snapshot is a rollback point
 for a change, not a backup: it lives on the same storage as the guest
 (backups stay out of scope, §1). artoo never schedules snapshots — it
 runs on a workstation, and Proxmox has no snapshot scheduler (only
@@ -2032,8 +2032,9 @@ untouched by everything below except the age report.
 Not on `vm fence` (the NIC firewall file is not part of a VM snapshot)
 or `vm disk grow` (a disk cannot shrink, §9.15).
 
-- **Read/plan:** the guest's snapshots and the status of every storage
-  that holds one of its disks (`/nodes/{node}/storage/{storage}/status`).
+- **Read/plan:** the guest's snapshots and the usage of every storage
+  that holds one of its disks (CD-ROMs left out), from the node's
+  storage list (`/nodes/{node}/storage`).
   Refused before any write (exit 5): the guest already holds
   `guests.snapshot_keep` artoo-owned snapshots ("naboo holds 2 artoo
   snapshots (keep 2): 'artoo vm snap prune naboo'") — artoo never
@@ -2068,10 +2069,13 @@ them first — they are lost by this rollback anyway"). A guest that was
 running is started again (`start=1`) when the snapshot has no RAM; the
 plan says so, and verify waits for `running`.
 
-**Visibility.** `vm snap ls` gains AGE and an owner mark (`artoo`,
-operator). `status` adds one storage line (`snapshots 3 on 2 VMs, oldest
-16 d`) and warns per artoo-owned snapshot past the age limit; `vm
-verify` adds a "snapshots" check that warns the same way. The Proxmox
+**Visibility.** `vm snap ls` gains an OWNER column (`artoo`,
+`operator`; `artoo, old: prune` past the age limit) beside TAKEN.
+`status` adds one storage line when any guest has snapshots
+(`snapshots 3 on 2 VM(s), oldest 16d`) and warns per artoo-owned
+snapshot past the age limit (`old snapshot: naboo@artoo-… (16d) —
+'artoo vm snap prune naboo'`); `vm verify` adds a "snapshots" check:
+`none`, `N (K artoo)`, or a warning naming the oldest stale one. The Proxmox
 API reports no per-snapshot size (§17.2), so artoo shows age and the
 storage's usage, never a guessed size.
 
