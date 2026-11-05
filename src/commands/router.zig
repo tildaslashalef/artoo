@@ -11,6 +11,7 @@ const app = @import("../app.zig");
 const cli = @import("../cli.zig");
 const config = @import("../config.zig");
 const exec = @import("../exec.zig");
+const snapguard = @import("snapguard.zig");
 const prompt = @import("../prompt.zig");
 const secrets = @import("../secrets.zig");
 const ui = @import("../ui.zig");
@@ -194,6 +195,8 @@ const SetupOp = struct {
     steps: Steps = .{},
     ledger: exec.Ledger = .{},
     after: State = .{},
+    /// `--snapshot` (SPEC §9.16).
+    guard: ?snapguard.Guard = null,
 
     pub fn read(op: *SetupOp, ctx: *Context) !void {
         op.vm = try routerVm(ctx, op.c);
@@ -219,7 +222,7 @@ const SetupOp = struct {
             .to = try std.fmt.allocPrint(a, "{s} joins as {s}, advertises {s} (single-use key: asked after you confirm)", .{ op.vm.name, tag, op.route }),
         });
         if (s.routes) try changes.append(a, .{ .field = "routes", .from = try std.mem.join(a, ", ", op.state.advertised), .to = op.route });
-        return .{
+        const pl: exec.Plan = .{
             .action = try std.fmt.allocPrint(a, "Set up subnet router {s} ({d})", .{ op.vm.name, op.vm.vmid }),
             .target = try k.nodeTarget(ctx, op.c),
             .changes = changes.items,
@@ -229,6 +232,11 @@ const SetupOp = struct {
             .recovery = try std.fmt.allocPrint(a, "remove the machine in the Tailscale console, then 'artoo vm rm {s}'", .{op.vm.name}),
             .notes = try a.dupe([]const u8, &.{"The key goes over the guest agent's stdin into a 0600 file under /run, removed after use; artoo never stores or prints it."}),
         };
+        if (op.guard) |*g| {
+            try g.read(ctx, op.c, op.vm);
+            return try g.decorate(ctx, pl);
+        }
+        return pl;
     }
 
     pub fn fingerprint(op: *SetupOp) []const u8 {
@@ -246,6 +254,8 @@ const SetupOp = struct {
             try ctx.out.flush();
             op.key = try askKey(ctx, op.from_stdin);
         }
+        errdefer if (op.guard) |*g| g.annotate(ctx);
+        if (op.guard) |*g| try g.take(ctx, c, l);
         const s_sysctl = if (op.steps.sysctl) try l.add(a, "IP forwarding") else null;
         const s_enroll = if (op.steps.enroll) try l.add(a, "join the tailnet") else null;
         const s_routes = if (op.steps.routes) try l.add(a, "advertise the LAN") else null;
@@ -296,7 +306,8 @@ const SetupOp = struct {
     }
 
     pub fn done(op: *SetupOp) []const u8 {
-        return std.fmt.allocPrint(op.c.ctx.arena, "{s} routes {s} for tailnet {s} — 'artoo router status' to check", .{ op.vm.name, op.route, op.after.tailnet }) catch "done";
+        const snap = if (op.guard) |*g| g.doneSuffix(op.c.ctx.arena) else "";
+        return std.fmt.allocPrint(op.c.ctx.arena, "{s} routes {s} for tailnet {s} — 'artoo router status' to check{s}", .{ op.vm.name, op.route, op.after.tailnet, snap }) catch "done";
     }
 };
 
@@ -323,13 +334,14 @@ pub const setup = struct {
         \\removed from the VM right after use. The router advertises the LAN of
         \\guests.gateway; the tailnet policy approves the route (SPEC §9.8).
     ;
-    pub const flags = [_]cli.Flag{.{ .long = "stdin", .help = "Read the auth key from standard input" }};
+    pub const flags = [_]cli.Flag{ .{ .long = "stdin", .help = "Read the auth key from standard input" }, snapguard.flag };
     pub const examples = [_][]const u8{ "artoo router setup -n", "artoo router setup" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
         defer c.deinit();
         var op: SetupOp = .{ .c = &c, .from_stdin = args.has("stdin") };
+        if (args.has("snapshot")) op.guard = .{ .action = "router", .command = "router setup" };
         try exec.run(ctx, &op, .{});
     }
 };
@@ -428,6 +440,40 @@ test "router setup -n: plans forwarding and enrollment without asking for the ke
         "Plan · Set up subnet router bespin (202)",
         "forwarding  off → IPv4 + IPv6 on (/etc/sysctl.d/90-artoo-router.conf)",
         "tailnet     NeedsLogin → bespin joins as tag:lab-router, advertises 192.168.1.0/24 (single-use key: asked after you confirm)",
+        "Dry run: nothing was sent.",
+    }) |line| {
+        if (std.mem.find(u8, out, line) == null) {
+            std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "router setup --snapshot -n: the snapshot comes first and its rollback joins the recovery" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const testkit = @import("../testkit.zig");
+    const probe_out = try std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = "sysctl -\nfwd4 0\nfwd6 0\n---\n{\"BackendState\":\"Running\"}\n---\n{}\n", .@"err-data" = "" } }, .{});
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        .{ .respond = .{ .body = "{\"data\":[{\"vmid\":202,\"name\":\"bespin\",\"status\":\"running\",\"tags\":\"artoo;role-router\"}]}" } },
+        .{ .respond = .{ .body = "{\"data\":{\"result\":{}}}" } },
+        .{ .respond = .{ .body = "{\"data\":{\"pid\":42}}" } },
+        .{ .respond = .{ .body = probe_out } },
+        .{ .respond = .{ .body = "{\"data\":[{\"name\":\"current\"}]}" } },
+        .{ .respond = .{ .body = "{\"data\":{\"scsi0\":\"local-zfs:vm-202-disk-0,size=20G\"}}" } },
+        .{ .respond = .{ .body = @import("storage.zig").storage_body } },
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{group});
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "router setup --snapshot -n"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    const out = g.h.stdout();
+    for ([_][]const u8{
+        "Change    snapshot    (none) → artoo-router-20",
+        "Recovery  artoo vm snap rollback bespin artoo-router-20",
+        "(the guest); remove the machine in the Tailscale console, then 'artoo vm rm bespin'",
         "Dry run: nothing was sent.",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {

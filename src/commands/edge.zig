@@ -8,6 +8,7 @@ const app = @import("../app.zig");
 const cli = @import("../cli.zig");
 const config = @import("../config.zig");
 const exec = @import("../exec.zig");
+const snapguard = @import("snapguard.zig");
 const prompt = @import("../prompt.zig");
 const secrets = @import("../secrets.zig");
 const ui = @import("../ui.zig");
@@ -445,6 +446,8 @@ const SetupOp = struct {
     host_steps: HostSteps = .{},
     ledger: exec.Ledger = .{},
     fp: []const u8 = "",
+    /// `--snapshot` (SPEC §9.16).
+    guard: ?snapguard.Guard = null,
 
     pub fn read(op: *SetupOp, ctx: *Context) !void {
         op.vm = try edgeVm(ctx, op.c);
@@ -482,13 +485,18 @@ const SetupOp = struct {
         var notes: std.ArrayList([]const u8) = .empty;
         if (s.build) try notes.append(a, "The Caddy build takes several minutes (Go module downloads and compile).");
         try notes.append(a, "Commands run as root through the guest agent; steps stop at the first failure and re-running continues.");
-        return .{
+        const pl: exec.Plan = .{
             .action = try std.fmt.allocPrint(a, "Set up edge VM {s} ({d})", .{ op.vm.name, op.vm.vmid }),
             .target = try k.nodeTarget(ctx, op.c),
             .changes = changes.items,
             .impact = try a.dupe([]const u8, &.{"The edge VM's firewall, packages and Caddy change, and its own Proxmox firewall rules on Proxmox; other guests and Proxmox's settings are untouched"}),
             .notes = notes.items,
         };
+        if (op.guard) |*g| {
+            try g.read(ctx, op.c, op.vm);
+            return try g.decorate(ctx, pl);
+        }
+        return pl;
     }
 
     pub fn fingerprint(op: *SetupOp) []const u8 {
@@ -501,6 +509,8 @@ const SetupOp = struct {
         const id = op.vm.vmid;
         const s = op.steps;
         const l = &op.ledger;
+        errdefer if (op.guard) |*g| g.annotate(ctx);
+        if (op.guard) |*g| try g.take(ctx, c, l);
         const s_write = if (s.write.len > 0) try l.add(a, "write files") else null;
         const s_sysctl = if (s.sysctl) try l.add(a, "apply sysctls") else null;
         const s_fw = if (s.firewall) try l.add(a, "load firewall") else null;
@@ -589,7 +599,8 @@ const SetupOp = struct {
 
     pub fn done(op: *SetupOp) []const u8 {
         const next = if (op.state.dns_secret) "'artoo edge status' to check" else "next: 'artoo edge secret dns' (once), then 'artoo edge status'";
-        return std.fmt.allocPrint(op.c.ctx.arena, "{s} set up — {s}", .{ op.vm.name, next }) catch "done";
+        const snap = if (op.guard) |*g| g.doneSuffix(op.c.ctx.arena) else "";
+        return std.fmt.allocPrint(op.c.ctx.arena, "{s} set up — {s}{s}", .{ op.vm.name, next, snap }) catch "done";
     }
 };
 
@@ -607,12 +618,14 @@ pub const setup = struct {
         \\inside the VM cannot change. Only the steps the observed state needs are
         \\planned.
     ;
-    pub const examples = [_][]const u8{ "artoo edge setup -n", "artoo edge setup -y" };
+    pub const flags = [_]cli.Flag{snapguard.flag};
+    pub const examples = [_][]const u8{ "artoo edge setup -n", "artoo edge setup --snapshot -y" };
 
-    pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
         defer c.deinit();
         var op: SetupOp = .{ .c = &c };
+        if (args.has("snapshot")) op.guard = .{ .action = "edge", .command = "edge setup" };
         try exec.run(ctx, &op, .{});
     }
 };
