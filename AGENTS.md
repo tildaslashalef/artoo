@@ -14,10 +14,11 @@ watchdog.
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | From zero to a first guest: Proxmox and UniFi prerequisites, configuration, credentials. |
 | [docs/RELEASING.md](docs/RELEASING.md) | Version rules and the release procedure. Follow it exactly. |
 
-If `AGENTS.local.md` exists (gitignored), read it first: it points to the
-operator's private lab record — the approval boundary, the work queue and
-hand-off, the lab's own facts. Facts live with their owner document; Git
-history holds chronology — do not create dated duplicate reports.
+If `AGENTS.local.md` exists, read it; it overrides the queue rules.
+It is gitignored and points to the operator's private lab record: the
+approval boundary and the lab's own facts. Work is queued in the
+maintainer's tracker. Facts live with their owner document; Git history
+holds chronology — do not create dated duplicate reports.
 
 ## Keep the repository generic
 
