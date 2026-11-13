@@ -108,10 +108,18 @@ pub const export_cmd = struct {
             var c = try pve.Client.open(ctx);
             defer c.deinit();
             var missing: std.ArrayList([]const u8) = .empty;
+            var unnamed: std.ArrayList([]const u8) = .empty;
+            var taken: std.ArrayList([]const u8) = .empty;
             for (try vms.list(&c)) |v| {
                 if (v.template or v.name.len == 0) continue;
                 const n = try std.fmt.allocPrint(a, "guest/{s}", .{v.name});
-                if (!secrets.validName(n)) continue;
+                if (!secrets.validName(n)) {
+                    try unnamed.append(a, try ui.text.sanitize(a, v.name, .line));
+                    continue;
+                }
+                // Proxmox allows two VMs with one name; one entry each.
+                if (contains(taken.items, n)) continue;
+                try taken.append(a, n);
                 const val = store.get(ctx.io, a, n) catch |err| return storeError(ctx, err, where);
                 if (val) |secret| {
                     try creds.append(a, .{ .name = n, .value = secret });
@@ -120,6 +128,7 @@ pub const export_cmd = struct {
                 } else try missing.append(a, try ui.text.sanitize(a, v.name, .line));
             }
             if (missing.items.len > 0) try fields.append(a, .{ .key = "guests", .value = try std.fmt.allocPrint(a, "no password stored here, not included: {s}", .{try std.mem.join(a, ", ", missing.items)}), .role = .muted });
+            if (unnamed.items.len > 0) try fields.append(a, .{ .key = "guests", .value = try std.fmt.allocPrint(a, "name artoo stores no password under, not included: {s}", .{try std.mem.join(a, ", ", unnamed.items)}), .role = .warn });
         }
         try fields.append(a, .{ .key = "file", .value = try std.fmt.allocPrint(a, "{s} (0600, passphrase-sealed)", .{ctx.tilde(out)}), .role = .changed });
         try plan(ctx, "config export", where, fields.items, &.{
@@ -574,7 +583,7 @@ test "config export --guest-passwords carries the stored passwords of Proxmox's 
     const pass = "correct horse battery\n";
     var g: testkit.Gateway = undefined;
     try g.init(&[_]testkit.Gateway.FakeServer.Behavior{
-        .{ .respond = .{ .body = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":206,\"name\":\"hoth\",\"status\":\"stopped\",\"tags\":\"artoo\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"status\":\"stopped\",\"template\":1}]}" } },
+        .{ .respond = .{ .body = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":206,\"name\":\"hoth\",\"status\":\"stopped\",\"tags\":\"artoo\"},{\"vmid\":207,\"name\":\"naboo\",\"status\":\"stopped\"},{\"vmid\":208,\"name\":\"Kessel\",\"status\":\"running\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"status\":\"stopped\",\"template\":1}]}" } },
     });
     defer g.deinit();
     const ar = g.h.arena.allocator();
@@ -591,6 +600,7 @@ test "config export --guest-passwords carries the stored passwords of Proxmox's 
     for ([_][]const u8{
         "guest/naboo  password",
         "no password stored here, not included: hoth",
+        "name artoo stores no password under, not included: Kessel",
         "Not included: SSH keys.",
         "Wrote ~/setup.txt: config, 0 CA bundle(s), 3 credential(s), 1 guest password(s); checked.",
     }) |want| if (std.mem.find(u8, out1, want) == null) {
@@ -626,4 +636,28 @@ test "config export --guest-passwords carries the stored passwords of Proxmox's 
     const dir_st = try t2.dir.statFile(testing.io, ".artoo", .{});
     try testing.expectEqual(@as(u32, 0o700), @as(u32, @intCast(dir_st.permissions.toMode() & 0o777)));
     try testing.expect(std.mem.find(u8, h2.stdout(), "naboo-sudo-password") == null);
+}
+
+test "config import refuses a file with an entry that is neither a credential nor a guest password" {
+    var h = try Harness.init();
+    defer h.deinit();
+    var t = testing.tmpDir(.{});
+    defer t.cleanup();
+    _ = try tmpHome(&h, &t);
+    const a = h.arena.allocator();
+    var mem: secrets.Memory = .{ .gpa = a };
+    h.store = .{ .memory = &mem };
+    const pass = "correct horse battery";
+    const long_label: [65]u8 = @splat('a');
+    for ([_][]const u8{ "guest/", "guest/UP", "guestx", "guest/../pve", "guest/" ++ long_label, "ssh" }) |bad| {
+        const plain = try std.json.Stringify.valueAlloc(a, Bundle{ .home = "/Users/me", .config = "{\"schema_version\":1}\n", .secrets = &.{.{ .name = bad, .value = "x" }} }, .{});
+        const sealed = try setup_file.seal(a, testing.io, plain, pass, .{ .t = 1, .m_kib = 64 });
+        try t.dir.writeFile(testing.io, .{ .sub_path = "evil.txt", .data = sealed });
+        var sc: prompt.Script = .{ .interactive = false, .piped = pass ++ "\n" };
+        h.input = .{ .script = &sc };
+        try testing.expectEqual(.usage, h.run(&root, "config import ~/evil.txt --stdin -y"));
+        try testing.expect(std.mem.find(u8, h.stderr(), "holds an unexpected entry") != null);
+        try testing.expectEqual(@as(usize, 0), mem.map.count());
+        try testing.expect(!(try files.exists(testing.io, try std.fmt.allocPrint(a, "{s}/.artoo/config.json", .{h.env.get("HOME").?}))));
+    }
 }

@@ -14,6 +14,7 @@ const pve = @import("../pve/client.zig");
 const vms = @import("../pve/vm.zig");
 const agent = @import("../pve/agent.zig");
 const crypt = @import("../guest/crypt512.zig");
+const secrets = @import("../secrets.zig");
 const template = @import("template.zig");
 const vm_new = @import("vm_new.zig");
 const k = @import("node.zig");
@@ -97,6 +98,7 @@ const ResetOp = struct {
     stored: bool = false,
     where: []const u8 = "",
     hash: []const u8 = "",
+    fp: []const u8 = "",
     ledger: exec.Ledger = .{},
 
     pub fn read(op: *ResetOp, ctx: *Context) !void {
@@ -109,9 +111,14 @@ const ResetOp = struct {
         if (!try agent.ping(op.c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{op.target});
         op.user = (try ctx.config()).guests.user;
         op.secret_name = try secretName(ctx, v.name);
+        if (!secrets.validName(op.secret_name)) return ctx.fail(error.Refused, "{s} is not a name artoo stores a password under (lowercase letters, digits, '-', '_', '.')", .{op.target});
         const store = try ctx.secretStore();
         op.where = store.describe(ctx.arena);
-        op.stored = store.exists(ctx.io, ctx.arena, op.secret_name) catch false;
+        // A store that does not answer refuses here, before the guest is
+        // changed — not after, when the new password could not be kept.
+        op.stored = store.exists(ctx.io, ctx.arena, op.secret_name) catch
+            return ctx.fail(error.SecretStoreUnavailable, "{s} did not answer; nothing was changed", .{op.where});
+        op.fp = try std.fmt.allocPrint(ctx.arena, "{d} {s}", .{ v.vmid, v.status });
     }
 
     pub fn plan(op: *ResetOp, ctx: *Context) !?exec.Plan {
@@ -133,7 +140,7 @@ const ResetOp = struct {
     }
 
     pub fn fingerprint(op: *ResetOp) []const u8 {
-        return if (op.vm) |v| v.status else "";
+        return op.fp;
     }
 
     pub fn send(op: *ResetOp, ctx: *Context) !void {
@@ -144,6 +151,7 @@ const ResetOp = struct {
         const s_store = try l.add(a, "store password");
 
         var pw_buf: [crypt.password_len]u8 = undefined;
+        defer std.crypto.secureZero(u8, &pw_buf);
         var salt_buf: [crypt.salt_len]u8 = undefined;
         var pw: []const u8 = &pw_buf;
         var salt: []const u8 = &salt_buf;
@@ -164,9 +172,24 @@ const ResetOp = struct {
             .{ .name = "password", .value = op.hash },
             .{ .name = "crypted", .value = "1" },
         };
-        _ = op.c.send(.POST, try op.c.nodePath("/qemu/{d}/agent/set-user-password", .{vmid}), &params) catch |err| {
-            l.set(s_set, if (err == error.OutcomeUnknown) .unknown else .failed, "");
-            return err;
+        _ = op.c.send(.POST, try op.c.nodePath("/qemu/{d}/agent/set-user-password", .{vmid}), &params) catch |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            // Refused before the agent ran: nothing changed.
+            error.Usage, error.AuthFailed, error.PermissionDenied, error.NotFound => {
+                l.set(s_set, .failed, "");
+                return err;
+            },
+            // A 5xx (the agent timed out: it may still run the command)
+            // or a lost answer: the guest decides. Its shadow entry says
+            // whether the new hash arrived.
+            else => {
+                const why = try k.clean(ctx, ctx.diag orelse @errorName(err));
+                ctx.diag = null;
+                if (!try guestHas(op, ctx)) {
+                    l.set(s_set, .unknown, "");
+                    return ctx.fail(error.OutcomeUnknown, "setting the password of {s} did not answer clearly ({s}); the guest does not show it yet and may still apply it — the stored password is unchanged; 'artoo vm password {s} --reset' again is safe", .{ op.target, why, op.target });
+                }
+            },
         };
         l.set(s_set, .done, op.user);
 
@@ -181,19 +204,28 @@ const ResetOp = struct {
     pub fn verify(op: *ResetOp, ctx: *Context) !bool {
         try ctx.out.writeAll("\n");
         try op.ledger.render(ctx.out, &ctx.ui);
-        // The shadow entry holds exactly the hash sent; the hash is not
-        // the password and is already known to Proxmox.
-        const r = try agent.exec(op.c, op.vm.?.vmid, &.{ "getent", "shadow", op.user }, null, 30_000);
-        if (!r.ok()) return ctx.fail(error.Partial, "the password of {s} was sent, but its shadow entry could not be read (exit {?d})", .{ op.target, r.code });
-        if (!std.mem.eql(u8, shadowHash(r.out), op.hash)) return false;
+        const on_guest = guestHas(op, ctx) catch |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => return ctx.fail(error.Partial, "the password of {s} was set and stored, but its shadow entry could not be read back ({s})", .{ op.target, try k.clean(ctx, ctx.diag orelse @errorName(err)) }),
+        };
+        if (!on_guest) return false;
         const store = try ctx.secretStore();
-        return store.exists(ctx.io, ctx.arena, op.secret_name) catch false;
+        return store.exists(ctx.io, ctx.arena, op.secret_name) catch
+            ctx.fail(error.Partial, "the password of {s} was set, but {s} did not answer when read back", .{ op.target, op.where });
     }
 
     pub fn done(op: *ResetOp) []const u8 {
         return std.fmt.allocPrint(op.c.ctx.arena, "new sudo password of {s} on {s} stored as {s} — 'artoo vm password {s}' copies it", .{ op.user, op.target, op.secret_name, op.target }) catch "password reset";
     }
 };
+
+/// Whether the guest user's shadow entry holds exactly the hash sent (the
+/// hash is not the password and is already known to Proxmox).
+fn guestHas(op: *ResetOp, ctx: *Context) !bool {
+    const r = try agent.exec(op.c, op.vm.?.vmid, &.{ "getent", "shadow", op.user }, null, 30_000);
+    if (!r.ok()) return ctx.fail(error.TaskFailed, "'getent shadow {s}' failed on {s} (exit {?d})", .{ op.user, op.target, r.code });
+    return std.mem.eql(u8, shadowHash(r.out), op.hash);
+}
 
 /// `user:HASH:…` → `HASH`.
 fn shadowHash(line: []const u8) []const u8 {
@@ -253,14 +285,72 @@ const fixed_pw = "Fixed-Test-Password-0123";
 const fixed_salt = "saltsaltsaltsalt";
 
 fn resetRoutes(a: std.mem.Allocator, shadow_hash: []const u8) ![]const testkit.Gateway.FakeServer.Route {
-    const shadow = try std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = try std.fmt.allocPrint(a, "artoo:{s}:20000:0:99999:7:::\n", .{shadow_hash}) } }, .{});
+    return resetRoutesWith(a, shadow_hash, ans("{\"data\":null}"), 0);
+}
+
+/// The reset's requests; `set` answers the password write, `getent_exit`
+/// is the shadow read's exit code.
+fn resetRoutesWith(a: std.mem.Allocator, shadow_hash: []const u8, set: B, getent_exit: i64) ![]const testkit.Gateway.FakeServer.Route {
+    const shadow = try std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = getent_exit, .@"out-data" = try std.fmt.allocPrint(a, "artoo:{s}:20000:0:99999:7:::\n", .{shadow_hash}) } }, .{});
     return a.dupe(testkit.Gateway.FakeServer.Route, &.{
         .{ .match = "GET /api2/json/nodes/pve/qemu HTTP", .behavior = ans(list_body) },
         .{ .match = "/agent/ping", .behavior = ans(ping_body) },
-        .{ .match = "/agent/set-user-password", .behavior = ans("{\"data\":null}") },
+        .{ .match = "/agent/set-user-password", .behavior = set },
+        .{ .match = "/agent/exec HTTP", .behavior = ans(pid_body) },
+        .{ .match = "/agent/exec-status", .behavior = ans(shadow) },
         .{ .match = "/agent/exec HTTP", .behavior = ans(pid_body) },
         .{ .match = "/agent/exec-status", .behavior = ans(shadow) },
     });
+}
+
+const agent_timeout: B = .{ .respond = .{ .status = 500, .body = "{\"data\":null,\"message\":\"qmp command 'guest-set-user-password' failed - got timeout\\n\"}" } };
+
+test "vm password --reset: an agent timeout is resolved by the guest's shadow entry" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var buf: [crypt.hash_buf_len]u8 = undefined;
+    const hash = try a.dupe(u8, try crypt.sha512Crypt(&buf, fixed_pw, fixed_salt));
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    {
+        // The guest does not show the new hash: unknown, store untouched.
+        var g: testkit.Gateway = undefined;
+        try g.initRoutes(try resetRoutesWith(a, "$6$old$hash", agent_timeout, 0));
+        defer g.deinit();
+        g.h.hooks.guest_password = .{ .password = fixed_pw, .salt = fixed_salt };
+        try g.mem.map.put(g.h.arena.allocator(), "guest/naboo", "old-password");
+        try testing.expectEqual(Exit.unknown, g.h.run(&root, "vm password naboo --reset -y"));
+        try testing.expectEqualStrings("old-password", g.mem.map.get("guest/naboo").?);
+        try expectAll(g.h.stderr(), &.{ "got timeout", "the stored password is unchanged", "--reset' again is safe" });
+    }
+    {
+        // The agent applied it after all: stored and verified.
+        var g: testkit.Gateway = undefined;
+        try g.initRoutes(try resetRoutesWith(a, hash, agent_timeout, 0));
+        defer g.deinit();
+        g.h.hooks.guest_password = .{ .password = fixed_pw, .salt = fixed_salt };
+        try testing.expectEqual(Exit.ok, g.h.run(&root, "vm password naboo --reset -y"));
+        try testing.expectEqualStrings(fixed_pw, g.mem.map.get("guest/naboo").?);
+    }
+    {
+        // A refusal (403) changed nothing: no shadow read, store untouched.
+        var g: testkit.Gateway = undefined;
+        try g.initRoutes(try resetRoutesWith(a, hash, .{ .respond = .{ .status = 403, .body = "{\"data\":null}" } }, 0));
+        defer g.deinit();
+        g.h.hooks.guest_password = .{ .password = fixed_pw, .salt = fixed_salt };
+        try testing.expectEqual(Exit.auth, g.h.run(&root, "vm password naboo --reset -y"));
+        try testing.expect(g.mem.map.get("guest/naboo") == null);
+    }
+    {
+        // Set and stored, but the read-back fails: partial, and says so.
+        var g: testkit.Gateway = undefined;
+        try g.initRoutes(try resetRoutesWith(a, hash, ans("{\"data\":null}"), 2));
+        defer g.deinit();
+        g.h.hooks.guest_password = .{ .password = fixed_pw, .salt = fixed_salt };
+        try testing.expectEqual(Exit.partial, g.h.run(&root, "vm password naboo --reset -y"));
+        try testing.expectEqualStrings(fixed_pw, g.mem.map.get("guest/naboo").?);
+        try expectAll(g.h.stderr(), &.{"was set and stored, but its shadow entry could not be read back"});
+    }
 }
 
 fn sentBody(g: *testkit.Gateway, needle: []const u8) []const u8 {
