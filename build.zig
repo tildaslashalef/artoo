@@ -1,5 +1,5 @@
 const std = @import("std");
-const zon = @import("build.zig.zon");
+const version_tag = @import("src/version_tag.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -52,18 +52,17 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-/// `artoo --version` (AGENTS.md, Git): the `build.zig.zon` version; a
-/// `-dev` build adds its commit as SemVer build metadata
-/// (`0.2.0-dev+b75b55c`) so reports name the exact build. Releases, and
-/// builds outside a Git checkout, keep the plain version.
+/// `artoo --version` (docs/RELEASING.md §1): derived from the nearest
+/// annotated release tag by `git describe` (src/version_tag.zig) — the
+/// tag's version at the tag, the next version as a dev build after it.
+/// `-Dversion` overrides it for a source tree without Git history.
 fn version(b: *std.Build) []const u8 {
-    if (!std.mem.endsWith(u8, zon.version, "-dev")) return zon.version;
-    // The commit is read at configure time, which Zig 0.17 caches: without
-    // this, every later build reported the commit of the first one.
+    if (b.option([]const u8, "version", "Version to report instead of the one derived from Git tags")) |v| return v;
+    // Git is read at configure time, which Zig 0.17 caches: without this,
+    // every later build reported the commit of the first one.
     b.graph.poisonCache();
     var code: u8 = 0;
-    const out = b.runAllowFail(&.{ "git", "rev-parse", "--short", "HEAD" }, &code, .ignore) catch return zon.version;
-    const commit = std.mem.trim(u8, out, " \r\n");
-    if (code != 0 or commit.len == 0) return zon.version;
-    return b.fmt("{s}+{s}", .{ zon.version, commit });
+    const out = b.runAllowFail(&.{ "git", "describe", "--match", "v[0-9]*", "--long", "--abbrev=7", "HEAD" }, &code, .ignore) catch return version_tag.unknown;
+    if (code != 0) return version_tag.unknown;
+    return (version_tag.fromDescribe(b.allocator, out) catch null) orelse version_tag.unknown;
 }

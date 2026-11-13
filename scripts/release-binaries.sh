@@ -7,17 +7,18 @@
 #   scripts/release-binaries.sh DIST_DIR
 #
 # Run from a checkout of the tag. artoo links no libc, so every target is
-# cross-compiled from one machine. The version comes from build.zig.zon
-# and must not be a -dev version.
+# cross-compiled from one machine. The version is the annotated release
+# tag at HEAD (docs/RELEASING.md §1); anything else is refused.
 set -eu
 
 dist=${1:?usage: release-binaries.sh DIST_DIR}
 targets="aarch64-macos x86_64-macos x86_64-linux aarch64-linux"
 
-version=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
-case "$version" in
-"" | *-dev*) echo "release-binaries: build.zig.zon version '$version' is not a release" >&2; exit 2 ;;
-esac
+tag=$(git describe --exact-match --match 'v[0-9]*' HEAD 2>/dev/null) || {
+	echo "release-binaries: HEAD is not at an annotated release tag v*" >&2
+	exit 2
+}
+version=${tag#v}
 
 mkdir -p "$dist"
 dist=$(cd "$dist" && pwd)

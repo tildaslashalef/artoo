@@ -9,6 +9,7 @@ const registry = @import("commands/registry.zig");
 
 test {
     _ = @import("guest/crypt512.zig");
+    _ = @import("version_tag.zig");
     _ = @import("cli.zig");
     _ = @import("ui.zig");
     _ = @import("files.zig");
