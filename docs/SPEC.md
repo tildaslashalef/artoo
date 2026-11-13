@@ -2644,10 +2644,10 @@ archive `artoo-<ver>-<target>.tar.gz` holding
   a global flag (§3.1). No config, secret or token is used; the
   repository is `tildaslashalef/artoo`, built in.
 - **Versions** compare by SemVer precedence (`std.SemanticVersion.order`,
-  build metadata ignored): `0.4.0-dev+abc` < `0.4.0-rc.1` < `0.4.0`. The
-  same version is a no-op (exit 5, nothing downloaded); so is a build
-  newer than the latest release (a `-dev` build after its predecessor's
-  release) unless VERSION is named.
+  build metadata ignored): `0.4.0-dev.3+abc` < `0.4.0-rc.1` < `0.4.0`.
+  The same version is a no-op (exit 5, nothing downloaded); so is a build
+  newer than the latest release (a dev build after it, docs/RELEASING.md
+  §1) unless VERSION is named.
 - **`--check`** is read-only: release metadata only, nothing downloaded,
   no prompt. Exit 0 when an update is available, 5 when there is nothing
   to update (the no-op `artoo update` itself would refuse), so

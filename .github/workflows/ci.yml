@@ -25,7 +25,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
+      # Tags too: `artoo --version` is derived from them (git describe).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Downloads Zig from ziglang.org (mirrors) and verifies its minisign
       # signature; caches the global Zig cache between runs.
