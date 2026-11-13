@@ -31,6 +31,10 @@ jobs:
 
       - name: Annotated tag on main
         run: |
+          # actions/checkout re-fetches the triggering tag as a lightweight
+          # ref; fetch the real (annotated) tag object back first, or this
+          # check and `git describe` in the build both miss it.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag || { echo "$GITHUB_REF_NAME is not an annotated tag"; exit 1; }
           git merge-base --is-ancestor HEAD origin/main || { echo "$GITHUB_REF_NAME is not on main"; exit 1; }
 
