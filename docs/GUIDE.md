@@ -117,11 +117,16 @@ artoo status               # one screen: Proxmox, guests, storage, tasks, UniFi,
 - Config: `~/.artoo/config.json`, non-secret (`artoo config show|get|set|
   unset|edit|init`; `config set -h` lists the keys).
 - Another machine: `artoo config export FILE` seals the config, the CA
-  bundle and the three API credentials under a passphrase; `artoo config
+  bundle and the three API credentials under a passphrase
+  (`--guest-passwords` adds the guests' sudo passwords); `artoo config
   import FILE` installs them there (SPEC §6.1). The operator runs both in
   their own terminal and types the passphrase; an agent never asks for
   it. The new machine still needs its own SSH key on Proxmox and in
   `guests.extra_ssh_keys`.
+- A guest's sudo password lives on the machine that created or last
+  reset it. Elsewhere: `artoo vm password VM --reset` (a live change to
+  the guest: plan and approval first; the other machines' copies stop
+  working), or carry them all with `config export --guest-passwords`.
 - TLS to Proxmox and UniFi is verified against the mkcert root
   `~/.artoo/tls/rootCA.pem`; Cloudflare against the system roots. There is
   no insecure mode.

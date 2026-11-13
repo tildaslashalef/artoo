@@ -1,7 +1,8 @@
 //! `artoo config export|import` (SPEC §6.1): carry artoo's setup — the
 //! config file, the CA bundles it names and the API credentials — to
 //! another Mac or Linux machine in one passphrase-sealed file. Guest
-//! passwords and SSH keys never travel; secret values are never shown.
+//! passwords travel only with --guest-passwords; SSH keys never do;
+//! secret values are never shown.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -15,10 +16,13 @@ const prompt = @import("../prompt.zig");
 const secrets = @import("../secrets.zig");
 const setup_file = @import("../setup_file.zig");
 const ui = @import("../ui.zig");
+const pve = @import("../pve/client.zig");
+const vms = @import("../pve/vm.zig");
 
 const Context = app.Context;
 
-/// The credentials that travel (`guest/<name>` passwords do not).
+/// The credentials that always travel (`guest/<name>` passwords only
+/// with `--guest-passwords`).
 const credential_names = [_][]const u8{ "pve", "unifi", "cloudflare" };
 
 /// The sealed payload.
@@ -44,7 +48,8 @@ pub const export_cmd = struct {
         \\unifi.ca_bundle) and the stored pve, unifi and cloudflare
         \\credentials into FILE under a passphrase (Argon2id, 64 MiB;
         \\XChaCha20-Poly1305), for 'artoo config import' on another Mac or
-        \\Linux machine. Guest passwords and SSH keys are not included. The
+        \\Linux machine. --guest-passwords adds the stored sudo password of
+        \\every VM on Proxmox (guest/<name>); SSH keys are never included. The
         \\passphrase comes from a hidden prompt (asked twice) or the first
         \\line of --stdin; at least 12 characters. FILE is written with mode
         \\0600 and opened again to check it. Anyone with FILE and the
@@ -54,10 +59,12 @@ pub const export_cmd = struct {
     pub const flags = [_]cli.Flag{
         .{ .long = "stdin", .help = "Read the passphrase from standard input" },
         .{ .long = "force", .help = "Replace an existing FILE" },
+        .{ .long = "guest-passwords", .help = "Also seal the stored guest passwords (guest/<name>)" },
     };
     pub const examples = [_][]const u8{
         "artoo config export ~/artoo-setup.txt",
         "artoo config export -n ~/artoo-setup.txt",
+        "artoo config export --guest-passwords ~/artoo-setup.txt",
     };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
@@ -93,9 +100,30 @@ pub const export_cmd = struct {
                 try fields.append(a, .{ .key = n, .value = "credential" });
             } else try fields.append(a, .{ .key = n, .value = "not stored, not included", .role = .muted });
         }
+        const with_guests = args.has("guest-passwords");
+        var guests: usize = 0;
+        if (with_guests) {
+            // The store has no listing on every backend: the guests are
+            // the VMs on Proxmox; a password of a VM gone is left behind.
+            var c = try pve.Client.open(ctx);
+            defer c.deinit();
+            var missing: std.ArrayList([]const u8) = .empty;
+            for (try vms.list(&c)) |v| {
+                if (v.template or v.name.len == 0) continue;
+                const n = try std.fmt.allocPrint(a, "guest/{s}", .{v.name});
+                if (!secrets.validName(n)) continue;
+                const val = store.get(ctx.io, a, n) catch |err| return storeError(ctx, err, where);
+                if (val) |secret| {
+                    try creds.append(a, .{ .name = n, .value = secret });
+                    try fields.append(a, .{ .key = n, .value = "password" });
+                    guests += 1;
+                } else try missing.append(a, try ui.text.sanitize(a, v.name, .line));
+            }
+            if (missing.items.len > 0) try fields.append(a, .{ .key = "guests", .value = try std.fmt.allocPrint(a, "no password stored here, not included: {s}", .{try std.mem.join(a, ", ", missing.items)}), .role = .muted });
+        }
         try fields.append(a, .{ .key = "file", .value = try std.fmt.allocPrint(a, "{s} (0600, passphrase-sealed)", .{ctx.tilde(out)}), .role = .changed });
         try plan(ctx, "config export", where, fields.items, &.{
-            "Not included: guest passwords, SSH keys.",
+            if (with_guests) "Not included: SSH keys." else "Not included: guest passwords (--guest-passwords), SSH keys.",
             "Anyone with the file and the passphrase holds these credentials; delete it after importing.",
         });
 
@@ -119,8 +147,9 @@ pub const export_cmd = struct {
             return ctx.fail(error.Partial, "{s} was written but does not open again; do not rely on it", .{ctx.tilde(out)});
         if (!std.mem.eql(u8, reopened, plain))
             return ctx.fail(error.Partial, "{s} was written but reads back differently; do not rely on it", .{ctx.tilde(out)});
-        try ctx.out.print("Wrote {s}: config, {d} CA bundle(s), {d} credential(s); checked.\nOn the other machine: 'artoo config import {s}'.\n", .{
-            ctx.tilde(out), bundle.ca.len, bundle.secrets.len, ctx.tilde(out),
+        try ctx.out.print("Wrote {s}: config, {d} CA bundle(s), {d} credential(s){s}; checked.\nOn the other machine: 'artoo config import {s}'.\n", .{
+            ctx.tilde(out),                                                                           bundle.ca.len,  bundle.secrets.len - guests,
+            if (with_guests) try std.fmt.allocPrint(a, ", {d} guest password(s)", .{guests}) else "", ctx.tilde(out),
         });
     }
 };
@@ -130,8 +159,9 @@ pub const import_cmd = struct {
     pub const summary = "Set artoo up from a file written by 'config export'";
     pub const details =
         \\Opens FILE with its passphrase (hidden prompt or --stdin) and
-        \\installs the config file, its CA bundles and the credentials into
-        \\this machine's secret store (credentials.store). Paths under the
+        \\installs the config file, its CA bundles and the credentials (guest
+        \\passwords too, when exported with --guest-passwords) into this
+        \\machine's secret store (credentials.store). Paths under the
         \\exporting machine's home move to this home; a store this system
         \\lacks (keychain off macOS, secret-service on macOS) becomes auto.
         \\Each item is new, same (skipped) or different; replacing anything
@@ -186,7 +216,7 @@ pub const import_cmd = struct {
         const store = try storeFor(ctx, adapted.store);
         const where = store.describe(a);
         for (bundle.secrets) |s| {
-            if (!isCredential(s.name) or !secrets.validSecret(s.value))
+            if (!(isCredential(s.name) or isGuest(s.name)) or !secrets.validSecret(s.value))
                 return ctx.fail(error.Usage, "{s} holds an unexpected entry '{s}'", .{ ctx.tilde(in), s.name });
             const have = store.get(ctx.io, a, s.name) catch |err| return storeError(ctx, err, where);
             const st: State = if (have == null) .new else if (std.mem.eql(u8, have.?, s.value)) .same else .different;
@@ -331,6 +361,11 @@ fn caPaths(a: Allocator, cfg: *const config.Config) ![]const []const u8 {
 
 fn isCredential(n: []const u8) bool {
     return contains(&credential_names, n);
+}
+
+/// `guest/<name>`, from `--guest-passwords`.
+fn isGuest(n: []const u8) bool {
+    return std.mem.startsWith(u8, n, "guest/") and secrets.validName(n);
 }
 
 fn contains(list: []const []const u8, s: []const u8) bool {
@@ -532,4 +567,63 @@ test "config export then import on another machine: rehomed, same skipped, diffe
     try testing.expectEqual(.usage, h2.run(&root, "config import ~/junk.txt --stdin -y"));
     // Secret values never reach the output.
     for ([_][]const u8{ h1.stdout(), h1.stderr(), h2.stdout(), h2.stderr() }) |o| try testing.expect(std.mem.find(u8, o, "pve-secret-value") == null);
+}
+
+test "config export --guest-passwords carries the stored passwords of Proxmox's VMs; import installs them" {
+    const testkit = @import("../testkit.zig");
+    const pass = "correct horse battery\n";
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]testkit.Gateway.FakeServer.Behavior{
+        .{ .respond = .{ .body = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":206,\"name\":\"hoth\",\"status\":\"stopped\",\"tags\":\"artoo\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"status\":\"stopped\",\"template\":1}]}" } },
+    });
+    defer g.deinit();
+    const ar = g.h.arena.allocator();
+    try g.mem.map.put(ar, "guest/naboo", "naboo-sudo-password");
+    try g.mem.map.put(ar, "guest/gone", "left-behind");
+    g.h.hooks.kdf_kib = 64;
+    var s1: prompt.Script = .{ .interactive = false, .piped = pass };
+    g.h.input = .{ .script = &s1 };
+    try g.tmp.dir.createDirPath(testing.io, ".artoo");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1}\n" });
+
+    try testing.expectEqual(.ok, g.h.run(&root, "config export --guest-passwords ~/setup.txt --stdin -y"));
+    const out1 = g.h.stdout();
+    for ([_][]const u8{
+        "guest/naboo  password",
+        "no password stored here, not included: hoth",
+        "Not included: SSH keys.",
+        "Wrote ~/setup.txt: config, 0 CA bundle(s), 3 credential(s), 1 guest password(s); checked.",
+    }) |want| if (std.mem.find(u8, out1, want) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out1 });
+        return error.TestUnexpectedResult;
+    };
+    try testing.expect(std.mem.find(u8, out1, "naboo-sudo-password") == null);
+    try testing.expect(std.mem.find(u8, out1, "gone") == null);
+    const sealed = try g.tmp.dir.readFileAlloc(testing.io, "setup.txt", ar, .limited(1 << 20));
+    try testing.expect(std.mem.find(u8, sealed, "naboo-sudo-password") == null);
+
+    // The other machine.
+    var h2 = try Harness.init();
+    defer h2.deinit();
+    var t2 = testing.tmpDir(.{});
+    defer t2.cleanup();
+    _ = try tmpHome(&h2, &t2);
+    var mem2: secrets.Memory = .{ .gpa = h2.arena.allocator() };
+    try mem2.map.put(h2.arena.allocator(), "guest/naboo", "reset-here");
+    h2.store = .{ .memory = &mem2 };
+    var s2: prompt.Script = .{ .interactive = false, .piped = pass };
+    h2.input = .{ .script = &s2 };
+    try t2.dir.writeFile(testing.io, .{ .sub_path = "setup.txt", .data = sealed });
+    // A guest password reset on this machine differs: --force replaces it.
+    try testing.expectEqual(.refused, h2.run(&root, "config import ~/setup.txt --stdin -y"));
+    try testing.expect(std.mem.find(u8, h2.stderr(), "guest/naboo differ") != null);
+    try testing.expectEqualStrings("reset-here", mem2.map.get("guest/naboo").?);
+    s2 = .{ .interactive = false, .piped = pass };
+    try testing.expectEqual(.ok, h2.run(&root, "config import ~/setup.txt --stdin -y --force"));
+    try testing.expectEqualStrings("naboo-sudo-password", mem2.map.get("guest/naboo").?);
+    try testing.expectEqualStrings("test-key", mem2.map.get("unifi").?);
+    try testing.expect(mem2.map.get("guest/gone") == null);
+    const dir_st = try t2.dir.statFile(testing.io, ".artoo", .{});
+    try testing.expectEqual(@as(u32, 0o700), @as(u32, @intCast(dir_st.permissions.toMode() & 0o777)));
+    try testing.expect(std.mem.find(u8, h2.stdout(), "naboo-sudo-password") == null);
 }
