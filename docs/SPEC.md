@@ -104,7 +104,7 @@ artoo vm snap ls VM | add VM NAME | rm VM NAME | rollback VM NAME
 artoo vm snap prune VM|--all [--keep N] [--older-than DAYS]
                                       delete artoo-owned snapshots beyond the cap or age (§9.16)
 artoo vm new NAME [--size S] [--cores N] [--memory SIZE] [--disk SIZE] [--ip ADDR]
-                 [--id N] [--template T] [--no-dns]
+                 [--id N] [--template T] [--no-dns] [--no-watch]
 artoo vm verify VM|--all [--no-dns]   read-only readiness checks (§9.4)
 artoo vm upgrade VM [--snapshot]      install the guest's pending package updates (§9.12, §9.16)
 artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
@@ -785,7 +785,7 @@ routes, no exit node and no Tailscale SSH (not enrolled yet is a warning;
 the tag on an edge or watchdog fails); also `sudo -n` refused for the
 guest user, `sshd -T` showing no root and no password login, the guest
 user's shell fish ("user account": home and shell), the baseline tools
-present, and Alloy enrolled and running when a `role-watch` VM exists (§9.9; not checked otherwise); the fence of a
+present, and Alloy enrolled and running when a `role-watch` VM exists (§9.9; not checked otherwise, or for a guest tagged `no-watch`); the fence of a
 guest tagged `fenced` (§9.11); unattended updates
 (§9.1): periodic upgrade on, the `-security` pocket allowed, the daily
 timer enabled and no automatic reboot (else failed), Tailscale's origin
@@ -1419,6 +1419,16 @@ are out of scope, §1).
   and `…:3100/loki/api/v1/push`. Alloy buffers while `scarif` is down.
   `vm verify` adds "Alloy active and enrolled" (not checked when no
   `role-watch` VM exists).
+- **Guests kept out: `vm new --no-watch`.** A short-lived test guest
+  (made for one test, destroyed with `vm rm` when it is done) would
+  otherwise push metrics and its journal and, while it lives, raise
+  alerts. `--no-watch` tags it `no-watch`: `vm new` skips "enroll in
+  watch" (Alloy stays held off by its drop-in, §9.1, so the guest pushes
+  nothing), its plan says so, `watch enroll --all` skips it, naming it in
+  `watch enroll` is refused while it carries the tag (drop the tag with
+  `vm set NAME tags=…` to enroll it later), and `vm verify` and `watch
+  status` show it as not checked instead of failed. Refused with `--role
+  watch`. `vm rm` still looks for its series and finds none.
 - **Fleet signals as metrics** (small systemd timers writing Prometheus
   text files for Alloy's textfile collector, plus local scrapes):
   - `bespin`: nftables drop counters per rule (towards Proxmox,

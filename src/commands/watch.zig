@@ -32,6 +32,9 @@ const Check = vm_new.Check;
 const Rule = edge.Rule;
 
 pub const role = "watch";
+/// Tag of a guest kept out of the watchdog (`vm new --no-watch`, SPEC §9.9):
+/// never enrolled, so it pushes nothing and raises no alerts.
+pub const no_watch_tag = "no-watch";
 const step_timeout_ms = 10 * 60 * 1000;
 /// Metrics or logs older than this mark a guest silent.
 const silent_after_s: f64 = 300;
@@ -69,6 +72,13 @@ fn ready(ctx: *Context, c: *pve.Client, v: vms.Vm) !vms.Vm {
 /// Where guests push: the watchdog's machine name.
 pub fn watchHost(ctx: *Context, v: vms.Vm) ![]const u8 {
     return std.fmt.allocPrint(ctx.arena, "{s}.{s}", .{ v.name, (try ctx.config()).guests.domain });
+}
+
+/// Whether a VM's tags keep it out of the watchdog.
+pub fn unwatched(tags: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, tags, ";, ");
+    while (it.next()) |t| if (std.mem.eql(u8, t, no_watch_tag)) return true;
+    return false;
 }
 
 pub fn roleOf(tags: []const u8) files.Role {
@@ -662,8 +672,10 @@ fn apply(c: *pve.Client, e: Enrollee) !void {
 }
 
 /// `vm new`'s step: enroll a fresh guest when a watchdog exists. Null when
-/// there is none (or the guest is the watchdog itself: `watch setup`).
+/// there is none (or the guest is the watchdog itself: `watch setup`, or
+/// tagged `no-watch`).
 pub fn enrollNew(ctx: *Context, c: *pve.Client, v: vms.Vm) !?[]const u8 {
+    if (unwatched(v.tags)) return null;
     const w = try findWatchVm(c) orelse return null;
     if (w.vmid == v.vmid or roleOf(v.tags) == .watch) return null;
     const e = try enrollee(ctx, c, v, try watchHost(ctx, w), try lab(ctx, c, false));
@@ -695,6 +707,10 @@ const EnrollOp = struct {
         if (op.all) {
             for (try vms.list(c)) |v| {
                 if (v.template or !template.taggedWith(v.tags, vm_new.tag) or roleOf(v.tags) == .watch) continue;
+                if (unwatched(v.tags)) {
+                    try skipped.append(a, try std.fmt.allocPrint(a, "{s} (tag {s})", .{ v.name, no_watch_tag }));
+                    continue;
+                }
                 if (!v.running()) {
                     try skipped.append(a, try std.fmt.allocPrint(a, "{s} ({s})", .{ v.name, v.status }));
                     continue;
@@ -707,6 +723,7 @@ const EnrollOp = struct {
                 if (v.template) return ctx.fail(error.Refused, "{s} is a template; the template carries Alloy for new guests", .{v.name});
                 if (!template.taggedWith(v.tags, vm_new.tag)) return ctx.fail(error.Refused, "{s} was not created by artoo (no '{s}' tag)", .{ try k.clean(ctx, v.name), vm_new.tag });
                 if (roleOf(v.tags) == .watch) return ctx.fail(error.Refused, "{s} is the watchdog itself; 'artoo watch setup' enrolls it", .{v.name});
+                if (unwatched(v.tags)) return ctx.fail(error.Refused, "{s} is tagged {s} (created with 'vm new --no-watch'); drop the tag with 'artoo vm set {s} tags=…' first", .{ v.name, no_watch_tag, v.name });
                 try targets.append(a, try ready(ctx, c, v));
             }
         }
@@ -793,6 +810,8 @@ pub const enroll = struct {
         \\facts → VictoriaMetrics; Caddy and cloudflared metrics on the edge) and
         \\starts it with the facts timer. Alloy reports nothing to Grafana Labs
         \\and reaches only private networks. New guests are enrolled by 'vm new'.
+        \\--all skips guests tagged no-watch ('vm new --no-watch'); naming one
+        \\is refused while it carries the tag.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "guests to enroll", .complete = .vm, .required = false, .variadic = true }};
     pub const flags = [_]cli.Flag{.{ .long = "all", .help = "Every running artoo guest" }};
@@ -1068,6 +1087,10 @@ pub const status = struct {
             const metrics = guest_ages.get(g.name);
             const has_logs = logs.contains(g.name);
             const label = try std.fmt.allocPrint(a, "{s}", .{g.name});
+            if (unwatched(g.tags)) {
+                try checks.append(a, .{ .name = label, .status = .not_checked, .detail = "tag " ++ no_watch_tag ++ ", not enrolled" });
+                continue;
+            }
             if (!g.running()) {
                 try checks.append(a, .{ .name = label, .status = .not_checked, .detail = try std.fmt.allocPrint(a, "{s}", .{g.status}) });
                 continue;
@@ -1302,6 +1325,36 @@ test "roleOf" {
     try testing.expectEqual(files.Role.watch, roleOf("artoo;role-watch"));
     try testing.expectEqual(files.Role.search, roleOf("artoo;role-search"));
     try testing.expectEqual(files.Role.plain, roleOf("artoo"));
+}
+
+test "unwatched" {
+    try testing.expect(unwatched("artoo;role-web;no-watch"));
+    try testing.expect(unwatched("artoo,no-watch"));
+    try testing.expect(!unwatched("artoo;role-watch"));
+    try testing.expect(!unwatched("artoo;no-watcher"));
+}
+
+test "watch enroll: --all skips a no-watch guest; naming one is refused" {
+    const testkit = @import("../testkit.zig");
+    const list = "{\"data\":[{\"vmid\":202,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"},{\"vmid\":210,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo;no-watch\"}]}";
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        // --all: findWatchVm, the guests
+        .{ .respond = .{ .body = list } },
+        .{ .respond = .{ .body = list } },
+        // hoth: findWatchVm, resolve
+        .{ .respond = .{ .body = list } },
+        .{ .respond = .{ .body = list } },
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{group});
+    // The only guest is skipped: nothing to enroll (no write, no plan).
+    try testing.expectEqual(testkit.Exit.refused, g.h.run(&root, "watch enroll --all -n"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "nothing to change") != null);
+    try testing.expectEqual(@as(usize, 2), g.sent());
+    try testing.expectEqual(testkit.Exit.refused, g.h.run(&root, "watch enroll hoth -n"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "hoth is tagged no-watch") != null);
+    try testing.expectEqual(@as(usize, 4), g.sent());
 }
 
 test "watch setup -n: finds the role-watch VM, plans every step, writes nothing" {

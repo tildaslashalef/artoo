@@ -293,7 +293,7 @@ const NewOp = struct {
         op.existing = null;
         const all = try vms.list(c);
         op.watch_vm = null;
-        if (!std.mem.endsWith(u8, op.tags, ";role-" ++ watch.role)) {
+        if (!watch.unwatched(op.tags) and watch.roleOf(op.tags) != .watch) {
             for (all) |v| if (!v.template and watch.roleOf(v.tags) == .watch) {
                 op.watch_vm = v.name;
             };
@@ -433,6 +433,7 @@ const NewOp = struct {
         var notes: std.ArrayList([]const u8) = .empty;
         if (op.existing != null) try notes.append(a, "Continuing an interrupted 'vm new': finished steps are skipped.");
         if (op.no_dns) try notes.append(a, "--no-dns: no DNS record; reach the guest by address.");
+        if (watch.unwatched(op.tags)) try notes.append(a, "--no-watch: not enrolled with the watchdog (tag " ++ watch.no_watch_tag ++ "): no metrics, journal or alerts; 'watch enroll --all' skips it.");
         try notes.append(a, "Cloud-init installs packages on first boot; the workflow waits for it (several minutes), then reboots the guest once if the updates ask for it.");
         try notes.append(a, "Steps run in order and stop at the first failure; nothing is undone automatically. Re-running continues.");
         return .{
@@ -644,8 +645,10 @@ pub const new = struct {
         \\wait for cloud-init, one reboot if the first boot's updates ask for it,
         \\host key pinned via the guest agent (and printed as a known_hosts line
         \\for other machines), DNS record
-        \\NAME.<guests.domain> on UniFi, then 'vm verify'. Re-running continues
-        \\an interrupted run.
+        \\NAME.<guests.domain> on UniFi, enrollment with the watchdog when one
+        \\exists, then 'vm verify'. Re-running continues an interrupted run.
+        \\--no-watch keeps a short-lived test guest out of the watchdog (tag
+        \\no-watch): no Alloy, no metrics or journal, no alerts.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "NAME", .complete = .guest_name, .help = "Guest name (default: a free curated name)", .required = false }};
     pub const flags = [_]cli.Flag{
@@ -659,13 +662,15 @@ pub const new = struct {
         .{ .long = "role", .kind = .string, .metavar = "ROLE", .help = "Purpose, tagged role-ROLE (e.g. edge, db)" },
         .{ .long = "ssh-jump", .help = "Reach it over SSH through Proxmox only (tag ssh-jump)" },
         .{ .long = "no-dns", .help = "Skip the DNS record on UniFi (the client record is still made)" },
+        .{ .long = "no-watch", .help = "Do not enroll with the watchdog (tag no-watch): a quiet test guest" },
     };
-    pub const examples = [_][]const u8{ "artoo vm new -n", "artoo vm new naboo --role web -n", "artoo vm new bespin --role edge --size small --cores 1 -y", "artoo vm new hoth --size medium --disk 60 --no-dns -y" };
+    pub const examples = [_][]const u8{ "artoo vm new -n", "artoo vm new naboo --role web -n", "artoo vm new bespin --role edge --size small --cores 1 -y", "artoo vm new hoth --size medium --disk 60 --no-dns -y", "artoo vm new hoth --no-watch -y" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         if (args.optPos("NAME")) |nm| try checkName(ctx, nm);
         const role = args.string("role");
         if (role) |r| if (!names.valid(r)) return ctx.fail(error.Usage, "--role must be one lowercase label (e.g. edge), got '{s}'", .{r});
+        if (args.has("no-watch") and role != null and std.mem.eql(u8, role.?, watch.role)) return ctx.fail(error.Usage, "--no-watch cannot be used for the watchdog itself (--role {s})", .{watch.role});
         const size = args.choice("size", Size) orelse .small;
         const cores: u32 = if (args.int("cores")) |n| blk: {
             if (n < 1 or n > 64) return ctx.fail(error.Usage, "--cores must be 1-64, got {d}", .{n});
@@ -685,11 +690,12 @@ pub const new = struct {
         var op: NewOp = .{
             .c = &c,
             .name = nm,
-            .tags = try std.fmt.allocPrint(ctx.arena, "{s}{s}{s}{s}", .{
+            .tags = try std.fmt.allocPrint(ctx.arena, "{s}{s}{s}{s}{s}", .{
                 tag,
                 if (role != null) ";role-" else "",
                 role orelse "",
                 if (args.has("ssh-jump")) ";" ++ known_hosts.jump_tag else "",
+                if (args.has("no-watch")) ";" ++ watch.no_watch_tag else "",
             }),
             .size = size,
             .cores = cores,
@@ -906,6 +912,7 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
 fn alloyCheck(ctx: *Context, c: *pve.Client, v: vms.Vm, agent_ok: bool, watched: ?[]const u8) !Check {
     const label = "alloy enrolled";
     if (watch.roleOf(v.tags) == .watch) return .{ .name = label, .status = .not_checked, .detail = "the watchdog itself ('artoo watch status')" };
+    if (watch.unwatched(v.tags)) return .{ .name = label, .status = .not_checked, .detail = "tag " ++ watch.no_watch_tag };
     const w = watched orelse return .{ .name = label, .status = .not_checked, .detail = "no watchdog VM" };
     if (!agent_ok) return .{ .name = label, .status = .not_checked };
     const r = try agent.sh(c, v.vmid, "test -e /etc/alloy/artoo.alloy || { echo 'not enrolled'; exit 1; }; systemctl is-active -q alloy || { echo 'not running'; exit 1; }", 60_000);
@@ -1302,7 +1309,7 @@ pub const verify = struct {
         \\baseline tools, Tailscale installed but not enrolled (a guest tagged
         \\tailnet: enrolled as a tagged node, no routes, no Tailscale SSH), unattended security
         \\updates without automatic reboot, a pending reboot (warning), Alloy enrolled when a
-        \\watchdog exists (SPEC §9.9). From here: SSH key
+        \\watchdog exists (SPEC §9.9; not checked for a guest tagged no-watch). From here: SSH key
         \\login with the pinned host key, the DNS record on UniFi and its
         \\answer (dig @gateway). Any failed check exits 8. --all checks every artoo
         \\guest concurrently, one block each, then a summary.
@@ -1744,6 +1751,7 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
     try testing.expectEqual(Exit.refused, g.h.run(&root, "vm new pve"));
     try testing.expectEqual(Exit.refused, g.h.run(&root, "vm new gateway"));
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm new naboo --role Web"));
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm new naboo --role watch --no-watch"));
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm new web-02 --access public"));
     try testing.expectEqual(Exit.ok, g.h.run(&root, "vm new test-01 --role web --no-dns -y"));
     try fake.done();
@@ -1802,6 +1810,48 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "vm new --no-watch -n: tagged no-watch, no enroll step although a watchdog exists" {
+    const B = testkit.Gateway.FakeServer.Behavior;
+    const r = struct {
+        fn body(s: []const u8) B {
+            return .{ .respond = .{ .body = s } };
+        }
+    }.body;
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        r("{\"data\":[{\"vmid\":100,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"template\":1,\"status\":\"stopped\",\"maxdisk\":3758096384}]}"),
+        r("{\"data\":{\"tags\":\"artoo-template\",\"cicustom\":\"vendor=local:snippets/artoo-vendor-0123456789ab.yaml\"}}"),
+        r("{\"data\":[{\"volid\":\"local:snippets/artoo-vendor-0123456789ab.yaml\",\"size\":10}]}"),
+        r("{\"data\":[{\"vmid\":100},{\"vmid\":9000}]}"),
+        r("{\"data\":{\"ipconfig0\":\"ip=192.168.1.200/24,gw=192.168.1.1\"}}"),
+        r("{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"S1\",\"internalReference\":\"default\",\"name\":\"Default\"}]}"),
+        r("{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}"),
+        r("{\"meta\":{\"rc\":\"ok\"},\"data\":[]}"),
+        r("{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}"),
+        r(storage.storage_body),
+        r("{\"meta\":{\"rc\":\"ok\"},\"data\":[{\"_id\":\"N0\",\"name\":\"WAN\"},{\"_id\":\"N1\",\"name\":\"Default\",\"ip_subnet\":\"192.168.1.1/24\"}]}"),
+    });
+    defer g.deinit();
+    try g.tmp.dir.createDirPath(testing.io, ".ssh");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".ssh/id_ed25519.pub", .data = "ssh-ed25519 AAAAkey me@mac\n" });
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    const exit = g.h.run(&root, "vm new hoth --no-watch --no-dns -n");
+    if (exit != .ok) std.debug.print("stderr:\n{s}\n", .{g.h.stderr()});
+    try testing.expectEqual(Exit.ok, exit);
+    const out = g.h.stdout();
+    for ([_][]const u8{
+        "tags           (none) → artoo;no-watch\n",
+        "--no-watch: not enrolled with the watchdog (tag no-watch)",
+        "Dry run: nothing was sent.",
+    }) |line| {
+        if (std.mem.find(u8, out, line) == null) {
+            std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try testing.expect(std.mem.find(u8, out, "Alloy pushes") == null);
 }
 
 test "public key lines: kinds, one line, comments" {
