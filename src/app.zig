@@ -120,6 +120,9 @@ pub const Context = struct {
     /// without `--yes` the action is refused.
     pub fn confirm(ctx: *Context, comptime fmt: []const u8, args: anytype) !void {
         if (ctx.globals.yes) return;
+        // The plan went to buffered stdout; it must be on screen before
+        // the question, which goes to stderr.
+        try ctx.out.flush();
         const q = try std.fmt.allocPrint(ctx.arena, fmt, args);
         const answer = prompt.ask(ctx.input, ctx.io, ctx.arena, ctx.err, q) catch |err| switch (err) {
             error.NonInteractive => return ctx.fail(error.NonInteractive, "not a terminal: re-run with --yes to confirm", .{}),
