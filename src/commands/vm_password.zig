@@ -72,7 +72,6 @@ pub const password = struct {
         const pw = (try store.get(ctx.io, ctx.arena, secret_name)) orelse
             return ctx.fail(error.SecretMissing, "no stored password {s} on this machine; 'artoo vm password {s} --reset' sets a new one", .{ secret_name, nm });
         if (args.has("show")) {
-            try ctx.out.flush();
             try ctx.confirm("Show the password of {s}?", .{nm});
             try ctx.out.print("{s}\n", .{pw});
             return;
