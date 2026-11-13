@@ -110,7 +110,7 @@ artoo vm upgrade VM [--snapshot]      install the guest's pending package update
 artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
 artoo vm ssh-config                   write ~/.artoo/ssh_config: strict plain ssh/scp/rsync (§9.10)
 artoo vm cp SRC DST [-r] [--force]    copy as <user> to, from or between guests, SHA-256 checked (§9.10)
-artoo vm password VM [--show]         copy the guest user's password to the clipboard; --show prints it (TTY only, §7)
+artoo vm password VM [--show|--reset] copy the guest user's password to the clipboard; --show prints it (TTY only, §7); --reset sets a new one (§9.17)
 artoo vm fence VM [--off]             Proxmox NIC firewall around a guest (§9.11)
 
 artoo template ls | show T | build T [--id N] | rm T | vendor [T]
@@ -508,6 +508,8 @@ One token, built-in roles.
 in JSON: by default it copies it to the clipboard through the platform's
 helper on stdin (`pbcopy`; `wl-copy`, `xclip` or `xsel` with a display),
 and refuses when none works; `--show` prints it after confirmation.
+`--reset` sets a new one through the guest agent and stores it on this
+machine (§9.17).
 
 ## 8. Transport and mutation pipeline
 
@@ -2096,6 +2098,47 @@ stopping on a failed snapshot step. Live (`scripts/live/vm-lifecycle.sh`,
 a disposable guest): two `vm upgrade --snapshot` runs, the third refused
 at the cap, prune to one, a rollback blocked by a newer snapshot, then
 a rollback that leaves the guest running.
+
+### 9.17 Guest passwords on several machines (`vm password --reset`)
+
+Decided 2026-11-13. A guest's sudo password is made by `vm new` and kept
+only in the secret store of the machine that ran it (`guest/<name>`). A
+second machine set up with `config import` (§6.1) manages every guest
+through the API and logs in with its own SSH key, but has no password
+for `sudo` on guests it did not create.
+
+**Why this is no new power.** The Proxmox token every artoo machine holds
+has `VM.GuestAgent.Unrestricted` (§7): it already runs commands as root
+in any guest (`agent/exec`) and may set any guest user's password
+(`agent/set-user-password`, the same privilege — verified in the
+schema). A stored guest password therefore protects nothing from a
+machine that holds the token; it matters only for logins without it.
+
+**`vm password VM --reset`** — on the mutation pipeline (§8.2), normal
+risk:
+
+- Read: the VM resolved, an artoo guest (tag `artoo`), running, its agent
+  answering; whether `guest/<name>` is stored here. Templates, foreign
+  VMs, stopped guests and a silent agent refuse before any write.
+- Plan: the guest user's password `current → new, random (24
+  characters)`, the store entry `stored|(none) → the new password`, the
+  store named in the target. Impact: copies of the old password on other
+  machines stop working; SSH keys, sessions and processes are untouched;
+  the VM's cloud-init password (first boot only) is not changed.
+- Send: a password from the generator `vm new` uses (§9.3), hashed with
+  SHA-512 crypt and a fresh salt; one `POST agent/set-user-password`
+  with `crypted=1` — the plaintext never reaches Proxmox. The guest is
+  changed first, then the store: a failed store leaves a guest whose
+  password nobody holds, recovered by a second reset (exit 8 says so);
+  the other order could leave a stored password the guest lacks.
+- Verify: `getent shadow USER` through the agent must show exactly the
+  hash sent, and the entry must be stored.
+- `--reset` does not combine with `--show`; the password is revealed
+  afterwards by `vm password VM` as before.
+
+The last machine to reset a guest holds its valid password. To give
+every machine the same passwords instead, `config export
+--guest-passwords` carries them (§6.1).
 
 ## 10. UniFi
 
