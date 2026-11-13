@@ -182,6 +182,7 @@ artoo vm new -n                          # plan; picks a free Star Wars / Middle
 artoo vm new naboo --role web -n         # your name; the role shows in 'vm ls'
 artoo vm new naboo --size medium -y      # waits for cloud-init (minutes)
 artoo vm new hoth --ip 192.168.1.230 --no-dns -y
+artoo vm new hoth --no-watch -y          # a test guest: never enrolled with the watchdog, no alerts; 'vm rm hoth' after the test
 artoo vm verify naboo                    # read-only checks; exit 8 on any failure
 artoo vm verify --all                    # every artoo guest at once (updates, pending reboots, …)
 artoo vm ssh naboo [-- CMD]              # host key pinned through the guest agent
@@ -401,7 +402,7 @@ metric export. Nothing phones home; nothing of it is public.
 ```console
 artoo watch status          # read-only: blocked telemetry first, then pins, services, every guest's freshness
 artoo watch setup -n|-y     # converge the VM (idempotent); re-run after 'svc add' or a health change to probe services
-artoo watch enroll --all    # Alloy on existing guests (new ones: 'vm new' does it)
+artoo watch enroll --all    # Alloy on existing guests (new ones: 'vm new' does it; skips guests tagged no-watch)
 artoo watch forget HOST     # a guest removed without 'vm rm' keeps alerting: delete its metrics
 artoo watch secret grafana  # Grafana's admin password — operator's terminal, hidden prompt
 artoo watch secret phone    # the phone's ntfy login (bcrypt made on the workstation)
