@@ -462,7 +462,9 @@ the store" (§6). Guest passwords join it on request since 2026-11-13
   the stored `guest/<name>` password of every VM on Proxmox (templates
   skipped): the store cannot be listed on every backend, so the VMs are
   read from the API, and a password left from a destroyed VM stays
-  behind; VMs without a password here are named in the plan. They add no
+  behind; VMs without a password here, or with a name the store does not
+  accept, are named in the plan; duplicate names count once. An artoo
+  older than this refuses such a file ("unexpected entry"). They add no
   power the file lacks without them — its Proxmox token already sets any
   guest user's password (§9.17). Never SSH keys, `known_hosts` or
   `ssh_config`: each machine has its own SSH key (added to Proxmox root
@@ -2127,8 +2129,10 @@ machine that holds the token; it matters only for logins without it.
 risk:
 
 - Read: the VM resolved, an artoo guest (tag `artoo`), running, its agent
-  answering; whether `guest/<name>` is stored here. Templates, foreign
-  VMs, stopped guests and a silent agent refuse before any write.
+  answering, a name the store accepts; whether `guest/<name>` is stored
+  here — a store that does not answer refuses now, not after the guest
+  changed. Templates, foreign VMs, stopped guests and a silent agent
+  refuse before any write. The fingerprint is VMID and status.
 - Plan: the guest user's password `current → new, random (24
   characters)`, the store entry `stored|(none) → the new password`, the
   store named in the target. Impact: copies of the old password on other
@@ -2139,9 +2143,16 @@ risk:
   with `crypted=1` — the plaintext never reaches Proxmox. The guest is
   changed first, then the store: a failed store leaves a guest whose
   password nobody holds, recovered by a second reset (exit 8 says so);
-  the other order could leave a stored password the guest lacks.
+  the other order could leave a stored password the guest lacks. A
+  refusal (400, 401, 403, 404) changed nothing. Any other failure — a
+  5xx such as the agent's "got timeout", after which the agent may
+  still run the command, or a lost answer — is resolved by reading the
+  guest's shadow entry: the new hash there is success; otherwise exit 7,
+  the stored password unchanged, and a second reset named as safe.
 - Verify: `getent shadow USER` through the agent must show exactly the
-  hash sent, and the entry must be stored.
+  hash sent, and the entry must be stored; a read-back that fails is
+  exit 8 naming what was done. The generated password is wiped from
+  memory after use.
 - `--reset` does not combine with `--show`; the password is revealed
   afterwards by `vm password VM` as before.
 

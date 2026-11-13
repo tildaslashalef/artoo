@@ -69,7 +69,8 @@ pub const Store = union(enum) {
 
     pub fn set(s: Store, io: Io, arena: Allocator, name: []const u8, secret: []const u8) common.Error!void {
         return switch (s) {
-            .memory => |m| m.map.put(m.gpa, name, secret),
+            // Kept like a real backend: a copy, not the caller's buffer.
+            .memory => |m| m.map.put(m.gpa, name, m.gpa.dupe(u8, secret) catch return error.OutOfMemory),
             inline else => |b| b.set(io, arena, name, secret),
         };
     }
