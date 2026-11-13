@@ -90,7 +90,7 @@ UniFi's other ports and the rest of the LAN (SPEC §9.7).
 | `pve` — token `artoo@pve!cli` | the secret store (macOS Keychain, Linux Secret Service, or a 0600 file), service `artoo` | the Proxmox API | operator-approved host change (§15) |
 | `unifi` — API key `artoo` | the secret store | UniFi's API | operator, UniFi UI |
 | `cloudflare` — account token `artoo` | the secret store | zone records, the tunnel's routes | operator, Cloudflare dashboard |
-| `guest/<vm>` — the guest user's sudo password | the secret store | `artoo vm password` | `vm new` makes it, `vm rm` deletes it |
+| `guest/<vm>` — the guest user's sudo password | the secret store of the machine that made or last reset it | `artoo vm password` | `vm new` makes it, `vm password --reset` replaces it, `vm rm` deletes it |
 | `bespin-acme` — DNS-01 token | `bespin` only (`/etc/caddy/cloudflare.env`) | the `*.apps` wildcard | `artoo edge secret dns` |
 | tunnel token | `bespin` only (`/etc/cloudflared/tunnel.env`) | cloudflared | `artoo edge tunnel` (API → VM) |
 | Tailscale auth key | nowhere — single-use, spent when the router joins | `artoo router setup` | a new key per router rebuild |
@@ -187,6 +187,7 @@ artoo vm verify naboo                    # read-only checks; exit 8 on any failu
 artoo vm verify --all                    # every artoo guest at once (updates, pending reboots, …)
 artoo vm ssh naboo [-- CMD]              # host key pinned through the guest agent
 artoo vm password naboo [--show]         # the guest user's sudo/console password to the clipboard (terminal only)
+artoo vm password naboo --reset -n       # a new password through the guest agent, stored on this machine (SPEC §9.17)
 artoo vm ssh-config                      # ~/.artoo/ssh_config: plain ssh/scp/rsync as strict as vm ssh
 artoo vm cp ./bin/tool naboo:bin/        # copy as the guest user; SHA-256 checked on the far side
 artoo vm cp -r bespin:site naboo:        # guest to guest, relayed through the workstation (scp -3)

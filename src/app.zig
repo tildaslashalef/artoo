@@ -58,6 +58,9 @@ pub const Context = struct {
         kdf_kib: ?u32 = null,
         /// `artoo update` against the fake server (SPEC §18).
         update: ?Update = null,
+        /// A fixed password and salt for `vm password --reset`, so a test
+        /// can answer with the exact shadow hash.
+        guest_password: ?struct { password: []const u8, salt: []const u8 } = null,
     };
 
     pub const Update = struct {
