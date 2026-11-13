@@ -144,11 +144,11 @@ exists.
   repository settings are the operator's — or the agent's only on an
   explicit "merge"/"release" for that pull request or version.
 - **Versions and releases** follow [docs/RELEASING.md](docs/RELEASING.md)
-  exactly: SemVer with `build.zig.zon` as the single source, `main` on
-  the next `-dev`, which commit type bumps which number (0.y.z until
-  1.0.0), the release and `-dev` pull requests, annotated `vX.Y.Z` tags
-  on `main`, verifying the five release assets, and never moving a
-  pushed tag. A release happens only on the operator's explicit
+  exactly: SemVer with the annotated `vX.Y.Z` tag on `main` as the
+  single source (dev builds derive the next version from it; no version
+  bump commits or release pull requests), which commit type bumps which
+  number (0.y.z until 1.0.0), verifying the five release assets, and
+  never moving a pushed tag. A release happens only on the operator's explicit
   "release". No CHANGELOG file: release notes come from the
   Conventional Commits.
 - **Live runs** use the branch's installed build (`make install` on the

@@ -1,5 +1,5 @@
-# artoo release binaries (AGENTS.md, Git): on a pushed v* tag, check that
-# the tag matches build.zig.zon, run `make test`'s checks, build the
+# artoo release binaries (docs/RELEASING.md): on a pushed v* tag, check
+# that it is an annotated tag on main, run `make test`'s checks, build the
 # release archives (scripts/release-binaries.sh) and attach them to the
 # tag's GitHub release, creating it with generated notes if it does not
 # exist yet.
@@ -19,16 +19,20 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
+      # Full history and tags: the version is derived from the tag
+      # (git describe), and the tag must be on main.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
 
-      - name: Tag matches build.zig.zon
+      - name: Annotated tag on main
         run: |
-          version=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
-          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, build.zig.zon $version"; exit 1; }
+          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag || { echo "$GITHUB_REF_NAME is not an annotated tag"; exit 1; }
+          git merge-base --is-ancestor HEAD origin/main || { echo "$GITHUB_REF_NAME is not on main"; exit 1; }
 
       - name: Checks
         timeout-minutes: 15
@@ -39,7 +43,9 @@ jobs:
         run: |
           scripts/release-binaries.sh dist
           tar -xzOf dist/artoo-*-aarch64-macos.tar.gz '*/artoo' > artoo-smoke
-          chmod +x artoo-smoke && ./artoo-smoke --version
+          chmod +x artoo-smoke
+          got=$(./artoo-smoke --version)
+          test "$got" = "artoo ${GITHUB_REF_NAME#v}" || { echo "built '$got' for tag $GITHUB_REF_NAME"; exit 1; }
 
       - name: Attach to the release
         env:
