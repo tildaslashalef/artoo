@@ -202,11 +202,14 @@ pub const import_cmd = struct {
 
         for (bundle.ca, ca_targets.items) |c, p| {
             if (try compareFile(ctx, p, c.pem) == .same) continue;
-            const dir = std.fs.path.dirname(p) orelse ".";
-            Io.Dir.cwd().createDirPath(ctx.io, dir) catch return ctx.fail(error.Partial, "cannot create {s}", .{ctx.tilde(dir)});
+            try makeDir(ctx, std.fs.path.dirname(p) orelse ".");
             try writeFile(ctx, p, c.pem, false);
         }
-        if (cfg_state != .same) try writeFile(ctx, cfg_path, adapted.text, false);
+        if (cfg_state != .same) {
+            // A setup without CA bundles has not made the directory yet.
+            try makeDir(ctx, std.fs.path.dirname(cfg_path) orelse ".");
+            try writeFile(ctx, cfg_path, adapted.text, false);
+        }
         for (bundle.secrets) |s| {
             const have = store.get(ctx.io, a, s.name) catch |err| return storeError(ctx, err, where);
             if (have != null and std.mem.eql(u8, have.?, s.value)) continue;
@@ -224,6 +227,13 @@ pub const import_cmd = struct {
 };
 
 const State = enum { new, same, different };
+
+/// Missing directories are made 0700, like `~/.artoo` on the exporting
+/// machine; existing ones keep their mode.
+fn makeDir(ctx: *Context, dir: []const u8) !void {
+    _ = Io.Dir.cwd().createDirPathStatus(ctx.io, dir, .fromMode(0o700)) catch
+        return ctx.fail(error.Partial, "cannot create {s}", .{ctx.tilde(dir)});
+}
 
 fn note(ctx: *Context, fields: *std.ArrayList(ui.blocks.Field), key: []const u8, where: []const u8, st: State, changes: *usize, different: *std.ArrayList([]const u8)) !void {
     if (st != .same) changes.* += 1;
@@ -492,6 +502,10 @@ test "config export then import on another machine: rehomed, same skipped, diffe
     try testing.expectEqualStrings("unifi-key-value", mem2.map.get("unifi").?);
     try testing.expect(mem2.map.get("guest/naboo") == null);
     try testing.expectEqualStrings(ca, try t2.dir.readFileAlloc(testing.io, ".artoo/tls/rootCA.pem", h2.arena.allocator(), .limited(4096)));
+    for ([_][]const u8{ ".artoo", ".artoo/tls" }) |d| {
+        const ds = try t2.dir.statFile(testing.io, d, .{});
+        try testing.expectEqual(@as(u32, 0o700), @as(u32, @intCast(ds.permissions.toMode() & 0o777)));
+    }
     const cfg2 = try t2.dir.readFileAlloc(testing.io, ".artoo/config.json", h2.arena.allocator(), .limited(4096));
     try testing.expect(std.mem.find(u8, cfg2, home1) == null);
     try testing.expect(std.mem.find(u8, cfg2, "\"~/.artoo/tls/rootCA.pem\"") != null);
