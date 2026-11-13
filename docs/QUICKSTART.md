@@ -105,7 +105,8 @@ artoo config show
 Already set up on another machine? There, `artoo config export
 ~/artoo-setup.txt`; here, `artoo config import ~/artoo-setup.txt` brings
 the config, the CA bundle and the credentials in one step (it asks for
-the passphrase you chose). Then create this machine's own SSH key and
+the passphrase you chose). Add `--guest-passwords` to the export to
+bring the guests' sudo passwords too. Then create this machine's own SSH key and
 continue with `artoo doctor --connect`.
 
 Store the credentials — each one is read from a hidden prompt (or

@@ -127,7 +127,7 @@ artoo watch setup | status | enroll VM…|--all | secret grafana|phone | forget 
                                       the watchdog VM `scarif` (§9.9)
 
 artoo config show | get KEY | set KEY VALUE | unset KEY | edit | init
-artoo config export FILE | import FILE   artoo's setup to another machine (§6.1)
+artoo config export FILE [--guest-passwords] | import FILE   artoo's setup to another machine (§6.1)
 artoo completion fish|bash|zsh        print the shell completion script (§3.5)
 artoo update [VERSION] [--check]      replace this binary with a verified GitHub release (§18)
 artoo auth set pve|unifi|cloudflare | status | rm pve|unifi|cloudflare
@@ -453,13 +453,20 @@ Rules for every backend:
 
 Decided 2026-10-23: one file carries artoo's setup to another Mac or
 Linux machine — the deliberate, only exception to "secrets never leave
-the store" (§6).
+the store" (§6). Guest passwords join it on request since 2026-11-13
+(§9.17).
 
 - **Contents:** the config file as it is, the CA bundles it names
   (`pve.ca_bundle`, `unifi.ca_bundle`, once each) and the stored `pve`,
-  `unifi` and `cloudflare` credentials. Never `guest/<name>` passwords,
-  SSH keys, `known_hosts` or `ssh_config`: each machine has its own SSH
-  key (added to Proxmox root and to `guests.extra_ssh_keys`).
+  `unifi` and `cloudflare` credentials. With `--guest-passwords`, also
+  the stored `guest/<name>` password of every VM on Proxmox (templates
+  skipped): the store cannot be listed on every backend, so the VMs are
+  read from the API, and a password left from a destroyed VM stays
+  behind; VMs without a password here are named in the plan. They add no
+  power the file lacks without them — its Proxmox token already sets any
+  guest user's password (§9.17). Never SSH keys, `known_hosts` or
+  `ssh_config`: each machine has its own SSH key (added to Proxmox root
+  and to `guests.extra_ssh_keys`).
 - **Sealing** (`setup_file.zig`, stdlib only): Argon2id (64 MiB, 3
   passes, one lane — checked against the reference implementation's
   test vector, as Zig 0.17 skips its own Argon2 tests) derives the key
@@ -480,8 +487,10 @@ the store" (§6).
   anything different is replaced only with `--force`. Paths under the
   exporting machine's home become `~/…`; a `credentials.store` this
   system lacks (`keychain` off macOS, `secret-service` on macOS) becomes
-  `auto`; both show in the plan. Credentials go to the store the
-  imported config selects. Values are never shown or compared in the
+  `auto`; both show in the plan. Credentials and guest passwords go to
+  the store the imported config selects; a guest password reset on this
+  machine is "different" and stays unless `--force`. Missing directories
+  are created 0700. Values are never shown or compared in the
   output. It ends with the machine's own next steps (SSH key, `doctor
   --connect`).
 - **Protection model:** the file is an offline copy of the lab's API
