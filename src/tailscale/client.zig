@@ -64,6 +64,9 @@ pub const Options = struct {
     content_type: []const u8 = "application/json",
     /// `If-Match` (the policy's ETag, as received).
     if_match: ?[]const u8 = null,
+    /// A POST that changes nothing (validate, preview): a lost answer is
+    /// a failed read, not an unknown outcome.
+    read_only: bool = false,
 };
 
 pub const Client = struct {
@@ -181,12 +184,15 @@ pub const Client = struct {
             .headers = try ctx.arena.dupe(std.http.Header, headers[0..n]),
             .body = body,
             .content_type = opts.content_type,
-        }, &diag) catch |err| return api.transportError(ctx, err, diag, "Tailscale");
+        }, &diag) catch |err| {
+            if (err == error.OutcomeUnknown and opts.read_only) return ctx.fail(error.Network, "Tailscale: {s}", .{diag.message});
+            return api.transportError(ctx, err, diag, "Tailscale");
+        };
         if (r.status >= 200 and r.status < 300) return r;
         const msg = try errorMessage(ctx.arena, r.body);
         const s = if (msg.len > 0) ": " else "";
         const verb = @tagName(method);
-        if (method != .GET and r.status >= 500) {
+        if (method != .GET and !opts.read_only and r.status >= 500) {
             return ctx.fail(error.OutcomeUnknown, "Tailscale answered {d} to {s} {s}{s}{s}; the write may or may not have applied — check before retrying", .{ r.status, verb, path, s, msg });
         }
         return switch (r.status) {
@@ -202,10 +208,14 @@ pub const Client = struct {
 
     /// A JSON request; the parsed answer (`.null` for an empty body).
     pub fn json(c: *Client, method: http.Method, path: []const u8, body: ?[]const u8) !Value {
-        const r = try c.raw(method, path, body, .{});
+        return c.jsonOpts(method, path, body, .{});
+    }
+
+    pub fn jsonOpts(c: *Client, method: http.Method, path: []const u8, body: ?[]const u8, opts: Options) !Value {
+        const r = try c.raw(method, path, body, opts);
         if (std.mem.trim(u8, r.body, " \r\n\t").len == 0) return .null;
         return std.json.parseFromSliceLeaky(Value, c.ctx.arena, r.body, .{}) catch {
-            if (method != .GET) return c.ctx.fail(error.OutcomeUnknown, "Tailscale answered {s} {s} with invalid JSON; the write may or may not have applied — check before retrying", .{ @tagName(method), path });
+            if (method != .GET and !opts.read_only) return c.ctx.fail(error.OutcomeUnknown, "Tailscale answered {s} {s} with invalid JSON; the write may or may not have applied — check before retrying", .{ @tagName(method), path });
             return c.ctx.fail(error.Protocol, "Tailscale sent invalid JSON for {s}", .{path});
         };
     }
