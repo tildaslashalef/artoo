@@ -823,7 +823,7 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
     try out.append(a, .{ .name = "VM running", .status = if (running) .ok else .failed, .detail = try k.clean(ctx, pve.str(st, "status") orelse "unknown") });
     try out.append(a, try configPending(ctx, c, v, running));
     const agent_ok = running and try agent.ping(c, v.vmid);
-    try out.append(a, if (!running) .{ .name = "guest agent", .status = .not_checked } else .{ .name = "guest agent", .status = if (agent_ok) .ok else .failed, .detail = if (agent_ok) "" else "no answer" });
+    try out.append(a, if (!running) .{ .name = "guest agent", .status = .not_checked } else .{ .name = "guest agent", .status = if (agent_ok) .ok else .failed, .detail = if (agent_ok) "answers" else "no answer" });
 
     const Guest = struct {
         name: []const u8,
