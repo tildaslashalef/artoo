@@ -2013,22 +2013,35 @@ check `vm verify` reads (§9.4).
   skipped with the reason. Guests tagged `role-edge`, `role-router` or
   `role-watch` that want a reboot are named with their packages but left
   to their own `vm reboot VM`, for the reasons of `vm upgrade --all`
-  (the router's reboot alone cuts a remote operator's path). Nobody to
+  (the router's reboot alone cuts a remote operator's path). So is the
+  guest artoo itself runs on (its host name is the VM name): rebooting
+  it would end the run midway. A missing `/run/reboot-required.pkgs`
+  still counts as wanting a reboot ("packages not named"). Nobody to
   reboot is a no-op (exit 5) whose message names all of these.
 - **Plan:** one change row per guest, `running → rebooted (packages)`.
   Impact: one guest after another; each must be running again, its
   agent answering and its reboot request gone before the next starts;
   the first that is not stops the run.
-- **Send:** per guest, `vm new`'s reboot step (§9.1): the request is
-  read again right before the write (a guest that no longer wants it is
-  skipped, not rebooted), `POST …/status/reboot`, the task tracked, the
-  agent awaited (10 minutes), then `uname -r` and the request read
-  again. Unlike `vm upgrade --all`, a failure stops the run — a failed
-  upgrade leaves a guest running, a failed reboot leaves it down — and
-  the remaining guests stay "not run"; the error names how many. Never a
-  retry. `--no-wait` is refused (usage), as is a VM with `--pending`.
-- **Verify:** every step done or skipped; the result counts the guests
-  rebooted and back.
+- **Send:** per guest: the request is read again right before the
+  write (a guest that no longer wants it is skipped, not rebooted),
+  `POST …/status/reboot`, the task tracked, the agent awaited (10
+  minutes), then `uname -r` and the request read again. Each guest's
+  step ends in one state set once: *failed* before the write (its check
+  failed, or Proxmox refused the POST: "not rebooted"); *unknown* when
+  the reboot was or may have been sent and its end is not known (an
+  ambiguous POST, no task ID, a task not followed to its end, Ctrl-C, a
+  guest back whose state cannot be read); *failed* after the write (the
+  task failed, the agent silent for 10 minutes, the request still
+  there); *done*. Unlike `vm upgrade --all`, any of these stops the run
+  — a failed upgrade leaves a guest running, a failed reboot leaves it
+  down — and the remaining guests stay "not run". The error says which
+  case it was and counts the guests not rebooted (the current one too
+  when it was not); an unknown step exits 7 and names `vm verify NAME`
+  before running again. Never a retry. `--no-wait` is refused (usage),
+  as is a VM with `--pending`.
+- **Verify:** every step done or skipped; none done (every guest stopped
+  wanting it when its turn came) is a no-op (exit 5), not a success. The
+  result counts the guests rebooted and back.
 
 ### 9.13 Pending configuration
 
