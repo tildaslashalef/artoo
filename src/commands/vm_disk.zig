@@ -251,19 +251,23 @@ pub const grow = struct {
     pub const name = "grow";
     pub const summary = "Grow a VM disk and the guest's root filesystem on it";
     pub const details =
-        \\SIZE is the growth (+20G) or the new size (80G): M, G or T, no unit is
-        \\GiB. Proxmox cannot shrink a disk, so a smaller size is refused. On
-        \\the boot disk of a running VM whose guest agent answers, the root
-        \\filesystem grows at once (growpart, then resize2fs or xfs_growfs);
-        \\otherwise at the next boot (cloud-init growpart). Another disk's
-        \\partitions are the guest's to grow.
+        \\Makes a VM disk bigger, for a guest that is running out of space.
+        \\SIZE is the growth (+20G) or the new total (80G), in M, G or T; a
+        \\number without a unit is GiB.
+        \\
+        \\On the boot disk of a running VM whose guest agent answers, the root
+        \\filesystem grows at once; otherwise it grows at the next boot.
+        \\Partitions on another disk are the guest's to grow.
+        \\
+        \\Refused: a smaller size (Proxmox cannot shrink a disk), templates,
+        \\CD-ROM drives, and growth the storage has no room for.
     ;
     pub const positionals = [_]cli.Positional{
         .{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name" },
-        .{ .name = "SIZE", .help = "+GROWTH or NEW size (M, G, T; no unit = GiB)" },
+        .{ .name = "SIZE", .help = "+GROWTH or new total size (M, G, T; no unit = GiB)" },
     };
-    pub const flags = [_]cli.Flag{.{ .long = "disk", .kind = .string, .metavar = "SLOT", .default = "scsi0", .help = "Disk slot (scsi0, virtio1, …)" }};
-    pub const examples = [_][]const u8{ "artoo vm disk grow web-01 +20G", "artoo vm disk grow web-01 100G --disk scsi1" };
+    pub const flags = [_]cli.Flag{.{ .long = "disk", .kind = .string, .metavar = "SLOT", .default = "scsi0", .help = "Disk slot to grow (scsi0, virtio1, …)" }};
+    pub const examples = [_][]const u8{ "artoo vm disk grow web-01 +20G -n", "artoo vm disk grow web-01 +20G", "artoo vm disk grow web-01 100G --disk scsi1" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const word = args.pos("SIZE");
@@ -277,7 +281,7 @@ pub const grow = struct {
     }
 };
 
-pub const group = cli.group("disk", "VM disks", &.{cli.leaf(grow)});
+pub const group = cli.group("disk", "Grow VM disks", &.{cli.leaf(grow)});
 
 pub const commands = [_]cli.Command{group};
 
