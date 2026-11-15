@@ -17,6 +17,11 @@ pub const Op = struct {
 
 pub const Fmt = enum {
     text,
+    /// An API enum value made readable: SYSTEM_DEFINED → system defined,
+    /// A_RECORD → A, accessPoint → access point (tables only; JSON keeps it).
+    word,
+    /// `list` of such values.
+    words,
     /// true → yes, false → no.
     bool,
     /// Device/port state: ONLINE → ● online.
@@ -135,7 +140,7 @@ pub const Resource = struct {
 };
 
 const id_col: Column = .{ .title = "ID", .path = "id", .drop = 3, .id = true };
-const origin_col: Column = .{ .title = "ORIGIN", .path = "metadata.origin", .drop = 2 };
+const origin_col: Column = .{ .title = "ORIGIN", .path = "metadata.origin", .fmt = .word, .drop = 2 };
 const eq4 = "eq ne in notIn";
 const eq4like = "eq ne in notIn like";
 const eqne = "eq ne";
@@ -213,7 +218,7 @@ pub const resources = [_]Resource{
             .{ .title = "IP", .path = "ipAddress", .id = true },
             .{ .title = "FIRMWARE", .path = "firmwareVersion", .drop = 1 },
             .{ .title = "UPDATE", .path = "firmwareUpdatable", .fmt = .bool, .drop = 2 },
-            .{ .title = "FEATURES", .path = "features", .fmt = .list, .drop = 2 },
+            .{ .title = "FEATURES", .path = "features", .fmt = .words, .drop = 2 },
             id_col,
         },
         .match = &.{ "name", "macAddress", "ipAddress" },
@@ -244,11 +249,11 @@ pub const resources = [_]Resource{
         },
         .columns = &.{
             .{ .title = "NAME", .path = "name", .id = true },
-            .{ .title = "TYPE", .path = "type" },
+            .{ .title = "TYPE", .path = "type", .fmt = .word },
             .{ .title = "IP", .path = "ipAddress", .id = true },
             .{ .title = "CONNECTED", .path = "connectedAt", .fmt = .time, .drop = 1 },
             .{ .title = "MAC", .path = "macAddress", .drop = 2, .id = true },
-            .{ .title = "ACCESS", .path = "access.type", .drop = 2 },
+            .{ .title = "ACCESS", .path = "access.type", .fmt = .word, .drop = 2 },
             id_col,
         },
         .match = &.{ "name", "macAddress", "ipAddress" },
@@ -281,7 +286,7 @@ pub const resources = [_]Resource{
         .columns = &.{
             .{ .title = "NAME", .path = "name", .id = true },
             .{ .title = "VLAN", .path = "vlanId", .right = true },
-            .{ .title = "MANAGEMENT", .path = "management" },
+            .{ .title = "MANAGEMENT", .path = "management", .fmt = .word },
             .{ .title = "ENABLED", .path = "enabled", .fmt = .bool },
             .{ .title = "DEFAULT", .path = "default", .fmt = .bool, .drop = 1 },
             origin_col,
@@ -313,8 +318,8 @@ pub const resources = [_]Resource{
         .columns = &.{
             .{ .title = "NAME", .path = "name", .id = true },
             .{ .title = "ENABLED", .path = "enabled", .fmt = .bool },
-            .{ .title = "SECURITY", .path = "securityConfiguration.type" },
-            .{ .title = "NETWORK", .path = "network.type", .drop = 1 },
+            .{ .title = "SECURITY", .path = "securityConfiguration.type", .fmt = .word },
+            .{ .title = "NETWORK", .path = "network.type", .fmt = .word, .drop = 1 },
             .{ .title = "BANDS (GHz)", .path = "broadcastingFrequenciesGHz", .fmt = .list, .drop = 1 },
             id_col,
         },
@@ -356,7 +361,7 @@ pub const resources = [_]Resource{
             .{ .title = "INDEX", .path = "index", .right = true },
             .{ .title = "NAME", .path = "name", .id = true },
             .{ .title = "ENABLED", .path = "enabled", .fmt = .bool },
-            .{ .title = "ACTION", .path = "action.type" },
+            .{ .title = "ACTION", .path = "action.type", .fmt = .word },
             .{ .title = "SOURCE ZONE", .path = "source.zoneId", .drop = 1, .id = true },
             .{ .title = "DEST ZONE", .path = "destination.zoneId", .drop = 1, .id = true },
             origin_col,
@@ -416,8 +421,8 @@ pub const resources = [_]Resource{
         .columns = &.{
             .{ .title = "INDEX", .path = "index", .right = true },
             .{ .title = "NAME", .path = "name", .id = true },
-            .{ .title = "TYPE", .path = "type" },
-            .{ .title = "ACTION", .path = "action" },
+            .{ .title = "TYPE", .path = "type", .fmt = .word },
+            .{ .title = "ACTION", .path = "action", .fmt = .word },
             .{ .title = "ENABLED", .path = "enabled", .fmt = .bool },
             origin_col,
             id_col,
@@ -463,7 +468,7 @@ pub const resources = [_]Resource{
         .read_only = &.{ "id", "metadata" },
         .columns = &.{
             .{ .title = "DOMAIN", .path = "domain", .id = true },
-            .{ .title = "TYPE", .path = "type" },
+            .{ .title = "TYPE", .path = "type", .fmt = .word },
             .{ .title = "VALUE", .path = "ipv4Address|ipv6Address|targetDomain|mailServerDomain|serverDomain|ipAddress|text", .id = true },
             .{ .title = "TTL", .path = "ttlSeconds", .right = true, .drop = 1 },
             .{ .title = "ENABLED", .path = "enabled", .fmt = .bool },
@@ -505,7 +510,7 @@ pub const resources = [_]Resource{
         .read_only = &.{"id"},
         .columns = &.{
             .{ .title = "NAME", .path = "name", .id = true },
-            .{ .title = "TYPE", .path = "type" },
+            .{ .title = "TYPE", .path = "type", .fmt = .word },
             id_col,
         },
         .filterable = &.{
@@ -568,7 +573,7 @@ pub const resources = [_]Resource{
         .list = .{ .path = "/v1/sites/{siteId}/vpn/servers", .id = "getVpnServerPage" },
         .columns = &.{
             .{ .title = "NAME", .path = "name", .id = true },
-            .{ .title = "TYPE", .path = "type" },
+            .{ .title = "TYPE", .path = "type", .fmt = .word },
             .{ .title = "ENABLED", .path = "enabled", .fmt = .bool },
             origin_col,
             id_col,
@@ -589,7 +594,7 @@ pub const resources = [_]Resource{
         .list = .{ .path = "/v1/sites/{siteId}/vpn/site-to-site-tunnels", .id = "getSiteToSiteVpnTunnelPage" },
         .columns = &.{
             .{ .title = "NAME", .path = "name", .id = true },
-            .{ .title = "TYPE", .path = "type" },
+            .{ .title = "TYPE", .path = "type", .fmt = .word },
             origin_col,
             id_col,
         },
@@ -621,7 +626,7 @@ pub const resources = [_]Resource{
         .tag = "Switching",
         .list = .{ .path = "/v1/sites/{siteId}/switching/lags", .id = "getLagPage" },
         .show = .{ .path = "/v1/sites/{siteId}/switching/lags/{lagId}", .id = "getLag" },
-        .columns = &.{ .{ .title = "TYPE", .path = "type" }, origin_col, id_col },
+        .columns = &.{ .{ .title = "TYPE", .path = "type", .fmt = .word }, origin_col, id_col },
         .match = &.{},
         .filterable = &.{
             .{ .name = "id", .type = "UUID", .functions = eq4 },

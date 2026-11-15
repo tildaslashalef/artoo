@@ -119,6 +119,38 @@ pub fn stateCell(arena: Allocator, u: *const ui.Ui, s: []const u8) Allocator.Err
     return .{ .text = try std.fmt.allocPrint(arena, "{s} {s}", .{ status.glyph(u.glyphs), lower }), .role = role };
 }
 
+/// An API enum value for a table cell: `SYSTEM_DEFINED` → `system
+/// defined`, `A_RECORD` → `A`, `WPA2_WPA3_PERSONAL` → `WPA2/WPA3
+/// personal`, `accessPoint` → `access point`. Short tokens and tokens with
+/// digits are acronyms and stay upper case; anything else is returned as is.
+pub fn word(arena: Allocator, s: []const u8) Allocator.Error![]const u8 {
+    if (s.len == 0) return s;
+    var out: std.ArrayList(u8) = .empty;
+    if (std.ascii.isLower(s[0])) {
+        for (s) |ch| if (!std.ascii.isAlphanumeric(ch)) return s;
+        for (s) |ch| {
+            if (std.ascii.isUpper(ch)) try out.append(arena, ' ');
+            try out.append(arena, std.ascii.toLower(ch));
+        }
+        return out.items;
+    }
+    for (s) |ch| if (!(std.ascii.isUpper(ch) or std.ascii.isDigit(ch) or ch == '_')) return s;
+    var tokens: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.tokenizeScalar(u8, s, '_');
+    while (it.next()) |t| try tokens.append(arena, t);
+    if (tokens.items.len > 1 and std.mem.eql(u8, tokens.items[tokens.items.len - 1], "RECORD")) tokens.items.len -= 1;
+    for (tokens.items, 0..) |t, i| {
+        const acronym = t.len <= 3 or std.mem.findAny(u8, t, "0123456789") != null;
+        if (i > 0) {
+            const prev = tokens.items[i - 1];
+            const pair = std.mem.startsWith(u8, prev, "WPA") and std.mem.startsWith(u8, t, "WPA");
+            try out.append(arena, if (pair) '/' else ' ');
+        }
+        if (acronym) try out.appendSlice(arena, t) else for (t) |ch| try out.append(arena, std.ascii.toLower(ch));
+    }
+    return out.items;
+}
+
 pub fn cell(arena: Allocator, u: *const ui.Ui, item: Value, col: catalog.Column) Allocator.Error!ui.table.Cell {
     const v = lookup(item, col.path) orelse return .{ .text = "--" };
     switch (col.fmt) {
@@ -133,12 +165,14 @@ pub fn cell(arena: Allocator, u: *const ui.Ui, item: Value, col: catalog.Column)
             if (t == null) return .{ .text = (try scalar(arena, v)) orelse "--" };
             return .{ .text = try ui.values.alloc(arena, ui.values.relative(u.now, t)) };
         },
-        .list => {
+        .word => return .{ .text = if (v == .string) try word(arena, v.string) else (try scalar(arena, v)) orelse "…" },
+        .list, .words => {
             if (v != .array) return .{ .text = (try scalar(arena, v)) orelse "…" };
             var out: std.ArrayList(u8) = .empty;
             for (v.array.items, 0..) |x, i| {
                 if (i > 0) try out.appendSlice(arena, ", ");
-                try out.appendSlice(arena, (try scalar(arena, x)) orelse "…");
+                const t = (try scalar(arena, x)) orelse "…";
+                try out.appendSlice(arena, if (col.fmt == .words) try word(arena, t) else t);
             }
             return .{ .text = out.items };
         },
@@ -332,9 +366,9 @@ test "rows from catalog columns" {
     defer out.deinit();
     try ui.table.render(&out.writer, &u, ar, try columnsFor(ar, r.columns), try rows(ar, &u, items, r.columns));
     try testing.expectEqualStrings(
-        \\NAME    MODEL  STATE      IP            FIRMWARE  UPDATE  FEATURES     ID
-        \\Beacon  U6+    ● online   192.168.1.20  6.7.54    no      accessPoint  c0de
-        \\Old     U6+    ○ offline  --            --        --      --           x
+        \\NAME    MODEL  STATE      IP            FIRMWARE  UPDATE  FEATURES      ID
+        \\Beacon  U6+    ● online   192.168.1.20  6.7.54    no      access point  c0de
+        \\Old     U6+    ○ offline  --            --        --      --            x
         \\
     , out.written());
 }
@@ -374,4 +408,20 @@ test "detail: general block, flattened objects, object arrays as tables" {
         \\  2    ○ down  10
         \\
     , out.written());
+}
+
+test "word: API enum values read as words" {
+    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a.deinit();
+    const cases = [_][2][]const u8{
+        .{ "SYSTEM_DEFINED", "system defined" },
+        .{ "A_RECORD", "A" },
+        .{ "WPA2_WPA3_PERSONAL", "WPA2/WPA3 personal" },
+        .{ "WIRED", "wired" },
+        .{ "VPN", "VPN" },
+        .{ "accessPoint", "access point" },
+        .{ "switching", "switching" },
+        .{ "Default", "Default" },
+    };
+    for (cases) |c| try std.testing.expectEqualStrings(c[1], try word(a.allocator(), c[0]));
 }
