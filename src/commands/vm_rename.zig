@@ -39,12 +39,15 @@ const Context = app.Context;
 const Value = std.json.Value;
 
 /// Hostname and `/etc/hosts` (fields equal to `$2`, or starting `$2.`,
-/// become `$1`/`$1.…`; comments and other lines kept byte for byte).
+/// become `$1`/`$1.…`; comments and other lines kept byte for byte). A
+/// line's trailing CR (a file written on Windows) is taken off before the
+/// fields are compared and put back after.
 const guest_script =
     \\set -eu
     \\hostnamectl set-hostname "$1"
-    \\awk -v new="$1" -v old="$2" '/^[[:space:]]*#/ || NF < 2 { print; next }
-    \\{ for (i = 2; i <= NF; i++) { if ($i == old) $i = new; else if (index($i, old ".") == 1) $i = new substr($i, length(old) + 1) } print }' /etc/hosts > /etc/hosts.artoo-new
+    \\awk -v new="$1" -v old="$2" '{ cr = ""; if (sub(/\r$/, "")) cr = "\r" }
+    \\/^[[:space:]]*#/ || NF < 2 { printf "%s%s\n", $0, cr; next }
+    \\{ for (i = 2; i <= NF; i++) { if ($i == old) $i = new; else if (index($i, old ".") == 1) $i = new substr($i, length(old) + 1) } printf "%s%s\n", $0, cr }' /etc/hosts > /etc/hosts.artoo-new
     \\cat /etc/hosts.artoo-new > /etc/hosts
     \\rm -f /etc/hosts.artoo-new
     \\
@@ -400,6 +403,7 @@ const RenameOp = struct {
         if (o.watch_note) |n| try notes.append(a, n);
         try notes.append(a, "Steps run in this order, each checking observed state first; after a failure run the same command again to continue.");
         try notes.append(a, "The UniFi rename uses PUT rest/user/{_id} with the name alone: expected from the classic API, not yet verified live.");
+
         return .{
             .action = try std.fmt.allocPrint(a, "Rename guest {s} ({d}) {s} {s}", .{ op.old, o.vm.vmid, arrow, op.new }),
             .risk = .destructive,
@@ -665,6 +669,9 @@ test "hostsNames and renameFenceList" {
     const a = arena.allocator();
     try testing.expect(hostsNames("127.0.0.1 localhost\n127.0.1.1 naboo.lab.example.com naboo\n", "naboo"));
     try testing.expect(!hostsNames("127.0.0.1 localhost\n# naboo\n127.0.1.1 naboo2\n", "naboo"));
+    // CRLF lines: the CR is no part of the last name.
+    try testing.expect(hostsNames("127.0.0.1 localhost\r\n127.0.1.1 naboo\r\n", "naboo"));
+    try testing.expect(hostsNames("127.0.1.1 naboo.lab.example.com\r\n", "naboo"));
     try testing.expectEqualStrings("naboo 192.168.1.10 tcp 8006; hoth dagobah udp 53", (try renameFenceList(a, "scarif 192.168.1.10 tcp 8006; hoth dagobah udp 53", "scarif", "naboo")).?);
     try testing.expectEqualStrings("hoth naboo tcp 5432", (try renameFenceList(a, "hoth scarif tcp 5432", "scarif", "naboo")).?);
     try testing.expect(try renameFenceList(a, "hoth dagobah udp 53", "scarif", "naboo") == null);
@@ -865,6 +872,25 @@ test "vm rename: a service whose upstream is OLD moves to NEW:PORT on the edge, 
         try testing.expect(std.mem.find(u8, q, esc.items) != null);
     };
     try testing.expect(sent);
+}
+
+test "vm rename: the /etc/hosts rewrite keeps a line's CR out of the comparison and puts it back" {
+    // Run the script's awk program when this machine has awk (its
+    // behaviour is the point); the script must carry the CR handling.
+    try testing.expect(std.mem.find(u8, guest_script, "if (sub(/\\r$/, \"\")) cr = \"\\r\"") != null);
+    const start = std.mem.find(u8, guest_script, "awk -v").?;
+    const prog_start = std.mem.findScalarPos(u8, guest_script, start, '\'').? + 1;
+    const prog_end = std.mem.findScalarPos(u8, guest_script, prog_start, '\'').?;
+    const prog = guest_script[prog_start..prog_end];
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "hosts", .data = "127.0.0.1 localhost\r\n# naboo\r\n127.0.1.1 naboo.lab.example.com naboo\r\n127.0.1.2 naboo2\n" });
+    const path = try tmp.dir.realPathFileAlloc(testing.io, "hosts", testing.allocator);
+    defer testing.allocator.free(path);
+    const res = std.process.run(testing.allocator, testing.io, .{ .argv = &.{ "awk", "-v", "new=hoth", "-v", "old=naboo", prog, path } }) catch return error.SkipZigTest;
+    defer testing.allocator.free(res.stdout);
+    defer testing.allocator.free(res.stderr);
+    try testing.expectEqualStrings("127.0.0.1 localhost\r\n# naboo\r\n127.0.1.1 hoth.lab.example.com hoth\r\n127.0.1.2 naboo2\n", res.stdout);
 }
 
 test "vm rename: a failure after the first step is exit 8 and says how to continue" {
