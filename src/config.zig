@@ -64,6 +64,11 @@ pub const Config = struct {
         /// `-` = the client's own tailnet.
         tailnet: []const u8 = "-",
         timeout_seconds: u32 = 10,
+        /// The tag `ts join` gives guests (SPEC §19, §9.6).
+        guest_tag: []const u8 = "tag:lab-guest",
+        /// The separate policy-writing OAuth client (secret
+        /// `tailscale-policy`), used by `ts policy apply` alone.
+        policy_client_id: []const u8 = "",
     };
     pub const Guests = struct {
         domain: []const u8 = "lab.example.com",
@@ -94,7 +99,7 @@ pub const Config = struct {
     };
 };
 
-pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, client_id, tailnet, snapshot_keep, days, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list };
+pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, client_id, tailnet, ts_tag, snapshot_keep, days, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list };
 
 pub const Key = struct {
     name: []const u8,
@@ -124,6 +129,8 @@ pub const keys = [_]Key{
     .{ .name = "tailscale.client_id", .help = "Tailscale OAuth client ID (its secret: 'artoo auth set tailscale')", .check = .client_id },
     .{ .name = "tailscale.tailnet", .help = "Tailnet ID ('-' = the OAuth client's own tailnet)", .check = .tailnet },
     .{ .name = "tailscale.timeout_seconds", .help = "Per-request deadline", .check = .seconds },
+    .{ .name = "tailscale.guest_tag", .help = "Tag 'ts join' gives guests (the OAuth client must own it)", .check = .ts_tag },
+    .{ .name = "tailscale.policy_client_id", .help = "Policy-writing OAuth client ID ('ts policy apply' only; secret 'tailscale-policy')", .check = .client_id },
     .{ .name = "guests.domain", .help = "DNS domain for guest names", .check = .hostname },
     .{ .name = "guests.template", .help = "Default template name", .check = .ident },
     .{ .name = "guests.ssh_public_key", .help = "Public key installed for the guest user", .check = .path },
@@ -300,6 +307,7 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .token_id => validTokenId(s),
         .client_id => allChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"),
         .tailnet => validTailnet(s),
+        .ts_tag => validTsTag(s),
         .hostname => validHostname(s),
         .ipv4_range => parseRange(s) != null,
         .ipv4_cidr => parseCidr(s) != null,
@@ -316,6 +324,7 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .token_id => "user@realm!tokenname",
         .client_id => "letters, digits, '_' or '-' (empty: not set up)",
         .tailnet => "'-' or a tailnet ID (letters, digits, '.', '_', '-' or '@')",
+        .ts_tag => "a Tailscale tag like tag:lab-guest (letters, digits, '-'), not tag:lab-router",
         .hostname => "a DNS name like home.arpa",
         .ipv4_range => "an IPv4 range A-B with A <= B",
         .ipv4_cidr => "an IPv4 address with prefix length, like 192.168.1.1/24",
@@ -357,6 +366,15 @@ fn validTailnet(s: []const u8) bool {
     if (s.len == 0 or s.len > 253) return false;
     if (std.mem.eql(u8, s, "-")) return true;
     return std.ascii.isAlphanumeric(s[0]) and allChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-@");
+}
+
+/// `tag:NAME`, NAME letters, digits and `-`, letter first; never the
+/// router's tag (guests and the router stay apart).
+pub fn validTsTag(s: []const u8) bool {
+    const name = std.mem.cutPrefix(u8, s, "tag:") orelse return false;
+    if (name.len == 0 or name.len > 63 or !std.ascii.isAlphabetic(name[0])) return false;
+    if (std.mem.eql(u8, s, "tag:lab-router")) return false;
+    return allChars(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-");
 }
 
 fn validUsername(s: []const u8) bool {
@@ -726,6 +744,7 @@ test "validators" {
     try testing.expect(!validPathList("a.pub,"));
     try testing.expect(validTailnet("-") and validTailnet("T1234CNTRL") and validTailnet("example.com"));
     try testing.expect(!validTailnet("") and !validTailnet("a/b") and !validTailnet("../x") and !validTailnet("a?b"));
+    try testing.expect(validTsTag("tag:lab-guest") and !validTsTag("lab-guest") and !validTsTag("tag:") and !validTsTag("tag:a b") and !validTsTag("tag:lab-router"));
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const paths = try pathList(arena.allocator(), " a.pub , b.pub ");

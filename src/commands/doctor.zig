@@ -55,6 +55,7 @@ pub const doctor = struct {
         var have_pve = false;
         var have_cf = false;
         var have_ts = false;
+        var have_ts_policy = false;
         if (cfg_ok) {
             const cfg = try ctx.config();
             if (try storeCheck(&r)) |store| {
@@ -66,6 +67,15 @@ pub const doctor = struct {
                     try r.add("tailscale client", .warning, "secret stored, but tailscale.client_id is not set ('artoo config set tailscale.client_id ID')", .{});
                     have_ts = false;
                 }
+                // Created to change the policy and revoked afterwards: its
+                // absence is the normal state, no warning (SPEC §19).
+                have_ts_policy = store.exists(ctx.io, ctx.arena, "tailscale-policy") catch false;
+                if (!have_ts_policy) {
+                    try r.add("tailscale policy client", .not_checked, "not stored (created only to change the policy, SPEC §19)", .{});
+                } else if (cfg.tailscale.policy_client_id.len == 0) {
+                    try r.add("tailscale policy client", .warning, "secret stored, but tailscale.policy_client_id is not set", .{});
+                    have_ts_policy = false;
+                } else try r.add("tailscale policy client", .ok, "stored — revoke it once the policy change is done", .{});
             }
             try caCheck(&r, "unifi CA", cfg.unifi.ca_bundle);
             try caCheck(&r, "pve CA", cfg.pve.ca_bundle);
@@ -94,6 +104,10 @@ pub const doctor = struct {
                 ctx.busy("probing Tailscale", .{});
                 try probeTailscale(&r);
             } else try r.add("tailscale", .not_checked, "{s}", .{if (cfg_ok) "no Tailscale OAuth client set up" else "config unusable"});
+            if (cfg_ok and have_ts_policy) {
+                ctx.busy("probing the Tailscale policy client", .{});
+                try probeTailscalePolicy(&r);
+            }
         }
         return render(ctx, r.checks.items);
     }
@@ -262,8 +276,25 @@ fn probeTailscale(r: *Report) !void {
     var missing: std.ArrayList(u8) = .empty;
     for (ts_scopes) |s| if (!ts.grants(have, s[0])) try missing.print(ctx.arena, "{s}{s} ({s})", .{ if (missing.items.len > 0) ", " else "", s[0], s[1] });
     const granted = if (c.scopes.len > 0) c.scopes else "none reported";
-    if (missing.items.len > 0) return r.add("tailscale", .warning, "token granted: {s}; missing: {s} (SPEC §19)", .{ granted, missing.items });
-    try r.add("tailscale", .ok, "token granted: {s}; tailnet {s}", .{ granted, c.tailnet });
+    const cfg = try ctx.config();
+    // The token response names scopes, not tags: the client's tags are
+    // checked when a key is created (an unowned tag is refused then).
+    const tags = try std.fmt.allocPrint(ctx.arena, "tags not reported by Tailscale; the client needs {s} and {s}", .{ @import("../tailscale/tailnet.zig").router_tag, cfg.tailscale.guest_tag });
+    if (missing.items.len > 0) return r.add("tailscale", .warning, "token granted: {s}; missing: {s} (SPEC §19); {s}", .{ granted, missing.items, tags });
+    try r.add("tailscale", .ok, "token granted: {s}; tailnet {s}; {s}", .{ granted, c.tailnet, tags });
+}
+
+/// The policy client: `policy_file` (write) and what it requires.
+fn probeTailscalePolicy(r: *Report) !void {
+    const ctx = r.ctx;
+    var c = ts.Client.open(ctx, .policy) catch |err| return probeFailed(r, "tailscale policy", err);
+    defer c.deinit();
+    const have = try ts.scopeList(ctx.arena, c.scopes);
+    var missing: std.ArrayList(u8) = .empty;
+    for ([_][]const u8{ "policy_file", "devices:core:read", "devices:posture_attributes:read" }) |s| if (!ts.grants(have, s)) try missing.print(ctx.arena, "{s}{s}", .{ if (missing.items.len > 0) ", " else "", s });
+    const granted = if (c.scopes.len > 0) c.scopes else "none reported";
+    if (missing.items.len > 0) return r.add("tailscale policy", .warning, "token granted: {s}; missing: {s} (SPEC §19)", .{ granted, missing.items });
+    try r.add("tailscale policy", .ok, "token granted: {s}; revoke the client once the change is done", .{granted});
 }
 
 fn probeFailed(r: *Report, label: []const u8, err: anyerror) !void {
@@ -362,7 +393,9 @@ test "doctor --connect: the Tailscale token exchange reports granted and missing
     try f.tailscaleConfig("");
     _ = f.h.run(&root, "doctor --connect");
     const out = f.h.stdout();
-    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns; missing: policy_file:read (policy)") == null) {
+    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns; missing: policy_file:read (policy) (SPEC §19); tags not reported by Tailscale; the client needs tag:lab-router and tag:lab-guest") == null or
+        std.mem.find(u8, out, "not stored (created only to change the policy, SPEC §19)") == null)
+    {
         std.debug.print("--- output:\n{s}\n", .{out});
         return error.TestUnexpectedResult;
     }
@@ -375,6 +408,36 @@ test "doctor --connect: the Tailscale token exchange reports granted and missing
     try testing.expect(std.mem.endsWith(u8, exchange, "grant_type=client_credentials&client_id=kTEST1CNTRL&client_secret=tskey-client-test-secret"));
     try testing.expect(std.mem.find(u8, out, "tskey-") == null);
     try testing.expect(std.mem.find(u8, f.h.stderr(), "tskey-") == null);
+}
+
+test "doctor --connect: a stored policy client is exchanged with its own ID and secret" {
+    var f: @import("../testkit.zig").Gateway = undefined;
+    try f.initRoutes(&.{
+        .{ .match = "/v1/info", .behavior = .{ .respond = .{ .body = "{\"applicationVersion\":\"10.6.106\"}" } } },
+        .{ .match = "/version", .behavior = .{ .respond = .{ .body = "{\"data\":{\"version\":\"9.2.21\"}}" } } },
+        .{ .match = "/zones", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":[{\"id\":\"Z1\",\"name\":\"example.com\",\"account\":{\"id\":\"A1\"}}],\"result_info\":{\"page\":1,\"per_page\":100,\"count\":1,\"total_count\":1}}" } } },
+        .{ .match = "/tokens/verify", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":{\"id\":\"T1\",\"status\":\"active\"}}" } } },
+        .{ .match = "POST /oauth/token", .behavior = .{ .respond = .{ .body = "{\"access_token\":\"a1\",\"scope\":\"devices:core devices:routes auth_keys dns policy_file:read\"}" } } },
+        .{ .match = "POST /oauth/token", .behavior = .{ .respond = .{ .body = "{\"access_token\":\"a2\",\"scope\":\"policy_file devices:core:read\"}" } } },
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kMAIN\",\"policy_client_id\":\"kPOLICY\"}}\n" });
+    try f.mem.map.put(f.h.arena.allocator(), "tailscale-policy", "tskey-client-policy-secret");
+    _ = f.h.run(&root, "doctor --connect");
+    const out = f.h.stdout();
+    if (std.mem.find(u8, out, "token granted: policy_file devices:core:read; missing: devices:posture_attributes:read") == null) {
+        std.debug.print("--- output:\n{s}\n", .{out});
+        return error.TestUnexpectedResult;
+    }
+    var bodies: usize = 0;
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /oauth/token")) {
+        bodies += 1;
+        const main = std.mem.endsWith(u8, q, "client_id=kMAIN&client_secret=tskey-client-test-secret");
+        const policy = std.mem.endsWith(u8, q, "client_id=kPOLICY&client_secret=tskey-client-policy-secret");
+        try testing.expect(main or policy);
+    };
+    try testing.expectEqual(@as(usize, 2), bodies);
 }
 
 test "doctor --connect: a rejected Tailscale client fails without echoing the secret" {

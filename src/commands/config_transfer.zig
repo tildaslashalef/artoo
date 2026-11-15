@@ -588,6 +588,8 @@ test "config export --guest-passwords carries the stored passwords of Proxmox's 
     defer g.deinit();
     const ar = g.h.arena.allocator();
     try g.mem.map.put(ar, "guest/naboo", "naboo-sudo-password");
+    // The policy-writing Tailscale client never travels (SPEC §6.1, §19).
+    try g.mem.map.put(ar, "tailscale-policy", "tskey-client-policy-secret");
     try g.mem.map.put(ar, "guest/gone", "left-behind");
     g.h.hooks.kdf_kib = 64;
     var s1: prompt.Script = .{ .interactive = false, .piped = pass };
@@ -608,6 +610,7 @@ test "config export --guest-passwords carries the stored passwords of Proxmox's 
         return error.TestUnexpectedResult;
     };
     try testing.expect(std.mem.find(u8, out1, "naboo-sudo-password") == null);
+    try testing.expect(std.mem.find(u8, out1, "tailscale-policy") == null);
     try testing.expect(std.mem.find(u8, out1, "gone") == null);
     const sealed = try g.tmp.dir.readFileAlloc(testing.io, "setup.txt", ar, .limited(1 << 20));
     try testing.expect(std.mem.find(u8, sealed, "naboo-sudo-password") == null);
