@@ -53,6 +53,10 @@ const guest_script =
     \\
 ;
 
+/// After `tailscale set --hostname`, how often (every 2 s, so about 30 s)
+/// the device is read before artoo renames it through the API.
+const tailnet_polls = 15;
+
 const tailnet_script =
     \\set -eu
     \\tailscale set --hostname="$1"
@@ -288,16 +292,19 @@ const RenameOp = struct {
             if (ts_state.?.running() and ts_state.?.node_id.len > 0 and try tsapi.configured(ctx)) {
                 // A credential that does not work leaves out only the API
                 // part: the guest's own 'tailscale set' still runs.
-                device = op.tailnetDevice(ctx, ts_state.?.node_id) catch |err| switch (err) {
+                const got: TailnetView = op.tailnetDevice(ctx, ts_state.?.node_id) catch |err| switch (err) {
                     error.OutOfMemory, error.Canceled => |e| return e,
                     else => blk: {
                         ts_note = try std.fmt.allocPrint(a, "The Tailscale API did not answer ({s}): the tailnet step runs 'tailscale set --hostname' only; check the device afterwards with 'artoo ts device show {s}'.", .{ ctx.diag orelse @errorName(err), op.new });
                         ctx.diag = null;
                         if (op.tsc) |*t| t.deinit();
                         op.tsc = null;
-                        break :blk null;
+                        break :blk .{};
                     },
                 };
+                device = got.own;
+                // Tailscale would give the guest NEW-1: refuse instead.
+                if (got.taken) |d| return ctx.fail(error.Refused, "the tailnet device {s} ({s}) is already named {s}; rename or remove it first ('artoo ts device rename|rm')", .{ try k.clean(ctx, d.name), try k.clean(ctx, d.id), op.new });
             }
         }
 
@@ -346,10 +353,18 @@ const RenameOp = struct {
         };
     }
 
-    /// The guest's device by the node ID it reports.
-    fn tailnetDevice(op: *RenameOp, ctx: *Context, node_id: []const u8) !?tn.Device {
+    const TailnetView = struct { own: ?tn.Device = null, taken: ?tn.Device = null };
+
+    /// The guest's device by the node ID it reports, and another device
+    /// already named NEW, if any.
+    fn tailnetDevice(op: *RenameOp, ctx: *Context, node_id: []const u8) !TailnetView {
         if (op.tsc == null) op.tsc = try tsapi.Client.open(ctx, .main);
-        return tn.getDevice(&op.tsc.?, node_id);
+        const own = try tn.getDevice(&op.tsc.?, node_id);
+        var taken: ?tn.Device = null;
+        for (try tn.devices(&op.tsc.?)) |d| {
+            if (!std.mem.eql(u8, d.id, node_id) and std.ascii.eqlIgnoreCase(d.machine, op.new)) taken = d;
+        }
+        return .{ .own = own, .taken = taken };
     }
 
     fn pending(op: *const RenameOp, o: Observed) Pending {
@@ -571,21 +586,32 @@ const RenameOp = struct {
         if (s_ts) |i| {
             l.set(i, .unknown, "");
             const s = o.ts_state.?;
+            var set = false;
             if (s.running() and !std.ascii.eqlIgnoreCase(s.hostname, op.new)) {
                 const r = try agent.exec(op.c, vmid, &.{ "sh", "-c", tailnet_script, "sh", op.new }, null, 60_000);
                 if (!r.ok()) {
                     l.set(i, .failed, "");
                     return ctx.fail(error.Partial, "tailscale set --hostname failed on {s}: {s}", .{ op.new, try k.clean(ctx, edge.firstLine(r.err)) });
                 }
+                set = true;
             }
             var detail: []const u8 = op.new;
             if (op.tsc) |*t| if (s.node_id.len > 0) {
-                // A name set by hand in the console does not follow the
-                // hostname: rename the device itself then (SPEC §19).
-                if (try tn.getDevice(t, s.node_id)) |d| if (!std.ascii.eqlIgnoreCase(d.machine, op.new)) {
-                    try tn.renameDevice(t, d.id, op.new);
-                    detail = try std.fmt.allocPrint(a, "{s} (device renamed through the API)", .{op.new});
-                };
+                // The control plane takes a moment to show the new
+                // hostname; only a name set by hand in the console keeps
+                // the old one — then the device itself is renamed (SPEC §19).
+                var tries: usize = 0;
+                while (true) : (tries += 1) {
+                    const d = (try tn.getDevice(t, s.node_id)) orelse break;
+                    if (std.ascii.eqlIgnoreCase(d.machine, op.new)) break;
+                    if (!set or tries >= tailnet_polls) {
+                        try tn.renameDevice(t, d.id, op.new);
+                        detail = try std.fmt.allocPrint(a, "{s} (device renamed through the API)", .{op.new});
+                        break;
+                    }
+                    l.note(i, "waiting for the control plane to show the new name");
+                    try ctx.io.sleep(.fromMilliseconds(@intCast(ctx.test_hooks.poll_ms orelse 2000)), .awake);
+                }
             };
             l.set(i, .done, detail);
         }
@@ -1032,8 +1058,6 @@ test "vm rename: a broken Tailscale credential is a note; the guest's own tailsc
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const list_ts_old = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;tailnet\"}]}";
-    const list_ts_new = "{\"data\":[{\"vmid\":201,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo;tailnet\"}]}";
     const status = struct {
         fn f(al: std.mem.Allocator, host: []const u8) ![]const u8 {
             return agentOut(al, 0, try std.fmt.allocPrint(al, "{{\"BackendState\":\"Running\",\"Self\":{{\"ID\":\"nN\",\"HostName\":\"{s}\",\"DNSName\":\"{s}.example.ts.net.\",\"Tags\":[\"tag:lab-guest\"]}}}}", .{ host, host }));
@@ -1081,6 +1105,113 @@ test "vm rename: a broken Tailscale credential is a note; the guest's own tailsc
         set = set or std.mem.find(u8, q, "tailscale%20set%20--hostname") != null or std.mem.find(u8, q, "tailscale+set+--hostname") != null;
     };
     try testing.expect(set);
+}
+
+const list_ts_old = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;tailnet\"}]}";
+const list_ts_new = "{\"data\":[{\"vmid\":201,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo;tailnet\"}]}";
+
+fn tsStatus(a: std.mem.Allocator, host: []const u8) ![]const u8 {
+    return agentOut(a, 0, try std.fmt.allocPrint(a, "{{\"BackendState\":\"Running\",\"Self\":{{\"ID\":\"nN\",\"HostName\":\"{s}\",\"DNSName\":\"{s}.example.ts.net.\",\"Tags\":[\"tag:lab-guest\"]}}}}", .{ host, host }));
+}
+
+fn tsDevice(a: std.mem.Allocator, host: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "{{\"nodeId\":\"nN\",\"name\":\"{s}.example.ts.net\",\"tags\":[\"tag:lab-guest\"]}}", .{host});
+}
+
+/// The reads with a working Tailscale credential: the guest's status,
+/// its device and the device list (another device named NEW, or none).
+fn tsReads(a: std.mem.Allocator, list: []const u8, users: []const u8, records: []const u8, host: []const u8, site: bool, token: bool, others: []const u8) ![]const R {
+    const base = try renameReads(a, list, users, records, host, site);
+    var out: std.ArrayList(R) = .empty;
+    try out.appendSlice(a, base[0 .. base.len - 1]);
+    try out.appendSlice(a, &.{
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":44}}"),
+        rt("exec-status", try tsStatus(a, host)),
+    });
+    if (token) try out.append(a, rt("POST /oauth/token", "{\"access_token\":\"tskey-access-xyz\",\"expires_in\":3600,\"scope\":\"devices:core\"}"));
+    try out.appendSlice(a, &.{
+        rt("GET /device/nN?", try tsDevice(a, host)),
+        rt("GET /tailnet/-/devices", try std.fmt.allocPrint(a, "{{\"devices\":[{s}{s}{s}]}}", .{ try tsDevice(a, host), if (others.len > 0) "," else "", others })),
+    });
+    try out.append(a, base[base.len - 1]);
+    return out.items;
+}
+
+test "vm rename: a tailnet name NEW already taken by another device refuses before any write" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(try tsReads(a, list_ts_old, users_old, dns_old_body, "naboo", true, true, "{\"nodeId\":\"nPhone\",\"name\":\"hoth.example.ts.net\"}"));
+    defer g.deinit();
+    try g.tailscaleConfig("");
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "the tailnet device hoth.example.ts.net (nPhone) is already named hoth") != null);
+    for (g.srv.received) |req| if (req) |q| try testing.expect(std.mem.startsWith(u8, q, "GET ") or std.mem.startsWith(u8, q, "POST /oauth/token") or std.mem.find(u8, q, "/agent/") != null);
+}
+
+test "vm rename: the tailnet step waits for the control plane before renaming the device itself" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try tsReads(a, list_ts_old, users_old, dns_old_body, "naboo", true, true, ""));
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("POST /v1/sites/S1/dns/policies", "{}"),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":45}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+        // Still the old name twice, then the new one: no API rename.
+        rt("GET /device/nN?", try tsDevice(a, "naboo")),
+        rt("GET /device/nN?", try tsDevice(a, "naboo")),
+        rt("GET /device/nN?", try tsDevice(a, "hoth")),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":46}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+        rt("PUT /proxy/network/api/s/default/rest/user/U1", users_new),
+        rt("DELETE /v1/sites/S1/dns/policies/R1", ""),
+    });
+    try routes.appendSlice(a, try tsReads(a, list_ts_new, users_new, dns_new_body, "hoth", false, false, ""));
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try g.tailscaleConfig("");
+    const code = g.h.run(&root, "vm rename naboo hoth -y --confirm naboo");
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    for (g.srv.received) |req| if (req) |q| try testing.expect(!std.mem.startsWith(u8, q, "POST /device/nN/name"));
+}
+
+test "vm rename: a hand-set tailnet name that never follows is renamed through the API after the wait" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try tsReads(a, list_ts_old, users_old, dns_old_body, "naboo", true, true, ""));
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("POST /v1/sites/S1/dns/policies", "{}"),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":45}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+    });
+    for (0..tailnet_polls + 1) |_| try routes.append(a, rt("GET /device/nN?", try tsDevice(a, "naboo")));
+    try routes.appendSlice(a, &.{
+        rt("POST /device/nN/name", "{}"),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":46}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+        rt("PUT /proxy/network/api/s/default/rest/user/U1", users_new),
+        rt("DELETE /v1/sites/S1/dns/policies/R1", ""),
+    });
+    try routes.appendSlice(a, try tsReads(a, list_ts_new, users_new, dns_new_body, "hoth", false, false, ""));
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try g.tailscaleConfig("");
+    const code = g.h.run(&root, "vm rename naboo hoth -y --confirm naboo");
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "device renamed through the API") != null);
 }
 
 test "vm rename: NEW's DNS record comes first, OLD's is removed last" {
