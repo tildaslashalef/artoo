@@ -2275,7 +2275,11 @@ that renames a client record (`PUT rest/user/{_id}` is expected, §17.1)
 — checked with a disposable record; whether cloud-init's per-boot
 hostname modules keep NEW across a reboot (Proxmox derives the
 cloud-init hostname from `name`, so they should) — checked by a reboot
-of a disposable guest. The `/etc/hosts`
+of a disposable guest; whether cloud-init's instance ID follows the new
+name, so that a cold start regenerates the SSH host keys — checked by a
+cold start after a rename, comparing the host key with the pinned one.
+No mitigation is built: the plan notes that a cold start may change
+the host key and that `vm ssh-config` re-pins it. The `/etc/hosts`
 rewrite takes a line's trailing CR off before comparing names and puts
 it back.
 
