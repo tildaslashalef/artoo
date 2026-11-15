@@ -31,6 +31,7 @@ test {
     _ = @import("doctor.zig");
     _ = @import("gw.zig");
     _ = @import("gw_write.zig");
+    _ = @import("gw_wans.zig");
     _ = @import("dns.zig");
     _ = @import("cf.zig");
     _ = @import("../cloudflare/client.zig");
