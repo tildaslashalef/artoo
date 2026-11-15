@@ -2231,7 +2231,7 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
   | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config`: NEW's block written as `vm ssh-config` writes it (the static address, else the agent's IPv4), then OLD's removed — never OLD's alone (§9.10); verify checks NEW's block |
   | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
   | Fence | `guests.fence_allow_out` entries naming OLD, and the fences that render them |
-  | Tailnet | for a guest on the tailnet (tag `tailnet`, `role-router`): `tailscale set --hostname=NEW` through the agent, the name read back from `tailscale status --json`; with a Tailscale credential the device is checked, and renamed if a hand-set name kept the old one (§19) |
+  | Tailnet | for a guest on the tailnet (tag `tailnet`, `role-router`): `tailscale set --hostname=NEW` through the agent, the name read back from `tailscale status --json`; with a Tailscale credential the device (by the node ID the guest reports) is read every 2 s for up to about 30 s until the control plane shows NEW, and renamed through the API only if it still keeps the old (hand-set) name; another tailnet device already named NEW refuses at read time (§19) |
   | Watchdog | `watch enroll NEW`, then OLD's series deleted as `watch forget` does (§9.9) |
   | Guest | hostname (`hostnamectl set-hostname`) and the `/etc/hosts` line, through the agent |
   | UniFi | the client record's `name` (§9.5), matched by MAC |
