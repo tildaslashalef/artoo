@@ -52,7 +52,9 @@ pub fn ownership(ctx: *Context, required: bool) !tn.Ownership {
         ctx.diag = null;
         return .{ .artoo_vms = &.{}, .tags = tags, .vms_known = false };
     };
-    return .{ .artoo_vms = try artooVms(ctx.arena, list), .tags = tags };
+    var routers: std.ArrayList([]const u8) = .empty;
+    for (list) |v| if (!v.template and template.taggedWith(v.tags, "artoo")) if (vm_cmd.roleOf(v.tags)) |r| if (std.mem.eql(u8, r, "router")) try routers.append(ctx.arena, v.name);
+    return .{ .artoo_vms = try artooVms(ctx.arena, list), .tags = tags, .routers = routers.items };
 }
 
 pub fn artooVms(a: std.mem.Allocator, list: []const vms.Vm) ![]const []const u8 {
@@ -623,8 +625,11 @@ pub const ApproveOp = struct {
     state: []const u8 = "",
 
     pub fn read(op: *ApproveOp, ctx: *Context) !void {
-        op.dev, _, _ = try labDevice(ctx, op.c, op.word);
-        op.target = op.dev.machine;
+        op.dev, _, const own = try labDevice(ctx, op.c, op.word);
+        op.target = try clean(ctx, op.dev.machine);
+        // Only the subnet router carries the LAN (SPEC §9.6).
+        if (!own.isRouter(op.dev))
+            return ctx.fail(error.Refused, "{s} is not the subnet router (no tag {s}, no VM tagged role-router of that name); artoo approves the LAN on the router only", .{ op.target, tn.router_tag });
         op.current = try tn.routes(op.c, op.dev.id);
         if (!tn.contains(op.current.advertised, op.lan))
             return ctx.fail(error.Refused, "{s} does not advertise {s} (it advertises {s}); 'artoo router setup' advertises the LAN", .{ try clean(ctx, op.dev.machine), op.lan, try joinClean(ctx, op.current.advertised) });
@@ -1358,6 +1363,28 @@ test "ts routes approve: exactly the LAN; refused when not advertised" {
     try testing.expectEqual(Exit.ok, f.h.run(&root, "ts routes approve dagobah -y"));
     try expectHas(f.h.stdout(), &.{ "approved routes  0.0.0.0/0 → 192.168.1.0/24", "0.0.0.0/0 was approved and is withdrawn", "✓ route approved and verified" });
     for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /device/nRouter/routes")) try testing.expect(std.mem.endsWith(u8, q, "{\"routes\":[\"192.168.1.0/24\"]}"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+}
+
+test "ts routes approve: on the subnet router only — by its tag or its role-router VM" {
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", "{\"devices\":[{\"nodeId\":\"nR2\",\"name\":\"dagobah.example.ts.net\",\"tags\":[\"tag:lab-guest\"]}]}"),
+        route("/qemu", vms_body),
+        route("GET /device/nR2/routes", "{\"advertisedRoutes\":[],\"enabledRoutes\":[]}"),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    // naboo is a lab device, but not the router: no routes are read.
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts routes approve naboo -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "naboo is not the subnet router") != null);
+    // Untagged as the router, but the VM of that name is role-router.
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts routes approve dagobah -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "does not advertise 192.168.1.0/24") != null);
     try testing.expectEqual(@as(usize, 0), f.srv.unused());
 }
 
