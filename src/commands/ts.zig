@@ -899,10 +899,12 @@ const JoinOp = struct {
         try ctx.out.writeAll("\n");
         try op.ledger.render(ctx.out, &ctx.ui);
         const st = try guestState(op.c, op.vm.vmid);
-        if (!st.running() or !tn.contains(st.tags, op.tag)) return false;
+        if (!st.running() or !tn.contains(st.tags, op.tag) or st.node_id.len == 0) return false;
+        // The node the guest says it is (`Self.ID`), never a device found
+        // by name: an old device of the same name may still be listed.
         var tries: usize = 0;
         while (true) : (tries += 1) {
-            for (try tn.devices(op.tsc)) |d| if (d.hasTag(op.tag) and std.ascii.eqlIgnoreCase(d.machine, op.vm.name)) {
+            if (try tn.getDevice(op.tsc, st.node_id)) |d| if (d.hasTag(op.tag)) {
                 op.device = d;
                 return true;
             };
@@ -1375,8 +1377,10 @@ test "ts join: artoo creates a single-use guest key, the guest joins as a tagged
         route("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
         route("exec-status", try agentOut(a, 0, "", "")),
         route("agent/exec HTTP", "{\"data\":{\"pid\":44}}"),
-        route("exec-status", try agentOut(a, 0, "{\"BackendState\":\"Running\",\"Self\":{\"HostName\":\"naboo\",\"DNSName\":\"naboo.example.ts.net.\",\"Tags\":[\"tag:lab-guest\"]}}", "")),
-        route("GET /tailnet/-/devices", "{\"devices\":[{\"nodeId\":\"nNaboo\",\"name\":\"naboo.example.ts.net\",\"tags\":[\"tag:lab-guest\"]}]}"),
+        route("exec-status", try agentOut(a, 0, "{\"BackendState\":\"Running\",\"Self\":{\"ID\":\"nNew\",\"HostName\":\"naboo\",\"DNSName\":\"naboo.example.ts.net.\",\"Tags\":[\"tag:lab-guest\"]}}", "")),
+        route("GET /device/nNew?", "{\"nodeId\":\"nNew\",\"name\":\"naboo.example.ts.net\",\"tags\":[\"tag:lab-guest\"]}"),
+        // A stale, offline device of the same name: never consulted.
+        route("GET /tailnet/-/devices", "{\"devices\":[{\"nodeId\":\"nOld\",\"name\":\"naboo.example.ts.net\",\"tags\":[\"tag:lab-guest\"],\"connectedToControl\":false}]}"),
     });
     defer f.deinit();
     try f.tailscaleConfig("");
@@ -1384,7 +1388,8 @@ test "ts join: artoo creates a single-use guest key, the guest joins as a tagged
     const out = f.h.stdout();
     if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ out, f.h.stderr() });
     try testing.expectEqual(Exit.ok, code);
-    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    try testing.expectEqual(@as(usize, 1), f.srv.unused());
+    for (f.srv.received) |req| if (req) |q| try testing.expect(std.mem.find(u8, q, "nOld") == null and !std.mem.startsWith(u8, q, "GET /tailnet/-/devices"));
     try expectHas(out, &.{
         "single-use, preauthorized, tag:lab-guest, 10 min (created by artoo, never shown)",
         "create the join key  done  kJoin, single-use, 10 min",
@@ -1518,8 +1523,8 @@ test "ts join --tag: a tag outside tailscale.guest_tags is refused before any re
         route("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
         route("exec-status", try agentOut(a, 0, "", "")),
         route("agent/exec HTTP", "{\"data\":{\"pid\":44}}"),
-        route("exec-status", try agentOut(a, 0, "{\"BackendState\":\"Running\",\"Self\":{\"HostName\":\"naboo\",\"Tags\":[\"tag:lab-app\"]}}", "")),
-        route("GET /tailnet/-/devices", "{\"devices\":[{\"nodeId\":\"nNaboo\",\"name\":\"naboo.example.ts.net\",\"tags\":[\"tag:lab-app\"]}]}"),
+        route("exec-status", try agentOut(a, 0, "{\"BackendState\":\"Running\",\"Self\":{\"ID\":\"nNaboo\",\"HostName\":\"naboo\",\"Tags\":[\"tag:lab-app\"]}}", "")),
+        route("GET /device/nNaboo?", "{\"nodeId\":\"nNaboo\",\"name\":\"naboo.example.ts.net\",\"tags\":[\"tag:lab-app\"]}"),
     });
     defer f.deinit();
     try f.tmp.dir.createDirPath(testing.io, ".artoo");

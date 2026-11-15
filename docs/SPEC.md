@@ -3217,7 +3217,9 @@ both pointing at the gateway.
   setup`), a stopped guest or a silent agent; a guest whose
   `tailscale status` already says `Running` is only reported (exit 5,
   nothing created). Verified by the guest's `tailscale status --json`
-  (`Running`, the tag) and the device appearing in the API with the tag.
+  (`Running`, the tag) and the device appearing in the API with the tag —
+  the device is the node the guest reports (`Self.ID`, the API's `nodeId`),
+  never one found by name (a stale device may keep the name).
   No command prints a key for a machine that is not a guest: other
   machines join from the console.
 - `ts policy apply FILE` (HuJSON, the policy credential) — refused
@@ -3250,7 +3252,8 @@ stored; without it they behave as today):
   entered key (0600 file under `/run`, removed whatever happens). It is
   never displayed. A run that fails before the key is used deletes the
   key. Then it approves the route as `ts routes approve` does and checks
-  that the device's key expiry is off.
+  that the device's key expiry is off. The device is always the node the
+  router reports (`Self.ID`), never matched by name.
 - `router status` adds the tailnet's view: the device's tags, approved
   and primary routes, key expiry and last seen.
 - `vm rm` of a guest that is a lab device plans removing that device
