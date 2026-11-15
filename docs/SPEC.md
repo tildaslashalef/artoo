@@ -2226,15 +2226,22 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
   | Step | Change |
   | --- | --- |
   | Proxmox | `name` (digest-guarded, as `vm set`) |
-  | Guest | hostname (`hostnamectl set-hostname`) and the `/etc/hosts` line, through the agent |
-  | UniFi | the client record's `name` (§9.5), matched by MAC |
-  | DNS | the machine-name A record: NEW added before OLD is removed |
-  | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
-  | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config` rewritten (§9.10) |
+  | DNS (add) | NEW's machine-name A record at the guest's address, before anything points at NEW |
   | Services | each `svc` whose upstream is OLD moved to `NEW:PORT`, as `svc set` does, fence steps included (§9.6, §9.11) |
+  | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config` rewritten (§9.10) |
+  | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
   | Fence | `guests.fence_allow_out` entries naming OLD, and the fences that render them |
   | Tailnet | for a guest on the tailnet (tag `tailnet`, `role-router`): `tailscale set --hostname=NEW` through the agent, the name read back from `tailscale status --json`; with a Tailscale credential the device is checked, and renamed if a hand-set name kept the old one (§19) |
   | Watchdog | `watch enroll NEW`, then OLD's series deleted as `watch forget` does (§9.9) |
+  | Guest | hostname (`hostnamectl set-hostname`) and the `/etc/hosts` line, through the agent |
+  | UniFi | the client record's `name` (§9.5), matched by MAC |
+  | DNS (remove) | OLD's machine-name A record, last |
+
+  Proxmox goes first (a run that stopped is then found under NEW); the
+  places that still say OLD — hostname, `/etc/hosts`, the UniFi record,
+  OLD's DNS record — go last, OLD's DNS record very last, so OLD keeps
+  resolving until everything else has moved and a stopped run leaves a
+  trace of OLD on the guest.
 
   Impact: other machines keep OLD in their `known_hosts`, `ssh_config`
   and password copies until they run `vm ssh-config` and receive the
