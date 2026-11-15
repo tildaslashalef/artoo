@@ -280,6 +280,18 @@ const SetupOp = struct {
     }
 
     pub fn send(op: *SetupOp, ctx: *Context) !void {
+        op.sendSteps(ctx) catch |err| {
+            op.ledger.settle(err);
+            // A key artoo made and the guest did not use is deleted (or,
+            // when that fails, listed on the ledger) before it is shown.
+            op.dropKey(ctx);
+            ctx.out.writeAll("\n") catch {};
+            op.ledger.render(ctx.out, &ctx.ui) catch {};
+            return err;
+        };
+    }
+
+    fn sendSteps(op: *SetupOp, ctx: *Context) !void {
         const a = ctx.arena;
         const c = op.c;
         const id = op.vm.vmid;
@@ -299,13 +311,6 @@ const SetupOp = struct {
         const s_approve = if (op.approve) try l.add(a, "approve the LAN") else null;
         const s_expiry = if (op.tsc != null) try l.add(a, "key expiry") else null;
         op.key_step = s_key;
-        errdefer {
-            // A key artoo made and the guest did not use is deleted (or,
-            // when that fails, listed on the ledger) before it is shown.
-            op.dropKey(ctx);
-            ctx.out.writeAll("\n") catch {};
-            l.render(ctx.out, &ctx.ui) catch {};
-        }
         if (s_sysctl) |i| {
             l.set(i, .unknown, "");
             try edge.writeFile(c, id, .{ .path = sysctl_path, .mode = "0644", .owner = "root:root", .content = sysctl });
