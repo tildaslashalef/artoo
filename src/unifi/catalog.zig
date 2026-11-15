@@ -22,6 +22,10 @@ pub const Fmt = enum {
     word,
     /// `list` of such values.
     words,
+    /// A firewall zone ID, shown by the zone's name.
+    zone,
+    /// A policy index; the API's int32 maximum is the end of the list.
+    order,
     /// true → yes, false → no.
     bool,
     /// Device/port state: ONLINE → ● online.
@@ -358,12 +362,12 @@ pub const resources = [_]Resource{
         },
         .read_only = &.{ "id", "index", "metadata" },
         .columns = &.{
-            .{ .title = "INDEX", .path = "index", .right = true },
+            .{ .title = "INDEX", .path = "index", .fmt = .order, .right = true },
             .{ .title = "NAME", .path = "name", .id = true },
             .{ .title = "ENABLED", .path = "enabled", .fmt = .bool },
             .{ .title = "ACTION", .path = "action.type", .fmt = .word },
-            .{ .title = "SOURCE ZONE", .path = "source.zoneId", .drop = 1, .id = true },
-            .{ .title = "DEST ZONE", .path = "destination.zoneId", .drop = 1, .id = true },
+            .{ .title = "FROM", .path = "source.zoneId", .fmt = .zone, .id = true },
+            .{ .title = "TO", .path = "destination.zoneId", .fmt = .zone, .id = true },
             origin_col,
             id_col,
         },
@@ -419,7 +423,7 @@ pub const resources = [_]Resource{
         },
         .read_only = &.{ "id", "metadata" },
         .columns = &.{
-            .{ .title = "INDEX", .path = "index", .right = true },
+            .{ .title = "INDEX", .path = "index", .fmt = .order, .right = true },
             .{ .title = "NAME", .path = "name", .id = true },
             .{ .title = "TYPE", .path = "type", .fmt = .word },
             .{ .title = "ACTION", .path = "action", .fmt = .word },
