@@ -102,7 +102,7 @@ pub fn getDevice(c: *ts.Client, id: []const u8) !?Device {
         },
         else => return err,
     };
-    return (try device(c.ctx.arena, v)) orelse c.ctx.fail(error.Protocol, "Tailscale sent an unexpected device {s}", .{id});
+    return (try device(c.ctx.arena, v)) orelse c.ctx.fail(error.Protocol, "Tailscale sent an unexpected device {s}", .{try ui.text.sanitize(c.ctx.arena, id, .line)});
 }
 
 pub const Routes = struct { advertised: []const []const u8, enabled: []const []const u8 };

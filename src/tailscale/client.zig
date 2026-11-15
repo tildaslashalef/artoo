@@ -206,20 +206,22 @@ pub const Client = struct {
         const msg = try errorMessage(ctx.arena, r.body);
         const s = if (msg.len > 0) ": " else "";
         const verb = @tagName(method);
+        // Paths carry IDs the server sent: shown sanitized.
+        const shown = try ui.text.sanitize(ctx.arena, path, .line);
         // 501 is the API's documented definitive refusal (e.g. "Device
         // not owned by tailnet" on DELETE /device): nothing was applied.
         if (method != .GET and !opts.read_only and r.status >= 500 and r.status != 501) {
-            return ctx.fail(error.OutcomeUnknown, "Tailscale answered {d} to {s} {s}{s}{s}; the write may or may not have applied — check before retrying", .{ r.status, verb, path, s, msg });
+            return ctx.fail(error.OutcomeUnknown, "Tailscale answered {d} to {s} {s}{s}{s}; the write may or may not have applied — check before retrying", .{ r.status, verb, shown, s, msg });
         }
         return switch (r.status) {
-            400 => ctx.fail(error.Refused, "Tailscale refused {s} {s}{s}{s}", .{ verb, path, s, msg }),
+            400 => ctx.fail(error.Refused, "Tailscale refused {s} {s}{s}{s}", .{ verb, shown, s, msg }),
             401 => ctx.fail(error.AuthFailed, "Tailscale rejected the access token (401){s}{s}", .{ s, msg }),
-            403 => ctx.fail(error.PermissionDenied, "the Tailscale OAuth client may not {s} {s} (403){s}{s}; see SPEC §19 for its scopes", .{ verb, path, s, msg }),
-            404 => ctx.fail(error.NotFound, "not found on Tailscale: {s}{s}{s}", .{ path, s, msg }),
-            501 => ctx.fail(error.Refused, "Tailscale refused {s} {s} (501){s}{s}; nothing was applied", .{ verb, path, s, msg }),
-            412 => ctx.fail(error.Changed, "Tailscale refused {s} {s}: it changed since it was read (412){s}{s}; nothing was applied — review and run again", .{ verb, path, s, msg }),
-            429 => ctx.fail(error.RateLimited, "Tailscale rate limited {s} {s} (429){s}{s}; nothing is retried — try again later", .{ verb, path, s, msg }),
-            else => ctx.fail(error.HttpStatus, "Tailscale answered {d} for {s} {s}{s}{s}", .{ r.status, verb, path, s, msg }),
+            403 => ctx.fail(error.PermissionDenied, "the Tailscale OAuth client may not {s} {s} (403){s}{s}; see SPEC §19 for its scopes", .{ verb, shown, s, msg }),
+            404 => ctx.fail(error.NotFound, "not found on Tailscale: {s}{s}{s}", .{ shown, s, msg }),
+            501 => ctx.fail(error.Refused, "Tailscale refused {s} {s} (501){s}{s}; nothing was applied", .{ verb, shown, s, msg }),
+            412 => ctx.fail(error.Changed, "Tailscale refused {s} {s}: it changed since it was read (412){s}{s}; nothing was applied — review and run again", .{ verb, shown, s, msg }),
+            429 => ctx.fail(error.RateLimited, "Tailscale rate limited {s} {s} (429){s}{s}; nothing is retried — try again later", .{ verb, shown, s, msg }),
+            else => ctx.fail(error.HttpStatus, "Tailscale answered {d} for {s} {s}{s}{s}", .{ r.status, verb, shown, s, msg }),
         };
     }
 
@@ -232,8 +234,9 @@ pub const Client = struct {
         const r = try c.raw(method, path, body, opts);
         if (std.mem.trim(u8, r.body, " \r\n\t").len == 0) return .null;
         return std.json.parseFromSliceLeaky(Value, c.ctx.arena, r.body, .{}) catch {
-            if (method != .GET and !opts.read_only) return c.ctx.fail(error.OutcomeUnknown, "Tailscale answered {s} {s} with invalid JSON; the write may or may not have applied — check before retrying", .{ @tagName(method), path });
-            return c.ctx.fail(error.Protocol, "Tailscale sent invalid JSON for {s}", .{path});
+            const shown = try ui.text.sanitize(c.ctx.arena, path, .line);
+            if (method != .GET and !opts.read_only) return c.ctx.fail(error.OutcomeUnknown, "Tailscale answered {s} {s} with invalid JSON; the write may or may not have applied — check before retrying", .{ @tagName(method), shown });
+            return c.ctx.fail(error.Protocol, "Tailscale sent invalid JSON for {s}", .{shown});
         };
     }
 
