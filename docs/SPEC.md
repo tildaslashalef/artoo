@@ -3169,7 +3169,10 @@ Bearer <access token>` injected at request time; TLS verified against
 the operating system's root store, as Cloudflare (§15); same deadlines,
 no pooling, no write retries (§8.1). Errors are an HTTP status with
 `{"message": …}` (sanitized into the error); `429` is reported as rate
-limited, never retried by a write. No pagination: lists arrive whole.
+limited, never retried by a write. A write answered with another `5xx`
+is an unknown outcome, except `501`, the API's documented definitive
+refusal (e.g. "Device not owned by tailnet" on `DELETE /device`): a
+refused step, nothing applied. No pagination: lists arrive whole.
 
 **Ownership.** Writes touch **lab devices only**: a device tagged
 `tag:lab-router` or a `tailscale.guest_tags` entry, or one whose name is
