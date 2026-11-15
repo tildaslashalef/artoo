@@ -14,12 +14,14 @@ const Kind = enum {
     pve,
     unifi,
     cloudflare,
+    tailscale,
 
     fn label(k: Kind) []const u8 {
         return switch (k) {
             .pve => "Proxmox API token secret (artoo@pve!cli)",
             .unifi => "UniFi API key",
             .cloudflare => "Cloudflare API token (DNS records, tunnels)",
+            .tailscale => "Tailscale OAuth client secret (tskey-client-…)",
         };
     }
 };
@@ -27,10 +29,10 @@ const Kind = enum {
 const kinds = std.meta.tags(Kind);
 
 fn kindArg(ctx: *Context, word: []const u8) !Kind {
-    return std.meta.stringToEnum(Kind, word) orelse ctx.fail(error.Usage, "unknown secret '{s}' (expected pve, unifi or cloudflare)", .{word});
+    return std.meta.stringToEnum(Kind, word) orelse ctx.fail(error.Usage, "unknown secret '{s}' (expected pve, unifi, cloudflare or tailscale)", .{word});
 }
 
-const secret_arg = [_]cli.Positional{.{ .name = "SECRET", .help = "pve, unifi or cloudflare" }};
+const secret_arg = [_]cli.Positional{.{ .name = "SECRET", .help = "pve, unifi, cloudflare or tailscale" }};
 
 pub const set = struct {
     pub const name = "set";
@@ -60,6 +62,9 @@ pub const set = struct {
         if (!secrets.validSecret(secret)) {
             return ctx.fail(error.Usage, "the secret must be one line of 1-4096 printable characters", .{});
         }
+        // SPEC §19: an OAuth client, never a personal API access token.
+        if (kind == .tailscale and !std.mem.startsWith(u8, secret, "tskey-client-"))
+            return ctx.fail(error.Usage, "expected a Tailscale OAuth client secret (tskey-client-…); personal API access tokens (tskey-api-…) are not used (SPEC §19)", .{});
         if (present) try ctx.confirm("Replace the existing {s} secret in {s}?", .{ @tagName(kind), where });
         if (ctx.globals.dry_run) {
             try ctx.out.print("Dry run: would store {s} in {s}.\n", .{ @tagName(kind), where });
@@ -87,7 +92,7 @@ pub const status = struct {
             return ui.json.envelope(ctx.out, .local, .{
                 .store = store.kind(),
                 .location = where,
-                .secrets = .{ .pve = present[0], .unifi = present[1], .cloudflare = present[2] },
+                .secrets = .{ .pve = present[0], .unifi = present[1], .cloudflare = present[2], .tailscale = present[3] },
             }, .{});
         }
         const u = &ctx.ui;
@@ -110,7 +115,7 @@ pub const status = struct {
             .{ .title = "STATUS" },
         }, &rows);
         if (std.mem.findScalar(bool, &present, false) != null) {
-            try ctx.out.print("\n{s}Add a missing secret with 'artoo auth set pve|unifi|cloudflare'.{s}\n", .{ u.palette.on(.muted), u.palette.off(.muted) });
+            try ctx.out.print("\n{s}Add a missing secret with 'artoo auth set pve|unifi|cloudflare|tailscale'.{s}\n", .{ u.palette.on(.muted), u.palette.off(.muted) });
         }
     }
 };
@@ -145,7 +150,7 @@ fn storeError(ctx: *Context, err: anyerror, where: []const u8) anyerror {
     };
 }
 
-pub const group = cli.group("auth", "Credentials for Proxmox and UniFi", &.{
+pub const group = cli.group("auth", "Credentials for Proxmox, UniFi, Cloudflare and Tailscale", &.{
     cli.leaf(set),
     cli.leaf(status),
     cli.leaf(rm),
@@ -187,17 +192,22 @@ test "auth: set via prompt and --stdin, status, rm with confirmations" {
     script = .{ .interactive = false, .piped = "a\x1bb" };
     try testing.expectEqual(.usage, h.run(&root, "auth set pve --stdin"));
     try testing.expectEqual(.usage, h.run(&root, "auth set guest"));
+    // Tailscale: an OAuth client secret only.
+    script = .{ .interactive = false, .piped = "tskey-api-abc\n" };
+    try testing.expectEqual(.usage, h.run(&root, "auth set tailscale --stdin"));
+    try testing.expect(!mem.map.contains("tailscale"));
 
     try testing.expectEqual(.ok, h.run(&root, "auth status"));
     try testing.expectEqualStrings(
         \\ARTOO · auth  memory (test)
         \\
-        \\SECRET      PURPOSE                                      STATUS
-        \\pve         Proxmox API token secret (artoo@pve!cli)     ✗ missing
-        \\unifi       UniFi API key                                ✓ stored
-        \\cloudflare  Cloudflare API token (DNS records, tunnels)  ✗ missing
+        \\SECRET      PURPOSE                                         STATUS
+        \\pve         Proxmox API token secret (artoo@pve!cli)        ✗ missing
+        \\unifi       UniFi API key                                   ✓ stored
+        \\cloudflare  Cloudflare API token (DNS records, tunnels)     ✗ missing
+        \\tailscale   Tailscale OAuth client secret (tskey-client-…)  ✗ missing
         \\
-        \\Add a missing secret with 'artoo auth set pve|unifi|cloudflare'.
+        \\Add a missing secret with 'artoo auth set pve|unifi|cloudflare|tailscale'.
         \\
     , h.stdout());
     try testing.expectEqual(.ok, h.run(&root, "-o json auth status"));
