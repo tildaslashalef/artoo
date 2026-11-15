@@ -117,6 +117,11 @@ pub fn renameDevice(c: *ts.Client, id: []const u8, name: []const u8) !void {
     _ = try c.send(.POST, try std.fmt.allocPrint(c.ctx.arena, "/device/{s}/name", .{id}), .{ .name = name });
 }
 
+/// `POST /device/{id}/tags`: the device's whole tag list, replaced.
+pub fn setTags(c: *ts.Client, id: []const u8, tags: []const []const u8) !void {
+    _ = try c.send(.POST, try std.fmt.allocPrint(c.ctx.arena, "/device/{s}/tags", .{id}), .{ .tags = tags });
+}
+
 /// `DELETE /device/{id}`.
 pub fn deleteDevice(c: *ts.Client, id: []const u8) !void {
     _ = try c.json(.DELETE, try std.fmt.allocPrint(c.ctx.arena, "/device/{s}", .{id}), null);

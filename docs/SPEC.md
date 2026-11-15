@@ -128,7 +128,7 @@ artoo ts devices ls | device show NAME   the tailnet's devices, lab devices mark
 artoo ts dns show | keys ls           tailnet DNS; auth key metadata (never a key's value)
 artoo ts policy show [--json] | validate FILE | preview USER|IP:PORT   the policy, read-only
 artoo ts policy apply FILE           replace the policy (credential tailscale-policy; diff, typed confirmation)
-artoo ts device rename NAME NEW | device rm NAME   lab devices only (rm: typed confirmation)
+artoo ts device rename NAME NEW | device tag NAME TAGS | device rm NAME   lab devices only (rm: typed confirmation)
 artoo ts routes approve ROUTER        approve exactly the LAN route a lab router advertises
 artoo ts dns split set DOMAIN NAMESERVER…   guests.domain or home.arpa → the gateway only
 artoo ts join VM [--tag TAG]         enroll a guest tagged tailnet with a key artoo creates (never shown)
@@ -3265,6 +3265,16 @@ both pointing at the gateway.
   tag) keeps that standing only under an artoo VM's name: NEW must be
   one, else refused (the guest itself is renamed with `vm rename`,
   §9.18).
+- `ts device tag NAME TAGS` — `POST /device/{id}/tags` with the whole
+  list (comma-separated, duplicates folded), verified by a fresh read.
+  Every tag must be in `tailscale.guest_tags`, refused before anything
+  is sent otherwise; `tag:lab-router` is never accepted, and the subnet
+  router is refused (its tag belongs to `router setup`). Tailscale
+  refuses a tag the client or the policy's `tagOwners` does not name
+  (400, nothing changed). Moving a device to a new tag: the tag in
+  `tagOwners` (`ts policy apply`), given to the OAuth client, added to
+  `tailscale.guest_tags`, then `ts device tag`; the old tag leaves the
+  policy last.
 - `ts device rm NAME` — typed confirmation; `DELETE /device/{id}`,
   verified by a read answering 404.
 - `ts routes approve ROUTER` — `POST /device/{id}/routes` with exactly
