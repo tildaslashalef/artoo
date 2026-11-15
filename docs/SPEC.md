@@ -57,6 +57,12 @@ anywhere after the program name. `artoo help <noun> [verb]` and `-h` on any
 command print usage **with every flag, its type/default and examples** — all
 generated from the same declarative command table that drives parsing, so
 help and behavior cannot diverge. Unknown commands suggest the closest match.
+Help text is written for the operator and never cites this document. Its
+`details` reflow to the terminal (60–100 columns, 80 when piped): blank
+lines separate paragraphs, and indented lines (lists, tables) and the line
+ending in `:` that introduces them stay as written. Long flag and command
+descriptions wrap under their column. A command's page shows its own flags
+and a one-line pointer to the global flags, which `artoo --help` lists.
 
 ### 3.1 Global flags
 
@@ -193,7 +199,11 @@ One shared rendering kit (`ui/`) used by every command:
   `in 3d`) with absolute time in `show`/JSON, durations (`3h 12m`).
 - **Status**: a word plus color and glyph (`● running`, `○ stopped`,
   `✓ ok`, `▲ warning`, `✗ failed`, `– not checked`); ASCII fallbacks.
-- **Detail views** (`show`): aligned key/value sections.
+- **Counts**: `1 file`, `3 files` (`ui.values.count`), never `file(s)`.
+- **API enum values** in tables read as words (`system defined`,
+  `WPA2/WPA3 personal`, `A` for `A_RECORD`); JSON keeps them as sent.
+- **Detail views** (`show`): aligned key/value sections; a value longer
+  than the terminal wraps under its column.
 - **Plans**: the preview block (target, current → intended, impact,
   recovery) shown before every confirmation.
 - **Progress**: live step lines for multi-step writes (§4.4); an activity
@@ -2013,7 +2023,8 @@ the guest's use.
 - **`status`:** the guest table's MEMORY column is guest memory, from
   the agent reads `status` already makes per running guest.
 - **`vm ls`:** unchanged — Proxmox's list figure, one request; per-VM
-  agent reads stay out of `ls`.
+  agent reads stay out of `ls`. Its column is titled HOST MEM so it is not
+  read as the guest's use.
 - **`vm set VM memory=…`** on a running VM with an answering agent: the
   plan notes what the guest uses now and warns (not refuses) when the new
   size leaves less than 512 MiB above it.
@@ -2147,7 +2158,7 @@ plan says so, and verify waits for `running`.
 **Visibility.** `vm snap ls` gains an OWNER column (`artoo`,
 `operator`; `artoo, old: prune` past the age limit) beside TAKEN.
 `status` adds one storage line when any guest has snapshots
-(`snapshots 3 on 2 VM(s), oldest 16d`) and warns per artoo-owned
+(`snapshots 3 on 2 VMs, oldest 16d`) and warns per artoo-owned
 snapshot past the age limit (`old snapshot: naboo@artoo-… (16d) —
 'artoo vm snap prune naboo'`); `vm verify` adds a "snapshots" check:
 `none`, `N (K artoo)`, or a warning naming the oldest stale one. The Proxmox
