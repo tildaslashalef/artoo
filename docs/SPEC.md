@@ -2323,8 +2323,10 @@ changes nothing and is never retried.
   depends on a name.
 - **Port assignment:** a WAN can exist with no gateway port carrying it
   (UI: Port "Unassigned"). The gateway's `ethernet_overrides` (§17.1)
-  names the interface of each group; a group missing there has **no
-  port**: status "no port", role "unassigned" — distinct from a backup
+  names the interface of each group; a group missing there **and**
+  without a live `wanN` object (one with `up` or `ip`) has **no port**
+  (a live `wanN` without an override is a normal WAN, its port from
+  `wanN.port_idx`): status "no port", role "unassigned" — distinct from a backup
   and from offline. Such a WAN is shown but has no address, link or
   health; `status` does not count it as offline and `log` leaves its
   events out. A WAN with a port shows its number (`port 5`).
