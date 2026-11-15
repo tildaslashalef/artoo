@@ -39,12 +39,17 @@ pub const doctor = struct {
     pub const name = "doctor";
     pub const summary = "Check the local installation, config, secrets and CA bundles";
     pub const details =
-        \\Read-only. --connect also calls UniFi (GET /v1/info), Proxmox
-        \\(GET /version), Cloudflare (token verify, zone lookup) and Tailscale
-        \\(the OAuth token exchange and its granted scopes) with the stored
-        \\credentials.
+        \\Checks this machine's artoo setup: the installation, the config file,
+        \\which credentials are stored and the CA bundles used to verify TLS. Run
+        \\it after setting up, or when a command cannot connect. It is read-only
+        \\and never prints a secret.
+        \\
+        \\With --connect it also calls each service with the stored credentials,
+        \\read-only: UniFi (API info), Proxmox (version), Cloudflare (token check
+        \\and zone lookup) and Tailscale (OAuth token exchange and the scopes it
+        \\grants).
     ;
-    pub const flags = [_]cli.Flag{.{ .long = "connect", .short = 'c', .help = "Also probe both APIs (read-only)" }};
+    pub const flags = [_]cli.Flag{.{ .long = "connect", .short = 'c', .help = "Also call each API with the stored credentials (read-only)" }};
     pub const examples = [_][]const u8{ "artoo doctor", "artoo doctor --connect" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {

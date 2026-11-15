@@ -97,11 +97,19 @@ fn durationOf(ctx: *Context, t: Task) ![]const u8 {
 
 pub const ls = struct {
     pub const name = "ls";
-    pub const summary = "Recent Proxmox tasks";
+    pub const summary = "List recent Proxmox tasks";
+    pub const details =
+        \\Lists the node's recent tasks with user, start, duration and status:
+        \\to see what artoo, or anyone else, started on Proxmox and whether it
+        \\failed. Read-only.
+        \\
+        \\Each task gets a short handle, type:target@HH:MM (qmstart:100@14:32),
+        \\that 'artoo task show', 'log' and 'wait' accept.
+    ;
     pub const flags = [_]cli.Flag{
         .{ .long = "running", .help = "Only running tasks" },
         .{ .long = "failed", .help = "Only failed tasks" },
-        .{ .long = "limit", .short = 'l', .kind = .int, .metavar = "N", .default = "20", .help = "Number of tasks (1-500)" },
+        .{ .long = "limit", .short = 'l', .kind = .int, .metavar = "N", .default = "20", .help = "Number of tasks, 1-500" },
     };
     pub const examples = [_][]const u8{ "artoo task ls", "artoo task ls --failed -l 50" };
 
@@ -143,9 +151,16 @@ const task_arg = [_]cli.Positional{.{ .name = "TASK", .help = "UPID, handle (qms
 
 pub const show = struct {
     pub const name = "show";
-    pub const summary = "One task: type, target, user, times, exit status";
+    pub const summary = "Show one task: type, target, user, start, status";
+    pub const details =
+        \\Shows one task: its full UPID, type, target, user, start time and exit
+        \\status (running while it runs). Read-only.
+        \\
+        \\TASK is the UPID, the handle 'artoo task ls' prints, or a fragment
+        \\that matches only one recent task.
+    ;
     pub const positionals = task_arg;
-    pub const examples = [_][]const u8{"artoo task show qmstart:100@14:32"};
+    pub const examples = [_][]const u8{ "artoo task show qmstart:100@14:32", "artoo task show qmstart:100@14:32 -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -180,7 +195,12 @@ pub const show = struct {
 
 pub const log = struct {
     pub const name = "log";
-    pub const summary = "A task's log (last 50 lines; --all for everything)";
+    pub const summary = "Print a task's log (last 50 lines; --all for all)";
+    pub const details =
+        \\Prints the log Proxmox kept for a task: the place to look when a task
+        \\failed. Only the last 50 lines are printed, with a note of how many came
+        \\before; --all prints the whole log. Read-only.
+    ;
     pub const positionals = task_arg;
     pub const flags = [_]cli.Flag{.{ .long = "all", .short = 'a', .help = "Print the whole log" }};
     pub const examples = [_][]const u8{ "artoo task log qmstart:100@14:32", "artoo task log qmclone --all" };
@@ -211,9 +231,17 @@ pub const log = struct {
 pub const wait = struct {
     pub const name = "wait";
     pub const summary = "Wait for a task to finish; exit 6 if it failed";
+    pub const details =
+        \\Waits until a task ends and prints its exit status, for example after
+        \\a write run with --no-wait. Read-only.
+        \\
+        \\Exit 0 when the task ended OK (warnings are shown), 6 when it failed, 7
+        \\when --max-wait ran out first. Giving up does not stop the task on
+        \\Proxmox.
+    ;
     pub const positionals = task_arg;
-    pub const flags = [_]cli.Flag{.{ .long = "max-wait", .kind = .int, .metavar = "SECONDS", .default = "900", .help = "Give up after this long (exit 7)" }};
-    pub const examples = [_][]const u8{"artoo task wait qmclone:9010@14:32"};
+    pub const flags = [_]cli.Flag{.{ .long = "max-wait", .kind = .int, .metavar = "SECONDS", .default = "900", .help = "Give up after this many seconds, 1-86400; exit 7" }};
+    pub const examples = [_][]const u8{ "artoo task wait qmclone:9010@14:32", "artoo task wait qmclone --max-wait 1800" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const max = args.int("max-wait") orelse 900;
@@ -230,7 +258,7 @@ pub const wait = struct {
     }
 };
 
-pub const group = cli.group("task", "Proxmox tasks", &.{ cli.leaf(ls), cli.leaf(show), cli.leaf(log), cli.leaf(wait) });
+pub const group = cli.group("task", "Proxmox tasks and their logs", &.{ cli.leaf(ls), cli.leaf(show), cli.leaf(log), cli.leaf(wait) });
 
 // ---------------------------------------------------------------- tests
 

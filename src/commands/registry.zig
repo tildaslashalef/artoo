@@ -2,7 +2,7 @@
 
 const cli = @import("../cli.zig");
 
-pub const root = cli.group("artoo", "Home-lab CLI for a Proxmox VE host, a UniFi gateway, a Cloudflare zone and a tailnet.", &.{
+pub const root = cli.group("artoo", "Home-lab CLI for a Proxmox VE host, a UniFi gateway, a Cloudflare zone and a tailnet", &.{
     @import("auth.zig").group,
     @import("config.zig").group,
     @import("doctor.zig").command,

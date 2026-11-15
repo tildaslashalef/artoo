@@ -285,14 +285,21 @@ fn dnsCheck(arena: std.mem.Allocator, domain: []const u8, d: svc.Domains, record
 
 pub const status = struct {
     pub const name = "status";
-    pub const summary = "One-screen overview of the lab";
+    pub const summary = "Show a one-screen overview of the lab";
     pub const details =
-        \\Read-only. Proxmox, UniFi, the edge, the router and the tunnel are
-        \\read concurrently; sections are sampled, not atomic. A section that
-        \\fails is shown as unavailable, and a failed edge or router check is
-        \\listed; either exits 8. A role VM or tunnel that does not exist shows
-        \\as "none". Service drift is shown but does not change the exit code.
-        \\Guest CPU is % of the guest's vCPUs; host CPU is % of host threads.
+        \\Shows the Proxmox host with its guests, storage and tasks, the UniFi
+        \\gateway, the edge VM, the subnet router, the tunnel and the services on
+        \\one screen: the first thing to run when checking on the lab. It is
+        \\read-only.
+        \\
+        \\The sections are read at the same time, so they are samples, not one
+        \\atomic snapshot. A role VM or tunnel that does not exist shows as
+        \\"none". Guest CPU is a share of the guest's vCPUs; host CPU, of the
+        \\host's threads.
+        \\
+        \\Exit 8 when a section cannot be read (shown as unavailable) or an edge
+        \\or router check fails; the failed checks are listed. Service drift is
+        \\shown but does not change the exit code.
     ;
     pub const examples = [_][]const u8{ "artoo status", "artoo status -o json" };
 
