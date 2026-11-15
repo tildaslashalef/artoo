@@ -19,6 +19,7 @@ const ssh_config = @import("../guest/ssh_config.zig");
 const life = @import("vm_life.zig");
 const template = @import("template.zig");
 const k = @import("node.zig");
+const exec = @import("../exec.zig");
 
 const Context = app.Context;
 const Value = std.json.Value;
@@ -224,6 +225,85 @@ pub fn blockOf(name: []const u8, cfg: Value) ?ssh_config.Block {
 
 // ---------------------------------------------------------------- ssh-config
 
+/// `ssh-keygen -l`'s SHA256 fingerprint of a `TYPE BASE64` key.
+pub fn keyFingerprint(arena: std.mem.Allocator, key: []const u8) ![]const u8 {
+    var it = std.mem.tokenizeScalar(u8, key, ' ');
+    _ = it.next() orelse return "unreadable key";
+    const b64 = it.next() orelse return "unreadable key";
+    const dec = std.base64.standard.Decoder;
+    const n = dec.calcSizeForSlice(b64) catch return "unreadable key";
+    const raw = try arena.alloc(u8, n);
+    dec.decode(raw, b64) catch return "unreadable key";
+    var sum: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(raw, &sum, .{});
+    const enc = std.base64.standard_no_pad.Encoder;
+    const out = try arena.alloc(u8, enc.calcSize(sum.len));
+    return std.fmt.allocPrint(arena, "SHA256:{s}", .{enc.encode(out, &sum)});
+}
+
+/// Replace a guest's pinned host key with the one its guest agent reads
+/// (SPEC §9.10): the agent is the trusted path, as at first pinning.
+const RepinOp = struct {
+    c: *pve.Client,
+    word: []const u8,
+    target: []const u8 = "",
+    risk: ui.blocks.Risk = .normal,
+    api: ui.json.Target = .local,
+    vm: vms.Vm = undefined,
+    old: ?[]const u8 = null,
+    new: []const u8 = "",
+    state: []const u8 = "",
+
+    pub fn read(op: *RepinOp, ctx: *Context) !void {
+        const list = try vms.list(op.c);
+        op.vm = switch (try vms.find(list, ctx.arena, op.word)) {
+            .vm => |v| v,
+            .missing => return ctx.fail(error.NotFound, "no VM '{s}' on Proxmox", .{op.word}),
+            .ambiguous => return ctx.fail(error.Usage, "'{s}' matches several VMs; use the VMID", .{op.word}),
+        };
+        if (op.vm.template or !isGuest(op.vm)) return ctx.fail(error.Refused, "{s} is not an artoo guest (tag artoo)", .{op.word});
+        if (!ssh_config.validName(op.vm.name)) return ctx.fail(error.Refused, "the name '{s}' cannot be an ssh host", .{try k.clean(ctx, op.vm.name)});
+        if (!op.vm.running()) return ctx.fail(error.Refused, "{s} is {s}; its guest agent reads the key only while it runs", .{ op.vm.name, op.vm.status });
+        op.target = op.vm.name;
+        op.new = try known_hosts.keyOf(ctx.arena, try agent.readFile(op.c, op.vm.vmid, known_hosts.host_key_file)) orelse
+            return ctx.fail(error.Refused, "{s} has no usable {s}", .{ op.vm.name, known_hosts.host_key_file });
+        op.old = try known_hosts.lookup(ctx, op.vm.name);
+        op.state = op.old orelse "-";
+    }
+
+    pub fn plan(op: *RepinOp, ctx: *Context) !?exec.Plan {
+        if (op.old) |o| if (std.mem.eql(u8, o, op.new)) return null;
+        const a = ctx.arena;
+        return .{
+            .action = try std.fmt.allocPrint(a, "Re-pin the host key of {s}", .{op.vm.name}),
+            .target = try std.fmt.allocPrint(a, "{s} (this machine)", .{ctx.tilde(try known_hosts.path(ctx))}),
+            .changes = try a.dupe(ui.blocks.Change, &.{.{
+                .field = "host key",
+                .from = if (op.old) |o| try keyFingerprint(a, o) else "not pinned",
+                .to = try std.fmt.allocPrint(a, "{s} (read through the guest agent of VM {d})", .{ try keyFingerprint(a, op.new), op.vm.vmid }),
+            }}),
+            .impact = try a.dupe([]const u8, &.{try std.fmt.allocPrint(a, "ssh, scp and vm ssh to {s} accept only the new key; compare it with the fingerprint ssh reported", .{op.vm.name})}),
+        };
+    }
+
+    pub fn fingerprint(op: *RepinOp) []const u8 {
+        return op.state;
+    }
+
+    pub fn send(op: *RepinOp, ctx: *Context) !void {
+        try known_hosts.record(ctx, op.vm.name, op.new);
+    }
+
+    pub fn verify(op: *RepinOp, ctx: *Context) !bool {
+        const now = (try known_hosts.lookup(ctx, op.vm.name)) orelse return false;
+        return std.mem.eql(u8, now, op.new);
+    }
+
+    pub fn done(_: *RepinOp) []const u8 {
+        return "host key re-pinned";
+    }
+};
+
 pub const ssh_config_cmd = struct {
     pub const name = "ssh-config";
     pub const summary = "Write ~/.artoo/ssh_config so plain ssh, scp and rsync are as strict as vm ssh";
@@ -235,13 +315,26 @@ pub const ssh_config_cmd = struct {
         \\pinned key are pinned through the guest agent first. artoo never edits
         \\~/.ssh/config: add 'Include ~/.artoo/ssh_config' there once, above the
         \\first Host or Match line. vm new and vm rm keep the file current.
-        \\-n prints the file and writes nothing.
+        \\--repin VM replaces VM's pinned key with the one its guest agent
+        \\reads from the guest (after a confirmation showing both
+        \\fingerprints) — for a guest whose host keys were regenerated, e.g.
+        \\by cloud-init after 'vm rename'. -n prints the file and writes
+        \\nothing.
     ;
-    pub const examples = [_][]const u8{ "artoo vm ssh-config", "artoo vm ssh-config -n", "ssh bespin  # once the Include is in place" };
+    pub const flags = [_]cli.Flag{.{ .long = "repin", .kind = .string, .metavar = "VM", .help = "Replace VM's pinned host key with the one read through its guest agent" }};
+    pub const examples = [_][]const u8{ "artoo vm ssh-config", "artoo vm ssh-config -n", "artoo vm ssh-config --repin bespin", "ssh bespin  # once the Include is in place" };
 
-    pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
         defer c.deinit();
+        if (args.string("repin")) |word| {
+            var op: RepinOp = .{ .c = &c, .word = word };
+            exec.run(ctx, &op, .{}) catch |err| switch (err) {
+                error.NoChange => try ctx.err.print("artoo: the pinned host key of {s} already matches its guest agent's\n", .{op.target}),
+                else => return err,
+            };
+            if (ctx.globals.dry_run) return;
+        }
         const s = try settings(ctx);
         const dry = ctx.globals.dry_run;
         const got = try collect(&c, try vms.list(&c), !dry);
@@ -816,6 +909,53 @@ test "parseSums, compare, baseName, quoted" {
     try testing.expectEqualStrings("x", baseName("dir/x/").?);
     try testing.expect(baseName("") == null and baseName("/") == null and baseName("a/..") == null);
     try testing.expectEqualStrings("/usr/bin/scp -- 'a b' 'it'\\''s' naboo:x", try quoted(a, &.{ "/usr/bin/scp", "--", "a b", "it's", "naboo:x" }));
+}
+
+fn expectAll(out: []const u8, wants: []const []const u8) !void {
+    for (wants) |w| if (std.mem.find(u8, out, w) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ w, out });
+        return error.TestUnexpectedResult;
+    };
+}
+
+test "vm ssh-config --repin: the guest agent's key replaces a stale pin after a plan with both fingerprints" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const stale = "AAAAC3NzaC1lZDI1NTE5AAAAIF24Nuu7OysWjoysMXjoGBLC8k+Lr69SK5dk343iUZeQ";
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(&[_]R{
+        // -n: plan only.
+        route("/nodes/pve/qemu ", guests_list),
+        route("/qemu/201/agent/file-read", "{\"data\":{\"content\":\"ssh-ed25519 " ++ blob ++ " root@naboo\\n\"}}"),
+        // -y: re-pinned, then the file rewritten as usual.
+        route("/nodes/pve/qemu ", guests_list),
+        route("/qemu/201/agent/file-read", "{\"data\":{\"content\":\"ssh-ed25519 " ++ blob ++ " root@naboo\\n\"}}"),
+        route("/nodes/pve/qemu ", guests_list),
+        route("/qemu/200/config ", bespin_cfg),
+        route("/qemu/201/config ", naboo_cfg),
+        route("/qemu/202/config ", hoth_cfg),
+    });
+    defer g.deinit();
+    try g.tmp.dir.createDirPath(testing.io, ".artoo");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/known_hosts", .data = "bespin ssh-ed25519 " ++ blob ++ "\nnaboo ssh-ed25519 " ++ stale ++ "\n" });
+    var fake: FakeRunner = .{ .arena = a };
+    try fake.expect(&.{ "/usr/bin/ssh", "-G", "bespin" }, null, .{ .stdout = "user artoo\nport 22\n" });
+    g.h.hooks.runner = fake.runner();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm ssh-config --repin naboo -n"));
+    try expectAll(g.h.stdout(), &.{ "Re-pin the host key of naboo", "SHA256:A7hxXErBp4xkXxKRCLV9pAnITLwlcQ7jWL9odYyhH70 → SHA256:JU8dCD06LrZRfjpdnM3fmID+3emdUe/GI+VdQ6d0Y+E (read through the guest agent of VM 201)" });
+    var kh = try g.tmp.dir.readFileAlloc(testing.io, ".artoo/known_hosts", a, .limited(1 << 16));
+    try testing.expect(std.mem.find(u8, kh, "naboo ssh-ed25519 " ++ stale) != null);
+
+    // hoth is stopped and unpinned: the rewrite that follows is partial.
+    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm ssh-config --repin naboo -y"));
+    try expectAll(g.h.stdout(), &.{"host key re-pinned"});
+    kh = try g.tmp.dir.readFileAlloc(testing.io, ".artoo/known_hosts", a, .limited(1 << 16));
+    try testing.expect(std.mem.find(u8, kh, "naboo ssh-ed25519 " ++ blob) != null and std.mem.find(u8, kh, stale) == null);
+    try fake.done();
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
 
 test "vm ssh-config: one block per artoo guest; pins a running guest; an unpinned stopped one is partial" {
