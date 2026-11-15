@@ -566,18 +566,26 @@ fn opRow(ctx: *Context, change: []const u8, role: ui.style.Role, method: []const
 // ---------------------------------------------------------------- rendering
 
 /// `ARTOO` left, `unifi · <site> · <clock>` right.
-pub fn header(ctx: *Context, c: *const unifi.Client) !void {
+pub fn header(ctx: *Context, c: *unifi.Client) !void {
     try ui.blocks.header(ctx.out, &ctx.ui, ctx.subject, try headerRight(ctx, c));
 }
 
-fn headerRight(ctx: *Context, c: *const unifi.Client) ![]const u8 {
+fn headerRight(ctx: *Context, c: *unifi.Client) ![]const u8 {
+    // Commands that never resolve the site (sites ls, spec) look its name
+    // up here, so every header shows the same name; a failed lookup keeps
+    // the configured reference and no error.
+    if (c.site_name == null) {
+        const saved = ctx.diag;
+        _ = unifi.siteId(c) catch {};
+        ctx.diag = saved;
+    }
     const site = try sanitized(ctx, c.site_name orelse c.site);
     return std.fmt.allocPrint(ctx.arena, "unifi {s} {s} {s} {f}", .{
         ctx.ui.glyphs.dot, site, ctx.ui.glyphs.dot, ui.values.clock(ctx.ui.now, &ctx.ui.zone),
     });
 }
 
-fn renderPage(ctx: *Context, c: *const unifi.Client, cols: []const catalog.Column, page: unifi.Page) !void {
+fn renderPage(ctx: *Context, c: *unifi.Client, cols: []const catalog.Column, page: unifi.Page) !void {
     if (ctx.json()) {
         return ui.json.envelope(ctx.out, .unifi, page.items, .{
             .collected_at = ctx.ui.now,
@@ -605,7 +613,7 @@ fn renderPage(ctx: *Context, c: *const unifi.Client, cols: []const catalog.Colum
     try ctx.out.print("{s}\n", .{p.off(.muted)});
 }
 
-pub fn renderObject(ctx: *Context, c: *const unifi.Client, title: []const u8, v: Value) !void {
+pub fn renderObject(ctx: *Context, c: *unifi.Client, title: []const u8, v: Value) !void {
     if (ctx.json()) {
         return ui.json.envelope(ctx.out, .unifi, v, .{ .collected_at = ctx.ui.now, .site = c.site_name orelse c.site });
     }
