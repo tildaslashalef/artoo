@@ -48,6 +48,28 @@ pub fn path(ctx: *Context) ![]const u8 {
         ctx.fail(error.ConfigInvalid, "HOME is not set; cannot locate {s}", .{default_path});
 }
 
+/// The key pinned for `alias` (`ssh-ed25519 AAAA…`), or null.
+pub fn lookup(ctx: *Context, alias: []const u8) !?[]const u8 {
+    const p = try path(ctx);
+    const text = Io.Dir.cwd().readFileAlloc(ctx.io, p, ctx.arena, .limited(1 << 20)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        error.Canceled => return error.Canceled,
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return ctx.fail(error.Io, "cannot read {s}", .{ctx.tilde(p)}),
+    };
+    return keyFor(text, alias);
+}
+
+/// The key on `alias`'s line in a known_hosts text.
+pub fn keyFor(text: []const u8, alias: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const sp = std.mem.findScalar(u8, line, ' ') orelse continue;
+        if (std.mem.eql(u8, line[0..sp], alias)) return std.mem.trim(u8, line[sp + 1 ..], " \r");
+    }
+    return null;
+}
+
 /// Record (`key` set) or forget (`key` null) the host key of `alias`.
 pub fn record(ctx: *Context, alias: []const u8, key: ?[]const u8) !void {
     const p = try path(ctx);

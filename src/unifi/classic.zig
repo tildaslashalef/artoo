@@ -67,6 +67,14 @@ pub fn reserve(c: *unifi.Client, mac: []const u8, name: []const u8, network_id: 
     _ = try c.classic(.POST, "group/user", body);
 }
 
+/// Rename record `id` (the UI alias): `PUT rest/user/{_id}` with `name`
+/// alone. Expected from the classic API (SPEC §9.18, §17.1), not yet
+/// verified live.
+pub fn rename(c: *unifi.Client, id: []const u8, name: []const u8) !void {
+    const body = try std.json.Stringify.valueAlloc(c.ctx.arena, .{ .name = name }, .{});
+    _ = try c.classic(.PUT, try std.fmt.allocPrint(c.ctx.arena, "rest/user/{s}", .{id}), body);
+}
+
 /// Forget the record for `mac` (gone at once unless the client is connected).
 pub fn forget(c: *unifi.Client, mac: []const u8) !void {
     const body = try std.json.Stringify.valueAlloc(c.ctx.arena, .{ .cmd = "forget-sta", .macs = .{mac} }, .{});

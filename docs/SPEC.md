@@ -96,7 +96,8 @@ artoo vm show VM | config VM          pending values marked (§9.13)
 artoo vm urls VM                      service URLs and public hosts that reach the VM
 artoo vm start|shutdown|reboot VM
 artoo vm stop VM                      forced stop (destructive confirmation)
-artoo vm set VM KEY=VALUE… [--reboot] allowlisted config keys, digest-guarded (§9.13)
+artoo vm set VM KEY=VALUE… [--reboot] allowlisted config keys, digest-guarded (§9.13); name= only on foreign VMs
+artoo vm rename OLD NEW               rename an artoo guest everywhere its name lives (§9.18; typed confirmation)
 artoo vm disk grow VM SIZE [--disk SLOT]  grow a disk and the guest's root filesystem (§9.15)
 artoo vm clone VM NEWNAME [--id N]
 artoo vm rm VM [--keep-dns]           destroy VM + disks (+ its DNS record)
@@ -2198,7 +2199,8 @@ every machine the same passwords instead, `config export
 
 ### 9.18 Renaming a guest (`vm rename`)
 
-Decided 2026-11-15; not implemented yet. A guest's name is not only
+Decided 2026-11-15; implemented, not yet verified live (see **Status**
+below). A guest's name is not only
 Proxmox's label: the guest's hostname, its UniFi client record and DNS
 record, the pinned host key and `ssh_config`, the stored `guest/<name>`
 password, service upstreams, fence exceptions, its tailnet name and the
@@ -2246,6 +2248,20 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
 - **Verify:** `vm verify NEW` (§9.4) passes; OLD resolves nowhere, has
   no UniFi record, store entry or pinned key; `ssh NEW` logs in with
   the pinned key.
+
+**Status.** Implemented in `src/commands/vm_rename.zig`, offline tests
+only. As built: OLD and NEW are matched by name (the VM is found under
+either, so a stopped run continues); the fence step rewrites
+`guests.fence_allow_out` in `~/.artoo/config.json` and re-derives the
+fences of the guest and of the fenced guests whose exceptions name it,
+applying only those that differ; the fence and watchdog steps run only
+alongside another step (alone they are no-ops), so a finished rename is
+exit 5. A DNS record of OLD that points elsewhere is kept and named in
+the plan; a hand-edited service route, both `guest/OLD` and
+`guest/NEW` holding different passwords, or another pinned key under
+NEW refuse. Verify re-reads every place (each must carry NEW, none
+OLD); `vm verify NEW` and an SSH login are left to the operator, as the
+result line says, instead of running inside the command.
 
 **Open questions, settled before implementation:** the classic call
 that renames a client record (`PUT rest/user/{_id}` is expected, §17.1)
