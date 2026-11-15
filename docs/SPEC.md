@@ -868,9 +868,15 @@ checked; any failure → exit 8.
 
 `vm verify --all` checks every artoo guest (tag `artoo`, not templates),
 concurrently — one task per guest with its own `Context` copy, as
-`status` (§11) — and prints one block per guest, then a summary line;
-any failure in any guest → exit 8. `-o json` is a list of `{vm, vmid,
-checks}`.
+`status` (§11). It shows only what needs attention: one table (GUEST,
+CHECK, STATUS, DETAIL) with a row per warning or failure, the guest
+named on its first row only (a guest that could not be checked is one
+failed row, CHECK `verify`); then the guests with nothing to report on
+one line (`✓ All checks ok: …` when that is every guest); then the
+summary line. `--full` prints one block per guest with every check
+instead (only with `--all`; one guest always shows every check). Any
+failure in any guest → exit 8. `-o json` is a list of `{vm, vmid,
+checks}` with every check, whatever `--full`.
 
 ### 9.5 Addressing
 
