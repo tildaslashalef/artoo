@@ -2241,7 +2241,7 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
   | Fence | `guests.fence_allow_out` entries naming OLD, and the fences that render them; the plan shows each re-applied fence's rule diff as the renamed lab derives it, and the step applies only those rules (a fresh derivation that differs fails the step) |
   | Tailnet | for a guest on the tailnet (tag `tailnet`, `role-router`): `tailscale set --hostname=NEW` through the agent, the name read back from `tailscale status --json`; with a Tailscale credential the device (by the node ID the guest reports) is read every 2 s for up to about 30 s until the control plane shows NEW, and renamed through the API only if it still keeps the old (hand-set) name; another tailnet device already named NEW refuses at read time (§19) |
   | Watchdog | see **Watchdog step** below (§9.9) |
-  | Guest | hostname (`hostnamectl set-hostname`) and the `/etc/hosts` line, through the agent |
+  | Guest | hostname (`hostnamectl set-hostname`) and the `/etc/hosts` line, through the agent; a running Alloy is restarted, since its node metrics take the `instance` label from the hostname it read at start |
   | UniFi | the client record's `name` (§9.5), matched by MAC |
   | DNS (remove) | OLD's machine-name A record, last |
 
