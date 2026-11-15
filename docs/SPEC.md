@@ -2220,7 +2220,14 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
   DNS record or pinned host key of that name. Refused for `role-edge`
   and `role-watch`: their names sit in firewall rules and in every
   guest's Alloy configuration (§9.7, §9.9) — rebuild those. Templates
-  and foreign VMs refuse.
+  and foreign VMs refuse. A VM found only under NEW is a stopped rename
+  only if it still carries a trace of OLD — its hostname, an
+  `/etc/hosts` line, its UniFi record named OLD, OLD's DNS record at its
+  address, or its tailnet hostname — else refused. Before a rename began
+  (the VM still under OLD), leftovers under NEW refuse: a pinned key
+  under NEW, `guest/NEW`, a `guests.fence_allow_out` entry naming NEW
+  (in a stopped rename: `guest/OLD` and `guest/NEW` must match, and an
+  entry naming NEW is accepted only once none names OLD).
 - **Plan**, one line per place, `OLD → NEW` or "not present":
 
   | Step | Change |
@@ -2230,7 +2237,7 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
   | Services | each `svc` whose upstream is OLD moved to `NEW:PORT`, as `svc set` does, fence steps included (§9.6, §9.11) |
   | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config`: NEW's block written as `vm ssh-config` writes it (the static address, else the agent's IPv4), then OLD's removed — never OLD's alone (§9.10); verify checks NEW's block |
   | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
-  | Fence | `guests.fence_allow_out` entries naming OLD, and the fences that render them |
+  | Fence | `guests.fence_allow_out` entries naming OLD, and the fences that render them; the plan shows each re-applied fence's rule diff as the renamed lab derives it, and the step applies only those rules (a fresh derivation that differs fails the step) |
   | Tailnet | for a guest on the tailnet (tag `tailnet`, `role-router`): `tailscale set --hostname=NEW` through the agent, the name read back from `tailscale status --json`; with a Tailscale credential the device (by the node ID the guest reports) is read every 2 s for up to about 30 s until the control plane shows NEW, and renamed through the API only if it still keeps the old (hand-set) name; another tailnet device already named NEW refuses at read time (§19) |
   | Watchdog | `watch enroll NEW`, then OLD's series deleted as `watch forget` does (§9.9) |
   | Guest | hostname (`hostnamectl set-hostname`) and the `/etc/hosts` line, through the agent |

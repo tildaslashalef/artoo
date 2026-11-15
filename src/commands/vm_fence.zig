@@ -192,6 +192,12 @@ pub fn labFor(ctx: *Context, c: *pve.Client, list: []const vms.Vm, e: ?vms.Vm, e
 
 /// The inputs of `v`'s fence, with `routes` as the edge's route set.
 pub fn inputsFor(ctx: *Context, c: *pve.Client, lab: Lab, v: vms.Vm, routes: []const svc.Route) !Inputs {
+    return inputsWith(ctx, c, lab, v, routes, (try ctx.config()).guests.fence_allow_out);
+}
+
+/// `inputsFor` with `allow_out` as `guests.fence_allow_out` (`vm rename`
+/// derives the fences a renamed configuration will render).
+pub fn inputsWith(ctx: *Context, c: *pve.Client, lab: Lab, v: vms.Vm, routes: []const svc.Route, allow_out: []const u8) !Inputs {
     const a = ctx.arena;
     const cfg = try ctx.config();
     var services: std.ArrayList(Service) = .empty;
@@ -203,7 +209,7 @@ pub fn inputsFor(ctx: *Context, c: *pve.Client, lab: Lab, v: vms.Vm, routes: []c
             return std.mem.lessThan(u8, x.name, y.name);
         }
     }.lt);
-    const all = try config.fenceAllows(a, cfg.guests.fence_allow_out) orelse
+    const all = try config.fenceAllows(a, allow_out) orelse
         return ctx.fail(error.ConfigInvalid, "guests.fence_allow_out is malformed; see 'artoo config set guests.fence_allow_out'", .{});
     var allow: std.ArrayList(Exception) = .empty;
     const infra: exposure.Infra = .of(cfg);
