@@ -25,6 +25,9 @@ const watch = @import("watch.zig");
 const snapguard = @import("snapguard.zig");
 const template = @import("template.zig");
 const vm_new = @import("vm_new.zig");
+const tsapi = @import("../tailscale/client.zig");
+const tn = @import("../tailscale/tailnet.zig");
+const ts_cmd = @import("ts.zig");
 
 const Context = app.Context;
 const Value = std.json.Value;
@@ -771,7 +774,50 @@ const RmOp = struct {
     watch_vm: ?vms.Vm = null,
     watch_series: usize = 0,
     watch_note: ?[]const u8 = null,
+    /// The Tailscale API, when set up (SPEC §19), and the lab device of
+    /// this VM on the tailnet, or why not.
+    tsc: ?tsapi.Client = null,
+    ts_dev: ?tn.Device = null,
+    ts_note: ?[]const u8 = null,
     ledger: exec.Ledger = .{},
+
+    /// Its device on the tailnet: removed after the destroy, when it is a
+    /// lab device (SPEC §19).
+    fn readTailnet(op: *RmOp, ctx: *Context) !void {
+        const v = op.vm.?;
+        if (op.tsc == null) {
+            if (!try tsapi.configured(ctx)) return;
+            op.tsc = tsapi.Client.open(ctx, .main) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    op.ts_note = try std.fmt.allocPrint(ctx.arena, "Tailnet not checked: {s}; remove its device with 'artoo ts device rm {s}'", .{ ctx.diag orelse @errorName(err), v.name });
+                    ctx.diag = null;
+                    return;
+                },
+            };
+        }
+        const c = &op.tsc.?;
+        const list = tn.devices(c) catch |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => {
+                op.ts_note = try std.fmt.allocPrint(ctx.arena, "Tailnet not checked: {s}", .{ctx.diag orelse @errorName(err)});
+                ctx.diag = null;
+                return;
+            },
+        };
+        const own: tn.Ownership = .{
+            .artoo_vms = if (template.taggedWith(v.tags, "artoo")) try ctx.arena.dupe([]const u8, &.{v.name}) else &.{},
+            .tags = try ts_cmd.labTags(ctx),
+        };
+        op.ts_dev = null;
+        for (list) |d| if (std.ascii.eqlIgnoreCase(d.machine, v.name)) {
+            if (own.reason(d) == null) {
+                op.ts_note = try std.fmt.allocPrint(ctx.arena, "Tailnet device {s} kept: it is not a lab device (SPEC §19)", .{try k.clean(ctx, d.name)});
+                continue;
+            }
+            op.ts_dev = d;
+        };
+    }
 
     pub fn read(op: *RmOp, ctx: *Context) !void {
         const v = try vms.resolve(op.c, op.word);
@@ -796,6 +842,7 @@ const RmOp = struct {
             op.ssh_block = try vm_ssh.present(ctx) and try vm_ssh.hasBlock(ctx, v.name);
         }
         if (v.name.len > 0) try op.readWatch(ctx);
+        if (v.name.len > 0) try op.readTailnet(ctx);
     }
 
     /// Its metrics on the watchdog: forgotten after the destroy, so alerts
@@ -891,11 +938,13 @@ const RmOp = struct {
         if (op.host_key) try changes.append(a, .{ .field = "host key", .from = try std.fmt.allocPrint(a, "{s} entry {s}", .{ known_hosts.default_path, op.target }), .to = null });
         if (op.ssh_block) try changes.append(a, .{ .field = "ssh config", .from = try std.fmt.allocPrint(a, "Host {s} in {s}", .{ op.target, ssh_config.default_path }), .to = null });
         if (op.watch_vm) |w| try changes.append(a, .{ .field = "metrics", .from = try std.fmt.allocPrint(a, "{d} series with host={s} on {s}", .{ op.watch_series, op.target, w.name }), .to = null });
+        if (op.ts_dev) |d| try changes.append(a, .{ .field = "tailnet device", .from = try std.fmt.allocPrint(a, "{s} ({s})", .{ try k.clean(ctx, d.name), try k.clean(ctx, d.id) }), .to = null });
         var notes: std.ArrayList([]const u8) = .empty;
         if (op.client_note) |n| try notes.append(a, n);
         if (op.dns_note) |n| try notes.append(a, n);
         if (op.svc_note) |n| try notes.append(a, n);
         if (op.watch_note) |n| try notes.append(a, n);
+        if (op.ts_note) |n| try notes.append(a, n);
         if (op.keep_dns) try notes.append(a, "--keep-dns: DNS records are left alone.");
         try notes.append(a, "Steps run in order and stop at the first failure; nothing is undone automatically.");
         return .{
@@ -925,6 +974,7 @@ const RmOp = struct {
         const host_step = if (op.host_key) try l.add(a, "forget SSH host key") else null;
         const ssh_step = if (op.ssh_block) try l.add(a, "remove from ssh config") else null;
         const watch_step = if (op.watch_vm != null) try l.add(a, "forget in watch") else null;
+        const ts_step = if (op.ts_dev != null) try l.add(a, "remove from the tailnet") else null;
         errdefer {
             ctx.out.writeAll("\n") catch {};
             l.render(ctx.out, &ctx.ui) catch {};
@@ -988,6 +1038,18 @@ const RmOp = struct {
             };
             l.set(i, .done, try std.fmt.allocPrint(a, "{d} series on {s}", .{ n, op.watch_vm.?.name }));
         }
+        if (ts_step) |i| {
+            const d = op.ts_dev.?;
+            l.set(i, .unknown, "");
+            tn.deleteDevice(&op.tsc.?, d.id) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    l.set(i, .failed, ctx.diag orelse @errorName(err));
+                    return ctx.fail(error.Partial, "VM destroyed, but its tailnet device stays; run 'artoo ts device rm {s}'", .{v.name});
+                },
+            };
+            l.set(i, .done, try k.clean(ctx, d.name));
+        }
     }
 
     pub fn verify(op: *RmOp, ctx: *Context) !bool {
@@ -996,6 +1058,9 @@ const RmOp = struct {
             var u = try unifi.Client.open(ctx);
             defer u.deinit();
             if (classic.find(try classic.records(&u), r.mac) != null) gone = false;
+        }
+        if (op.ts_dev) |d| {
+            if (try tn.getDevice(&op.tsc.?, d.id) != null) gone = false;
         }
         try ctx.out.writeAll("\n");
         try op.ledger.render(ctx.out, &ctx.ui);
@@ -1026,6 +1091,7 @@ pub const rm = struct {
         var c = try pve.Client.open(ctx);
         defer c.deinit();
         var op: RmOp = .{ .c = &c, .word = args.pos("VM"), .keep_dns = args.has("keep-dns") };
+        defer if (op.tsc) |*t| t.deinit();
         try exec.run(ctx, &op, .{ .confirm = args.string("confirm") });
     }
 };
@@ -1732,6 +1798,55 @@ test "vm rm: stop, destroy, matching DNS record, Keychain entry, metrics on the 
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "vm rm: with the Tailscale credential its lab device leaves the tailnet after the destroy" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const out_of = struct {
+        fn f(ar: std.mem.Allocator, out: []const u8) ![]const u8 {
+            return std.json.Stringify.valueAlloc(ar, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = out, .@"err-data" = "" } }, .{});
+        }
+    }.f;
+    const pid = "{\"data\":{\"pid\":42}}";
+    const three = try out_of(a, "{\"status\":\"success\",\"data\":[{},{},{}]}");
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = "{\"meta\":{\"rc\":\"ok\"},\"data\":[]}" } },
+        .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"S1\",\"internalReference\":\"default\",\"name\":\"Default\"}]}" } },
+        .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}" } },
+        .{ .respond = .{ .body = "{\"data\":[{\"vmid\":202,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"}]}" } },
+        .{ .respond = .{ .body = pid } },
+        .{ .respond = .{ .body = try out_of(a, "{\"status\":\"success\",\"data\":[]}") } },
+        .{ .respond = .{ .body = "{\"access_token\":\"tskey-access-xyz\",\"expires_in\":3600,\"scope\":\"devices:core\"}" } },
+        .{ .respond = .{ .body = "{\"devices\":[{\"nodeId\":\"nWeb\",\"name\":\"web-01.example.ts.net\",\"tags\":[]},{\"nodeId\":\"nMe\",\"name\":\"laptop.example.ts.net\"}]}" } },
+        .{ .respond = .{ .body = upid_body } },
+        .{ .respond = .{ .body = task_ok } },
+        .{ .respond = .{ .body = upid_body } },
+        .{ .respond = .{ .body = task_ok } },
+        .{ .respond = .{ .body = "" } },
+        .{ .respond = .{ .body = "{\"data\":[]}" } },
+        .{ .respond = .{ .status = 404, .body = "{\"message\":\"not found\"}" } },
+    });
+    defer g.deinit();
+    _ = three;
+    try g.tailscaleConfig("");
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
+    try testing.expectEqualStrings("POST /oauth/token HTTP/1.1", g.request(9));
+    try testing.expectEqualStrings("DELETE /device/nWeb HTTP/1.1", g.request(15));
+    try testing.expectEqualStrings("GET /device/nWeb?fields=all HTTP/1.1", g.request(17));
+    const out = g.h.stdout();
+    for ([_][]const u8{
+        "tailnet device  web-01.example.ts.net (nWeb) → (removed)\n",
+        "✓ remove from the tailnet  done  web-01.example.ts.net",
+    }) |line| if (std.mem.find(u8, out, line) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+        return error.TestUnexpectedResult;
+    };
 }
 
 test "vm rm: a protected VM is refused before anything is stopped" {
