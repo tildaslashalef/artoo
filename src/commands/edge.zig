@@ -956,7 +956,7 @@ pub fn healthOf(ctx: *Context, c: *pve.Client, v: vms.Vm) !Health {
     try checks.append(a, .{ .name = "caddy", .status = if (pinned and st.caddy_module) .ok else .failed, .detail = try std.fmt.allocPrint(a, "{s}{s}, {s}", .{ st.caddy, if (st.caddy_module) " + cloudflare" else " (no cloudflare module)", if (st.caddy_active) "running" else "not running" }) });
     try checks.append(a, .{ .name = "certificate", .status = if (std.mem.eql(u8, cert, "nocert")) .failed else .ok, .detail = if (std.mem.eql(u8, cert, "nocert")) (if (st.dns_secret) "not issued yet" else "needs 'artoo edge secret dns'") else try k.clean(ctx, try std.mem.replaceOwned(u8, a, cert, "\n", "; ")) });
     try checks.append(a, .{ .name = "cloudflared", .status = if (st.cloudflared) .ok else .failed, .detail = if (!st.cloudflared) "not installed" else if (std.mem.eql(u8, cfd, "active")) "connected (service active)" else "installed; tunnel not configured yet" });
-    try checks.append(a, .{ .name = "tailscale removed", .status = if (st.tailscale) .failed else .ok, .detail = if (st.tailscale) "still installed" else "" });
+    try checks.append(a, .{ .name = "tailscale removed", .status = if (st.tailscale) .failed else .ok, .detail = if (st.tailscale) "still installed" else "not installed" });
     try checks.append(a, .{ .name = "failed SSH (24 h)", .status = if (ssh_fail.len == 0 or std.mem.eql(u8, ssh_fail, "0")) .ok else .warning, .detail = if (ssh_fail.len == 0) "0" else try k.clean(ctx, ssh_fail) });
     try checks.append(a, .{ .name = "reboot pending", .status = if (st.reboot) .warning else .ok, .detail = if (st.reboot) "yes — reboot when convenient" else "no" });
     return .{ .vm = v.name, .checks = checks.items };

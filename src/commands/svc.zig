@@ -500,9 +500,9 @@ pub const ls = struct {
             cs[0] = .{ .text = r.name };
             cs[1] = .{ .text = r.upstream orelse "--", .role = if (r.upstream == null) .muted else .text };
             cs[2] = if (r.problems.len == 0)
-                try k.statusCell(ctx, .running, "ok")
+                try k.statusCell(ctx, .ok, "ok")
             else
-                try k.statusCell(ctx, .unknown, try std.mem.join(a, "; ", r.problems));
+                try k.statusCell(ctx, .warning, try std.mem.join(a, "; ", r.problems));
             const h: Health = .{ .path = r.health, .down = r.health_down };
             cs[3] = if (!r.route) .{ .text = "--", .role = .muted } else .{ .text = try h.describe(a), .role = if (h.eql(.{})) .muted else .text };
             cs[4] = .{ .text = r.url };
