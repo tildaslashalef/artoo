@@ -744,7 +744,7 @@ test "status: Proxmox and UniFi sections; a failed section exits 8" {
         "Router\n  none (no VM tagged role-router)\n",
         "Tunnel\n  none (no tunnel 'lab')\n",
         "Services\n  none (no edge VM)\n",
-        "  WANs     Fiber-Main ✗ offline (active), Fiber-Backup – no port; no outages in 24h\n",
+        "  WANs     Fiber-Main ✗ offline (active), Fiber-Backup – no port; 1 outage in 24h, 1d down\n",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });

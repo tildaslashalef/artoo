@@ -625,6 +625,8 @@ pub const Outage = struct {
     /// From a `NETWORK_WAN_FAILED_TEMPORARY` event: reported after the
     /// fact, with its length.
     temporary: bool = false,
+    /// Offline now with no failure in the window: began before it.
+    before_window: bool = false,
 };
 
 pub const lead_up_ms = 10 * 60 * 1000;
