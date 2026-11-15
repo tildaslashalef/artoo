@@ -644,6 +644,22 @@ test "gw wans ls: a source missing on this firmware is named; none answering exi
         try testing.expectEqual(testkit.Exit.partial, f.h.run(&root, "gw wans ls"));
         try expectLines(f.h.stdout(), &.{"Fiber-Main    --    ? unknown"});
     }
+    {
+        // Unexpected shapes: a load status without `wan_interfaces`, odd
+        // uptime statistics. Named, never a crash.
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const health = try std.mem.replaceOwned(u8, arena.allocator(), wan.fixture_health, "\"uptime_stats\":{\"WAN\":{", "\"uptime_stats\":{\"WAN\":5,\"X\":{");
+        var f: testkit.Gateway = undefined;
+        try f.initRoutes(&.{
+            state_routes[0],                            state_routes[1],
+            ok("/wan/load-balancing/status ", "[1,2]"), state_routes[3],
+            ok("/stat/health ", health),
+        });
+        defer f.deinit();
+        try testing.expectEqual(testkit.Exit.ok, f.h.run(&root, "gw wans ls"));
+        try expectLines(f.h.stdout(), &.{"– load-balancing: not available on this firmware\n"});
+    }
 }
 
 test "gw wans show: in depth, outages of the last 24 hours, ongoing cause from the state now" {
