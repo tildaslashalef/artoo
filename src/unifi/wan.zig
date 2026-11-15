@@ -635,50 +635,78 @@ pub const Folded = struct {
 
 /// Fold events (oldest first) into outages: a failure opens one, the next
 /// restore of that group closes it.
-pub fn fold(arena: Allocator, evs: []const Event) !Folded {
+pub fn fold(arena: Allocator, input: []const Event) !Folded {
+    // Oldest first; at equal times degradation and link events come
+    // first, then a failure, then a restore (a failure and its restore
+    // sharing a millisecond still pair up).
+    const evs = try arena.dupe(Event, input);
+    std.mem.sort(Event, evs, {}, struct {
+        fn lt(_: void, a: Event, b: Event) bool {
+            if (a.timestamp != b.timestamp) return a.timestamp < b.timestamp;
+            return rank(a.kind) < rank(b.kind);
+        }
+    }.lt);
     var outages: std.ArrayList(Outage) = .empty;
     var others: std.ArrayList(Event) = .empty;
-    var used = try arena.alloc(bool, evs.len);
+    const used = try arena.alloc(bool, evs.len);
     @memset(used, false);
+
+    // Pass 1: the outages' edges.
     for (evs, 0..) |e, i| {
         const g = e.group orelse continue;
         switch (e.kind) {
             .failed => {
                 if (openFor(outages.items, g) != null) continue; // a repeat while down
                 used[i] = true;
-                try outages.append(arena, .{ .group = g, .start = e.timestamp, .ongoing = true, .lead_up = try leadUp(arena, evs, used, i, e.timestamp, g) });
+                try outages.append(arena, .{ .group = g, .start = e.timestamp, .ongoing = true });
             },
             .temporary => {
                 // Reported after the fact: down for DURATION, already back.
                 const d = e.duration_seconds orelse continue;
                 if (openFor(outages.items, g) != null) continue;
                 used[i] = true;
-                const start = e.timestamp - d * 1000;
-                try outages.append(arena, .{ .group = g, .start = start, .end = e.timestamp, .duration_seconds = d, .temporary = true, .lead_up = try leadUp(arena, evs, used, i, start, g) });
+                try outages.append(arena, .{ .group = g, .start = e.timestamp - d * 1000, .end = e.timestamp, .duration_seconds = d, .temporary = true });
             },
             .restored => {
-                used[i] = true;
                 if (openFor(outages.items, g)) |o| {
+                    used[i] = true;
                     o.end = e.timestamp;
                     o.ongoing = false;
                     o.duration_seconds = e.duration_seconds orelse @divTrunc(e.timestamp - o.start, 1000);
                 } else if (e.duration_seconds) |d| {
                     // Failed before the window: the restore says how long.
+                    used[i] = true;
                     try outages.append(arena, .{ .group = g, .start = e.timestamp - d * 1000, .end = e.timestamp, .duration_seconds = d });
-                } else used[i] = false;
-            },
-            .link_down, .link_up => if (openFor(outages.items, g)) |o| {
-                used[i] = true;
-                const d = try arena.alloc(Event, o.during.len + 1);
-                @memcpy(d[0..o.during.len], o.during);
-                d[o.during.len] = e;
-                o.during = d;
+                }
             },
             else => {},
         }
     }
-    for (evs, used) |e, u| if (!u) try others.append(arena, e);
+
+    // Pass 2: link events while the WAN was down — from the loss itself
+    // (`end − DURATION`, earlier than the failure event, which marks
+    // detection) to the end — then the lead-up before that.
     for (outages.items) |*o| {
+        const from = @min(o.start, lossStart(o.*));
+        const to = o.end orelse std.math.maxInt(i64);
+        var during: std.ArrayList(Event) = .empty;
+        for (evs, 0..) |e, i| {
+            if (used[i] or !sameGroup(e, o.group)) continue;
+            if (e.kind != .link_down and e.kind != .link_up) continue;
+            if (e.timestamp < from or e.timestamp > to) continue;
+            used[i] = true;
+            try during.append(arena, e);
+        }
+        o.during = during.items;
+        var lead: std.ArrayList(Event) = .empty;
+        for (evs, 0..) |e, i| {
+            if (used[i] or !sameGroup(e, o.group)) continue;
+            if (e.kind != .degraded and e.kind != .link_down and e.kind != .link_up) continue;
+            if (e.timestamp > o.start or from - e.timestamp > lead_up_ms) continue;
+            used[i] = true;
+            try lead.append(arena, e);
+        }
+        o.lead_up = lead.items;
         for (o.lead_up) |e| if (e.kind == .degraded) {
             o.degraded_before = true;
         };
@@ -686,26 +714,25 @@ pub fn fold(arena: Allocator, evs: []const Event) !Folded {
             o.cause = .link;
         };
     }
+    for (evs, used) |e, u| if (!u) try others.append(arena, e);
     return .{ .outages = outages.items, .others = others.items };
 }
 
-/// Degradation and link events of group `g` in the 10 minutes before
-/// `start`, among the events before index `i`; marks them used.
-fn leadUp(arena: Allocator, evs: []const Event, used: []bool, i: usize, start: i64, g: []const u8) ![]const Event {
-    var lead: std.ArrayList(Event) = .empty;
-    var j = i;
-    while (j > 0) {
-        j -= 1;
-        const p = evs[j];
-        if (p.timestamp > start) continue;
-        if (start - p.timestamp > lead_up_ms) break;
-        if (used[j] or !sameGroup(p, g)) continue;
-        if (p.kind == .degraded or p.kind == .link_down or p.kind == .link_up) {
-            used[j] = true;
-            try lead.insert(arena, 0, p);
-        }
-    }
-    return lead.items;
+fn rank(k: Kind) u8 {
+    return switch (k) {
+        .degraded, .link_down, .link_up => 0,
+        .failed => 1,
+        .other => 2,
+        .restored, .temporary => 3,
+    };
+}
+
+/// When the WAN was lost: `end − DURATION` for a closed outage, else
+/// its start.
+pub fn lossStart(o: Outage) i64 {
+    const end = o.end orelse return o.start;
+    const d = o.duration_seconds orelse return o.start;
+    return end - d * 1000;
 }
 
 fn sameGroup(e: Event, g: []const u8) bool {
@@ -892,6 +919,44 @@ test "fold: closed, back to back, ongoing, lead-up, before the window, unknown e
     try testing.expectEqual(@as(i64, 150), s[0].longest_seconds);
     try testing.expectEqual(@as(i64, 30 * 60), s[1].downtime_seconds);
     try testing.expectApproxEqAbs(@as(f64, 0.5), s[1].availability, 1e-9);
+}
+
+test "fold: link events from the loss on count as during the outage" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const s = 1000;
+    // DURATION counts from the loss (100 s), before detection (120 s).
+    const closed = try fold(a.allocator(), &.{
+        ev(100 * s, .link_down, "WAN", null),
+        ev(120 * s, .failed, "WAN", null),
+        ev(400 * s, .restored, "WAN", 300),
+    });
+    try testing.expectEqual(@as(usize, 1), closed.outages.len);
+    try testing.expectEqual(Cause.link, closed.outages[0].cause);
+    try testing.expectEqual(@as(usize, 1), closed.outages[0].during.len);
+    try testing.expectEqual(@as(usize, 0), closed.outages[0].lead_up.len);
+    try testing.expectEqual(@as(usize, 0), closed.others.len);
+    // A brief outage, reported once over: its link events are its own.
+    const brief = try fold(a.allocator(), &.{
+        ev(1000 * s, .link_down, "WAN", null),
+        ev(1015 * s, .link_up, "WAN", null),
+        ev(1020 * s, .temporary, "WAN", 30),
+    });
+    try testing.expectEqual(Cause.link, brief.outages[0].cause);
+    try testing.expectEqual(@as(usize, 2), brief.outages[0].during.len);
+    try testing.expectEqual(@as(usize, 0), brief.others.len);
+}
+
+test "fold: at equal times a failure comes before its restore" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const f = try fold(a.allocator(), &.{
+        ev(5000, .restored, "WAN", null),
+        ev(5000, .failed, "WAN", null),
+    });
+    try testing.expectEqual(@as(usize, 1), f.outages.len);
+    try testing.expect(!f.outages[0].ongoing);
+    try testing.expectEqual(@as(usize, 0), f.others.len);
 }
 
 test "judgeOngoing: every cause row" {
