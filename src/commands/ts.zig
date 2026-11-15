@@ -15,6 +15,11 @@ const vms = @import("../pve/vm.zig");
 const template = @import("template.zig");
 const ts = @import("../tailscale/client.zig");
 const tn = @import("../tailscale/tailnet.zig");
+const exec = @import("../exec.zig");
+const config = @import("../config.zig");
+const guest_names = @import("../guest/names.zig");
+const router = @import("router.zig");
+const vm_new = @import("vm_new.zig");
 
 const Context = app.Context;
 const Value = std.json.Value;
@@ -442,10 +447,311 @@ pub const policy_preview = struct {
     }
 };
 
+// ---------------------------------------------------------------- writes
+
+/// The device NAME names, refused unless it is a lab device (SPEC §19).
+fn labDevice(ctx: *Context, c: *ts.Client, word: []const u8) !struct { tn.Device, []const u8 } {
+    const d = try resolveDevice(ctx, try tn.devices(c), word);
+    const own = try ownership(ctx, true);
+    const why = own.reason(d) orelse return ctx.fail(error.Refused, "{s} is not a lab device (no tag {s}, no VM tagged artoo of that name); artoo changes lab devices only (SPEC §19)", .{ try clean(ctx, d.machine), tn.router_tag });
+    return .{ d, why };
+}
+
+fn deviceTarget(ctx: *Context, c: *const ts.Client) ![]const u8 {
+    return std.fmt.allocPrint(ctx.arena, "Tailscale (tailnet {s})", .{try clean(ctx, c.tailnet)});
+}
+
+const RenameOp = struct {
+    c: *ts.Client,
+    word: []const u8,
+    new: []const u8,
+    target: []const u8 = "",
+    risk: ui.blocks.Risk = .normal,
+    api: ui.json.Target = .tailscale,
+    dev: tn.Device = undefined,
+    state: []const u8 = "",
+
+    pub fn read(op: *RenameOp, ctx: *Context) !void {
+        const list = try tn.devices(op.c);
+        op.dev, _ = try labDevice(ctx, op.c, op.word);
+        op.target = op.dev.machine;
+        for (list) |d| if (!std.mem.eql(u8, d.id, op.dev.id) and std.ascii.eqlIgnoreCase(d.machine, op.new))
+            return ctx.fail(error.Refused, "another device is already named {s} ({s})", .{ op.new, try clean(ctx, d.id) });
+        op.state = try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ op.dev.id, op.dev.name });
+    }
+
+    pub fn plan(op: *RenameOp, ctx: *Context) !?@import("../exec.zig").Plan {
+        if (std.mem.eql(u8, op.dev.machine, op.new)) return null;
+        const a = ctx.arena;
+        return .{
+            .action = try std.fmt.allocPrint(a, "Rename tailnet device {s} to {s}", .{ try clean(ctx, op.dev.machine), op.new }),
+            .target = try deviceTarget(ctx, op.c),
+            .changes = try a.dupe(ui.blocks.Change, &.{.{ .field = "name", .from = try clean(ctx, op.dev.name), .to = op.new }}),
+            .impact = try a.dupe([]const u8, &.{try std.fmt.allocPrint(a, "MagicDNS names under {s} stop resolving at once", .{try clean(ctx, op.dev.machine)})}),
+            .recovery = try std.fmt.allocPrint(a, "artoo ts device rename {s} {s}", .{ op.new, try clean(ctx, op.dev.machine) }),
+        };
+    }
+
+    pub fn fingerprint(op: *RenameOp) []const u8 {
+        return op.state;
+    }
+
+    pub fn send(op: *RenameOp, _: *Context) !void {
+        try tn.renameDevice(op.c, op.dev.id, op.new);
+    }
+
+    pub fn verify(op: *RenameOp, _: *Context) !bool {
+        const d = (try tn.getDevice(op.c, op.dev.id)) orelse return false;
+        return std.mem.eql(u8, d.machine, op.new);
+    }
+
+    pub fn done(_: *RenameOp) []const u8 {
+        return "device renamed and verified";
+    }
+};
+
+pub const device_rename = struct {
+    pub const name = "rename";
+    pub const summary = "Rename a lab device on the tailnet (its MagicDNS name)";
+    pub const details = "Lab devices only. For a guest, 'artoo vm rename' renames everything at once (SPEC §9.18).";
+    pub const positionals = [_]cli.Positional{
+        device_arg[0],
+        .{ .name = "NEW", .help = "New machine name (one DNS label)" },
+    };
+    pub const examples = [_][]const u8{"artoo ts device rename naboo-1 naboo"};
+
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+        const new = args.pos("NEW");
+        if (!guest_names.valid(new)) return ctx.fail(error.Usage, "NEW must be one lowercase DNS label (letter first, 2-40 characters), got '{s}'", .{new});
+        var c = try ts.Client.open(ctx, .main);
+        defer c.deinit();
+        var op: RenameOp = .{ .c = &c, .word = args.pos("NAME"), .new = new };
+        try exec.run(ctx, &op, .{});
+    }
+};
+
+const RmOp = struct {
+    c: *ts.Client,
+    word: []const u8,
+    target: []const u8 = "",
+    risk: ui.blocks.Risk = .destructive,
+    api: ui.json.Target = .tailscale,
+    dev: tn.Device = undefined,
+    state: []const u8 = "",
+
+    pub fn read(op: *RmOp, ctx: *Context) !void {
+        op.dev, _ = try labDevice(ctx, op.c, op.word);
+        op.target = op.dev.machine;
+        op.state = op.dev.id;
+    }
+
+    pub fn plan(op: *RmOp, ctx: *Context) !?@import("../exec.zig").Plan {
+        const a = ctx.arena;
+        return .{
+            .action = try std.fmt.allocPrint(a, "Remove {s} from the tailnet", .{try clean(ctx, op.dev.machine)}),
+            .risk = .destructive,
+            .target = try deviceTarget(ctx, op.c),
+            .changes = try a.dupe(ui.blocks.Change, &.{.{ .field = "device", .from = try std.fmt.allocPrint(a, "{s} ({s}, {s})", .{ try clean(ctx, op.dev.name), try clean(ctx, ipv4(op.dev)), try clean(ctx, op.dev.id) }), .to = null }}),
+            .impact = try a.dupe([]const u8, &.{"The device loses tailnet access until it joins again with a new key"}),
+            .recovery = if (op.dev.hasTag(tn.router_tag)) "artoo router setup (joins it again)" else "join it again with a new auth key",
+        };
+    }
+
+    pub fn fingerprint(op: *RmOp) []const u8 {
+        return op.state;
+    }
+
+    pub fn send(op: *RmOp, _: *Context) !void {
+        try tn.deleteDevice(op.c, op.dev.id);
+    }
+
+    pub fn verify(op: *RmOp, _: *Context) !bool {
+        return (try tn.getDevice(op.c, op.dev.id)) == null;
+    }
+
+    pub fn done(_: *RmOp) []const u8 {
+        return "device removed and verified (Tailscale answers 404)";
+    }
+};
+
+pub const device_rm = struct {
+    pub const name = "rm";
+    pub const summary = "Remove a lab device from the tailnet (destructive)";
+    pub const details =
+        \\Lab devices only. Interactive: type the machine name to confirm.
+        \\Non-interactive: --yes --confirm NAME.
+    ;
+    pub const positionals = device_arg;
+    pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "NAME", .help = "Non-interactive confirmation (with --yes)" }};
+    pub const examples = [_][]const u8{ "artoo ts device rm naboo", "artoo ts device rm naboo --yes --confirm naboo" };
+
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+        var c = try ts.Client.open(ctx, .main);
+        defer c.deinit();
+        var op: RmOp = .{ .c = &c, .word = args.pos("NAME") };
+        try exec.run(ctx, &op, .{ .confirm = args.string("confirm") });
+    }
+};
+
+/// Approve exactly the LAN on a lab device that advertises it (SPEC §19):
+/// never an exit node, never another subnet.
+pub const ApproveOp = struct {
+    c: *ts.Client,
+    word: []const u8,
+    lan: []const u8,
+    target: []const u8 = "",
+    risk: ui.blocks.Risk = .normal,
+    api: ui.json.Target = .tailscale,
+    dev: tn.Device = undefined,
+    current: tn.Routes = .{ .advertised = &.{}, .enabled = &.{} },
+    state: []const u8 = "",
+
+    pub fn read(op: *ApproveOp, ctx: *Context) !void {
+        op.dev, _ = try labDevice(ctx, op.c, op.word);
+        op.target = op.dev.machine;
+        op.current = try tn.routes(op.c, op.dev.id);
+        if (!tn.contains(op.current.advertised, op.lan))
+            return ctx.fail(error.Refused, "{s} does not advertise {s} (it advertises {s}); 'artoo router setup' advertises the LAN", .{ try clean(ctx, op.dev.machine), op.lan, try joinClean(ctx, op.current.advertised) });
+        op.state = try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ try std.mem.join(ctx.arena, ",", op.current.advertised), try std.mem.join(ctx.arena, ",", op.current.enabled) });
+    }
+
+    pub fn plan(op: *ApproveOp, ctx: *Context) !?@import("../exec.zig").Plan {
+        if (tn.sameSet(op.current.enabled, &.{op.lan})) return null;
+        const a = ctx.arena;
+        var notes: std.ArrayList([]const u8) = .empty;
+        for (op.current.enabled) |r| if (!std.mem.eql(u8, r, op.lan)) try notes.append(a, try std.fmt.allocPrint(a, "{s} was approved and is withdrawn: artoo approves the LAN only", .{try clean(ctx, r)}));
+        return .{
+            .action = try std.fmt.allocPrint(a, "Approve {s} on {s}", .{ op.lan, try clean(ctx, op.dev.machine) }),
+            .target = try deviceTarget(ctx, op.c),
+            .changes = try a.dupe(ui.blocks.Change, &.{.{ .field = "approved routes", .from = try joinClean(ctx, op.current.enabled), .to = op.lan }}),
+            .impact = try a.dupe([]const u8, &.{try std.fmt.allocPrint(a, "Tailnet devices reach {s} through {s}, as the policy allows", .{ op.lan, try clean(ctx, op.dev.machine) })}),
+            .recovery = "approve or withdraw routes in the Tailscale console",
+            .notes = notes.items,
+        };
+    }
+
+    pub fn fingerprint(op: *ApproveOp) []const u8 {
+        return op.state;
+    }
+
+    pub fn send(op: *ApproveOp, _: *Context) !void {
+        try tn.setRoutes(op.c, op.dev.id, &.{op.lan});
+    }
+
+    pub fn verify(op: *ApproveOp, _: *Context) !bool {
+        const r = try tn.routes(op.c, op.dev.id);
+        return tn.sameSet(r.enabled, &.{op.lan});
+    }
+
+    pub fn done(_: *ApproveOp) []const u8 {
+        return "route approved and verified";
+    }
+};
+
+pub const routes_approve = struct {
+    pub const name = "approve";
+    pub const summary = "Approve the LAN route a lab router advertises (only the LAN)";
+    pub const details = "Reads what the device advertises; refused when it does not advertise the LAN of guests.gateway. Exactly that route is approved — never an exit node or another subnet.";
+    pub const positionals = [_]cli.Positional{.{ .name = "ROUTER", .help = "The router's machine name or node ID" }};
+    pub const examples = [_][]const u8{"artoo ts routes approve dagobah"};
+
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+        const lan = try router.lan(ctx);
+        var c = try ts.Client.open(ctx, .main);
+        defer c.deinit();
+        var op: ApproveOp = .{ .c = &c, .word = args.pos("ROUTER"), .lan = lan };
+        try exec.run(ctx, &op, .{});
+    }
+};
+
+/// The gateway's address (`guests.gateway`), the only split-DNS server.
+pub fn gatewayAddress(ctx: *Context) ![]const u8 {
+    const cfg = try ctx.config();
+    const gw = config.parseCidr(cfg.guests.gateway) orelse return ctx.fail(error.ConfigInvalid, "guests.gateway is not A/N", .{});
+    return vm_new.ip4Text(ctx.arena, gw.address);
+}
+
+const SplitOp = struct {
+    c: *ts.Client,
+    domain: []const u8,
+    servers: []const []const u8,
+    target: []const u8,
+    risk: ui.blocks.Risk = .normal,
+    api: ui.json.Target = .tailscale,
+    current: []const []const u8 = &.{},
+    state: []const u8 = "",
+
+    pub fn read(op: *SplitOp, ctx: *Context) !void {
+        op.current = &.{};
+        for (try tn.splitDns(op.c)) |s| if (std.ascii.eqlIgnoreCase(s.domain, op.domain)) {
+            op.current = s.nameservers;
+        };
+        op.state = try std.mem.join(ctx.arena, ",", op.current);
+    }
+
+    pub fn plan(op: *SplitOp, ctx: *Context) !?@import("../exec.zig").Plan {
+        if (tn.sameSet(op.current, op.servers)) return null;
+        const a = ctx.arena;
+        return .{
+            .action = try std.fmt.allocPrint(a, "Set split DNS for {s}", .{op.domain}),
+            .target = try deviceTarget(ctx, op.c),
+            .changes = try a.dupe(ui.blocks.Change, &.{.{ .field = op.domain, .from = if (op.current.len > 0) try joinClean(ctx, op.current) else null, .to = try std.mem.join(a, ", ", op.servers) }}),
+            .impact = try a.dupe([]const u8, &.{try std.fmt.allocPrint(a, "Tailnet devices resolve *.{s} through {s}", .{ op.domain, try std.mem.join(a, ", ", op.servers) })}),
+            .recovery = if (op.current.len > 0) try std.fmt.allocPrint(a, "artoo ts dns split set {s} {s}", .{ op.domain, try std.mem.join(a, " ", op.current) }) else "remove the domain in the Tailscale console (DNS)",
+            .notes = try a.dupe([]const u8, &.{"Only this domain is sent; the other split-DNS domains stay as they are."}),
+        };
+    }
+
+    pub fn fingerprint(op: *SplitOp) []const u8 {
+        return op.state;
+    }
+
+    pub fn send(op: *SplitOp, _: *Context) !void {
+        try tn.patchSplit(op.c, op.domain, op.servers);
+    }
+
+    pub fn verify(op: *SplitOp, _: *Context) !bool {
+        for (try tn.splitDns(op.c)) |s| if (std.ascii.eqlIgnoreCase(s.domain, op.domain)) return tn.sameSet(s.nameservers, op.servers);
+        return false;
+    }
+
+    pub fn done(_: *SplitOp) []const u8 {
+        return "split DNS set and verified";
+    }
+};
+
+pub const dns_split_set = struct {
+    pub const name = "set";
+    pub const summary = "Point a lab domain (guests.domain or home.arpa) at the gateway on the tailnet";
+    pub const details = "Split DNS for guests.domain and home.arpa only, and only to the gateway (guests.gateway's address); other domains are untouched (SPEC §19).";
+    pub const positionals = [_]cli.Positional{
+        .{ .name = "DOMAIN", .help = "guests.domain or home.arpa" },
+        .{ .name = "NAMESERVER", .help = "The gateway's address", .variadic = true },
+    };
+    pub const examples = [_][]const u8{ "artoo ts dns split set lab.example.com 192.168.1.1", "artoo ts dns split set home.arpa 192.168.1.1" };
+
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+        const cfg = try ctx.config();
+        const domain = std.mem.trimEnd(u8, args.pos("DOMAIN"), ".");
+        if (!std.ascii.eqlIgnoreCase(domain, cfg.guests.domain) and !std.ascii.eqlIgnoreCase(domain, "home.arpa"))
+            return ctx.fail(error.Refused, "artoo sets split DNS only for {s} and home.arpa, not '{s}' (SPEC §19)", .{ cfg.guests.domain, domain });
+        const gw = try gatewayAddress(ctx);
+        const servers = args.rest("NAMESERVER");
+        if (servers.len == 0) return ctx.fail(error.Usage, "name the nameserver: {s}", .{gw});
+        for (servers) |s| if (!std.mem.eql(u8, s, gw))
+            return ctx.fail(error.Refused, "split DNS for the lab points at the gateway {s} only, not '{s}' (SPEC §19)", .{ gw, s });
+        var c = try ts.Client.open(ctx, .main);
+        defer c.deinit();
+        var op: SplitOp = .{ .c = &c, .domain = try std.ascii.allocLowerString(ctx.arena, domain), .servers = &.{gw}, .target = domain };
+        try exec.run(ctx, &op, .{});
+    }
+};
+
 pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, split DNS and keys on the tailnet (SPEC §19)", &.{
     cli.group("devices", "Devices on the tailnet", &.{cli.leaf(devices_ls)}),
-    cli.group("device", "One device", &.{cli.leaf(device_show)}),
-    cli.group("dns", "Tailnet DNS", &.{cli.leaf(dns_show)}),
+    cli.group("device", "One device", &.{ cli.leaf(device_show), cli.leaf(device_rename), cli.leaf(device_rm) }),
+    cli.group("routes", "Subnet routes", &.{cli.leaf(routes_approve)}),
+    cli.group("dns", "Tailnet DNS", &.{ cli.leaf(dns_show), cli.group("split", "Split DNS for the lab's domains", &.{cli.leaf(dns_split_set)}) }),
     cli.group("keys", "Auth key metadata", &.{cli.leaf(keys_ls)}),
     cli.group("policy", "The tailnet policy (read-only)", &.{ cli.leaf(policy_show), cli.leaf(policy_validate), cli.leaf(policy_preview) }),
 });
@@ -605,4 +911,101 @@ test "ts policy show, validate and preview: read-only calls with HuJSON" {
         try testing.expect(std.mem.endsWith(u8, q, policy));
     };
     try testing.expectEqual(Exit.usage, f.h.run(&root, "ts policy preview nobody"));
+}
+
+test "ts device rename: lab devices only, POST name, verified by a fresh read" {
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("POST /device/nNaboo/name", "{}"),
+        route("GET /device/nNaboo?fields=all", "{\"nodeId\":\"nNaboo\",\"name\":\"hoth.example.ts.net\"}"),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    // The operator's phone is never renamed.
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts device rename phone hoth -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "not a lab device") != null);
+    try testing.expectEqual(Exit.usage, f.h.run(&root, "ts device rename naboo Hoth_1 -y"));
+    try testing.expectEqual(Exit.ok, f.h.run(&root, "ts device rename naboo hoth -y"));
+    try expectHas(f.h.stdout(), &.{ "Plan · Rename tailnet device naboo to hoth", "name  naboo.example.ts.net → hoth", "✓ device renamed and verified" });
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /device/nNaboo/name")) try testing.expect(std.mem.endsWith(u8, q, "{\"name\":\"hoth\"}"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+}
+
+test "ts device rm: typed confirmation; DELETE verified by 404; never the operator's devices" {
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("DELETE /device/nNaboo", ""),
+        .{ .match = "GET /device/nNaboo", .behavior = .{ .respond = .{ .status = 404, .body = "{\"message\":\"device not found\"}" } } },
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts device rm phone -y --confirm phone"));
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts device rm naboo -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "--confirm naboo") != null);
+    try testing.expectEqual(Exit.ok, f.h.run(&root, "ts device rm naboo -y --confirm naboo"));
+    try testing.expect(std.mem.endsWith(u8, f.h.stdout(), "✓ device removed and verified (Tailscale answers 404)\n"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+}
+
+test "ts routes approve: exactly the LAN; refused when not advertised" {
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("GET /device/nRouter/routes", "{\"advertisedRoutes\":[\"10.0.0.0/8\",\"0.0.0.0/0\"],\"enabledRoutes\":[]}"),
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("GET /device/nRouter/routes", "{\"advertisedRoutes\":[\"192.168.1.0/24\",\"0.0.0.0/0\"],\"enabledRoutes\":[\"0.0.0.0/0\"]}"),
+        route("POST /device/nRouter/routes", "{\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[\"192.168.1.0/24\"]}"),
+        route("GET /device/nRouter/routes", "{\"advertisedRoutes\":[\"192.168.1.0/24\",\"0.0.0.0/0\"],\"enabledRoutes\":[\"192.168.1.0/24\"]}"),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts routes approve dagobah -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "does not advertise 192.168.1.0/24") != null);
+    try testing.expectEqual(Exit.ok, f.h.run(&root, "ts routes approve dagobah -y"));
+    try expectHas(f.h.stdout(), &.{ "approved routes  0.0.0.0/0 → 192.168.1.0/24", "0.0.0.0/0 was approved and is withdrawn", "✓ route approved and verified" });
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /device/nRouter/routes")) try testing.expect(std.mem.endsWith(u8, q, "{\"routes\":[\"192.168.1.0/24\"]}"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+}
+
+test "ts dns split set: lab domains to the gateway only; PATCH with that domain alone" {
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/dns/split-dns", "{\"corp.example.net\":[\"10.0.0.53\"]}"),
+        route("PATCH /tailnet/-/dns/split-dns", "{\"corp.example.net\":[\"10.0.0.53\"],\"lab.example.com\":[\"192.168.1.1\"]}"),
+        route("GET /tailnet/-/dns/split-dns", "{\"corp.example.net\":[\"10.0.0.53\"],\"lab.example.com\":[\"192.168.1.1\"]}"),
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/dns/split-dns", "{\"lab.example.com\":[\"192.168.1.1\"]}"),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts dns split set example.org 192.168.1.1 -y"));
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts dns split set home.arpa 1.1.1.1 -y"));
+    try testing.expectEqual(@as(usize, 0), f.sent());
+    try testing.expectEqual(Exit.ok, f.h.run(&root, "ts dns split set lab.example.com 192.168.1.1 -y"));
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "PATCH")) try testing.expect(std.mem.endsWith(u8, q, "{\"lab.example.com\":[\"192.168.1.1\"]}"));
+    // Already so: a no-op, refused (exit 5).
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts dns split set lab.example.com 192.168.1.1 -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "nothing to change") != null);
 }

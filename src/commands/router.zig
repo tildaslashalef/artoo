@@ -54,7 +54,7 @@ fn routerVm(ctx: *Context, c: *pve.Client) !vms.Vm {
 }
 
 /// The LAN the router advertises: the network of `guests.gateway`.
-fn lan(ctx: *Context) ![]const u8 {
+pub fn lan(ctx: *Context) ![]const u8 {
     const cfg = try ctx.config();
     const gw = config.parseCidr(cfg.guests.gateway) orelse return ctx.fail(error.ConfigInvalid, "guests.gateway is not A/N", .{});
     const mask: u32 = ~@as(u32, 0) << @intCast(32 - @as(u32, gw.prefix));
