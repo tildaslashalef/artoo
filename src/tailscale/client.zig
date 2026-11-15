@@ -177,9 +177,12 @@ pub const Client = struct {
 
     /// The tailnet as shown to the operator: the configured name, else
     /// the name a device list showed, else "default" (the client's own).
-    pub fn shownName(c: *const Client) []const u8 {
+    /// The tailnet's name: the configured one, else the MagicDNS name
+    /// learned from the device list (`tailnet.learnName`); null when
+    /// neither is known.
+    pub fn shownName(c: *const Client) ?[]const u8 {
         if (!std.mem.eql(u8, c.tailnet, "-")) return c.tailnet;
-        return c.seen_name orelse "default";
+        return c.seen_name;
     }
 
     /// `/tailnet/<tailnet><rest>`.
