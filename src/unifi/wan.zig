@@ -142,10 +142,25 @@ pub const syslog_path = "system-log/all";
 pub fn read(c: *unifi.Client, problems: *std.ArrayList(Problem), want: struct { health: bool = true }) !Raw {
     const wans = (try unifi.list(c, comptime catalog.find("wans").?, .{ .all = true })).items;
     var r: Raw = .{ .wans = wans };
-    r.load = try attempt(c, problems, "load-balancing", c.v2(.GET, load_path, null));
-    r.devices = try attempt(c, problems, "device", c.classic(.GET, device_path, null));
+    r.load = try attempt(c, problems, "load-balancing", loadStatus(c));
+    r.devices = try attempt(c, problems, "device", deviceList(c));
     if (want.health) r.health = try attempt(c, problems, "health", c.classic(.GET, health_path, null));
     return r;
+}
+
+/// The load-balancing status, refused unless it has `wan_interfaces[]`.
+fn loadStatus(c: *unifi.Client) !Value {
+    const v = try c.v2(.GET, load_path, null);
+    const arr = view.lookup(v, "wan_interfaces");
+    if (arr == null or arr.? != .array) return c.ctx.fail(error.Protocol, "unexpected load-balancing status", .{});
+    return v;
+}
+
+/// The device list, refused unless it has the gateway (a device with `wan1`).
+fn deviceList(c: *unifi.Client) ![]Value {
+    const ds = try c.classic(.GET, device_path, null);
+    if (gatewayDevice(ds) == null) return c.ctx.fail(error.Protocol, "no gateway in stat/device", .{});
+    return ds;
 }
 
 /// Unwrap a source; failures (except OOM and cancellation) become a
@@ -274,12 +289,12 @@ fn fill(arena: Allocator, w: *Wan, group: []const u8, idx: u32, gw: ?Value, hs: 
     // Uptime statistics: the gateway's per group, else the health subsystem's.
     const us_path = try std.fmt.allocPrint(arena, "uptime_stats.{s}", .{group});
     const us = (if (gw) |d| view.lookup(d, us_path) else null) orelse (if (hs) |s| view.lookup(s, us_path) else null);
-    if (us) |u| {
+    if (us) |u| if (u == .object) {
         w.availability = if (num(u, "availability")) |x| x / 100 else null;
         w.latency_ms = num(u, "latency_average");
         w.time_period = int(u, "time_period");
         w.monitors = try monitors(arena, u);
-    }
+    };
     if (gw) |d| w.last_downtime_seconds = int(d, try std.fmt.allocPrint(arena, "last_downtime_stats.{s}", .{group}));
 
     // Status: the gateway's per-WAN word, then the link, then health.
@@ -359,6 +374,7 @@ fn nextHop(addr: []const u8, port_obj: ?Value) NextHop {
 
 fn monitors(arena: Allocator, u: Value) ![]const Monitor {
     var out: std.ArrayList(Monitor) = .empty;
+    if (u != .object) return out.items;
     // Alerting monitors carry `health`; the others only figures.
     for ([_][]const u8{ "alerting_monitors", "monitors" }) |key| {
         const arr = u.object.get(key) orelse continue;
@@ -866,6 +882,23 @@ test "judgeOngoing: every cause row" {
     var past: Outage = .{ .group = "WAN", .start = 0, .end = 1 };
     judgeOngoing(&past, &cases[1].w);
     try testing.expectEqual(Cause.unknown, past.cause);
+}
+
+test "build: unexpected shapes are skipped, never trusted" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const ar = a.allocator();
+    const devs = try std.json.parseFromSliceLeaky(Value, ar,
+        \\[{"name":"gw","wan1":{"up":true,"mac_table":5},"ethernet_overrides":[5,"x"],"uptime_stats":{"WAN":5},"port_table":7,"last_wan_interfaces":3}]
+    , .{});
+    const health = try std.json.parseFromSliceLeaky(Value, ar,
+        \\[{"subsystem":"wan","gateways":[5],"uptime_stats":{"WAN":[1]}},7]
+    , .{});
+    const wans = try std.json.parseFromSliceLeaky(Value, ar, "[{\"id\":\"w1\",\"name\":\"Main\"},3]", .{});
+    const load = try std.json.parseFromSliceLeaky(Value, ar, "{\"wan_interfaces\":[{\"name\":\"Main\",\"state\":\"ACTIVE\",\"wan_networkgroup\":\"WAN\"},4]}", .{});
+    const ws = try build(ar, .{ .wans = wans.array.items, .devices = devs.array.items, .health = health.array.items, .load = load });
+    try testing.expectEqual(@as(usize, 2), ws.len);
+    try testing.expectEqual(@as(usize, 0), ws[0].monitors.len);
 }
 
 test "build: matched by name and group; port assignment; shared mark" {
