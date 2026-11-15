@@ -1974,23 +1974,31 @@ every running artoo guest in one plan, one confirmation:
 - **Read:** per guest as above. A guest that is stopped, whose agent
   does not answer or whose `apt-get -s` fails is named in the plan as
   skipped with the reason; one with nothing pending as up to date.
-  Nothing pending anywhere is a no-op (exit 5).
+  Nothing pending anywhere is a no-op (exit 5) whose message names the
+  up-to-date and every skipped guest — never the generic "already has
+  the requested state", which would hide a guest that could not be read.
 - **Plan:** one change row per package, the guest named on its first
   row; the action counts packages, guests and security updates; notes
   give the oldest lists' age, the deferred and kept-back totals, the
   up-to-date guests and every skipped guest with its reason.
   `--snapshot` is refused with `--all` (usage): a way back is a
-  per-guest decision, made with a single-guest run. The fingerprint is
+  per-guest decision, made with a single-guest run. So is `--no-wait`:
+  it would start every guest's apt at once, not the confirmed one after
+  another, and could not report a failed start. The fingerprint is
   every guest's planned set and lists' stamp.
 - **Send:** one ledger step per guest (`upgrade NAME`), one guest after
   another — never in parallel, so the host is not loaded with every
   guest's apt at once and the output stays readable. A guest whose apt
   fails (failed step) or whose wait ends without an answer (unknown
-  step, apt may still run) does not stop the next. Never a retry,
+  step, apt may still run) does not stop the next; an exec Proxmox
+  accepted without a pid is unknown too. Never a retry,
   never a reboot.
 - **Verify:** a fresh simulation per upgraded guest, as above; a planned
   package still pending fails that guest's step. The result names the
-  guests that want a reboot. Any unknown step → exit 7; else any failed
+  guests that want a reboot; a reboot check that does not answer says
+  "reboot state unknown" for that guest, never "no reboot needed".
+  The live progress has ended by then: steps changed while verifying
+  are shown in the ledger printed after it. Any unknown step → exit 7; else any failed
   step → exit 8, naming how many of the guests were not upgraded.
 
 ### 9.13 Pending configuration

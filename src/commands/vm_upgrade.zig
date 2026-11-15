@@ -199,6 +199,8 @@ const Guest = struct {
     /// Planned packages a fresh simulation still shows (`verify`).
     left: []const []const u8 = &.{},
     reboot: bool = false,
+    /// The reboot check itself failed: neither "pending" nor "not needed".
+    reboot_unknown: bool = false,
 };
 
 const UpgradeAllOp = struct {
@@ -263,7 +265,12 @@ const UpgradeAllOp = struct {
 
     pub fn plan(op: *UpgradeAllOp, ctx: *Context) !?exec.Plan {
         const a = ctx.arena;
-        if (op.todo.len == 0) return null;
+        if (op.todo.len == 0) {
+            // Not exec's generic no-op line: it would hide the skipped guests.
+            const up = if (op.current.len > 0) try std.fmt.allocPrint(a, "up to date: {s}", .{try std.mem.join(a, ", ", op.current)}) else "no guest was read";
+            if (op.skipped.len == 0) return ctx.fail(error.NoChange, "nothing to upgrade ({s})", .{up});
+            return ctx.fail(error.NoChange, "nothing to upgrade ({s}); skipped: {s}", .{ up, try std.mem.join(a, "; ", op.skipped) });
+        }
         var name_w: usize = 0;
         for (op.todo) |g| name_w = @max(name_w, ui.text.width(g.name));
         var changes: std.ArrayList(ui.blocks.Change) = .empty;
@@ -325,17 +332,17 @@ const UpgradeAllOp = struct {
             const pid = agent.start(op.c, vmid, argv, null) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
                 else => {
-                    l.set(g.step, if (err == error.OutcomeUnknown) .unknown else .failed, try k.clean(ctx, ctx.diag orelse @errorName(err)));
+                    // A 2xx without a pid may still have started apt.
+                    l.set(g.step, if (err == error.OutcomeUnknown or err == error.Protocol) .unknown else .failed, try k.clean(ctx, ctx.diag orelse @errorName(err)));
                     ctx.diag = null;
                     continue;
                 },
             };
-            if (ctx.globals.no_wait) {
-                l.set(g.step, .unknown, try std.fmt.allocPrint(a, "started (pid {d})", .{pid}));
-                continue;
-            }
             const r = agent.wait(op.c, vmid, pid, "apt-get upgrade", deadline_ms, .{ .file = apt.stage_file, .note = l.noter(g.step) }) catch |err| switch (err) {
-                error.OutOfMemory, error.Canceled => |e| return e,
+                error.OutOfMemory, error.Canceled => |e| {
+                    l.set(g.step, .unknown, try std.fmt.allocPrint(a, "started (pid {d}); apt may still be running, log {s}", .{ pid, log_file }));
+                    return e;
+                },
                 else => {
                     const why = ctx.diag orelse @errorName(err);
                     ctx.diag = null;
@@ -355,6 +362,11 @@ const UpgradeAllOp = struct {
     pub fn verify(op: *UpgradeAllOp, ctx: *Context) !bool {
         const a = ctx.arena;
         const l = &op.ledger;
+        // The live display has ended: steps changed from here on must not
+        // restart it, and the ledger is printed again when one changes.
+        const live = l.progress;
+        l.progress = null;
+        var changed = false;
         for (op.todo) |*g| {
             if (!g.upgraded) continue;
             const now = simulate(ctx, op.c, g.vm.vmid, g.name) catch |err| switch (err) {
@@ -363,6 +375,7 @@ const UpgradeAllOp = struct {
                     const why = ctx.diag orelse @errorName(err);
                     ctx.diag = null;
                     g.upgraded = false;
+                    changed = true;
                     l.set(g.step, .unknown, try std.fmt.allocPrint(a, "upgraded, not verified: {s}", .{why}));
                     continue;
                 },
@@ -371,22 +384,34 @@ const UpgradeAllOp = struct {
             for (g.pending.packages) |pk| if (now.has(pk)) try left.append(a, try k.clean(ctx, pk.name));
             if (left.items.len > 0) {
                 g.left = left.items;
+                changed = true;
                 l.set(g.step, .failed, try std.fmt.allocPrint(a, "{f} still pending: {s} (log {s})", .{ ui.values.count(left.items.len, "planned package"), try std.mem.join(a, ", ", left.items), log_file }));
                 continue;
             }
             const r = agent.sh(op.c, g.vm.vmid, vm_new.scripts.reboot, 60_000) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
-                else => {
+                else => blk: {
                     ctx.diag = null;
-                    continue;
+                    break :blk null;
                 },
             };
-            var lines = std.mem.tokenizeAny(u8, r.out, "\r\n");
+            if (r == null or !r.?.ok()) {
+                g.reboot_unknown = true;
+                changed = true;
+                l.set(g.step, .done, try std.fmt.allocPrint(a, "{s}; reboot state unknown ('artoo vm verify {s}')", .{ l.steps.items[g.step].detail, g.name }));
+                continue;
+            }
+            var lines = std.mem.tokenizeAny(u8, r.?.out, "\r\n");
             g.reboot = std.mem.eql(u8, lines.next() orelse "no", "yes");
-            if (g.reboot) l.set(g.step, .done, try std.fmt.allocPrint(a, "{s}; reboot pending", .{l.steps.items[g.step].detail}));
+            if (g.reboot) {
+                changed = true;
+                l.set(g.step, .done, try std.fmt.allocPrint(a, "{s}; reboot pending", .{l.steps.items[g.step].detail}));
+            }
         }
-        try ctx.out.writeAll("\n");
-        try l.render(ctx.out, &ctx.ui);
+        if (live == null or !live.?.replaces or changed) {
+            try ctx.out.writeAll("\n");
+            try l.render(ctx.out, &ctx.ui);
+        }
         var unknown: usize = 0;
         var failed: usize = 0;
         for (l.steps.items) |st| switch (st.state) {
@@ -404,11 +429,18 @@ const UpgradeAllOp = struct {
     pub fn done(op: *UpgradeAllOp) []const u8 {
         const a = op.c.ctx.arena;
         var want: std.ArrayList([]const u8) = .empty;
-        for (op.todo) |g| if (g.reboot) want.append(a, g.name) catch {};
-        const rest = if (want.items.len > 0)
+        var unsure: std.ArrayList([]const u8) = .empty;
+        for (op.todo) |g| {
+            if (g.reboot) want.append(a, g.name) catch {};
+            if (g.reboot_unknown) unsure.append(a, g.name) catch {};
+        }
+        const pending = if (want.items.len > 0)
             std.fmt.allocPrint(a, "; reboot pending on {s} — 'artoo vm reboot VM' when convenient", .{std.mem.join(a, ", ", want.items) catch ""}) catch "; reboot pending"
+        else if (unsure.items.len == 0) "; no reboot needed" else "";
+        const rest = if (unsure.items.len > 0)
+            std.fmt.allocPrint(a, "{s}; reboot state unknown on {s}", .{ pending, std.mem.join(a, ", ", unsure.items) catch "" }) catch pending
         else
-            "; no reboot needed";
+            pending;
         return std.fmt.allocPrint(a, "{f} upgraded on {f}{s}", .{ ui.values.count(op.packages(), "package"), ui.values.count(op.todo.len, "guest"), rest }) catch "upgraded";
     }
 };
@@ -470,6 +502,7 @@ pub const upgrade = struct {
         if (args.has("all")) {
             if (args.optPos("VM") != null) return ctx.fail(error.Usage, "give a VM or --all, not both", .{});
             if (args.has("snapshot")) return ctx.fail(error.Usage, "--snapshot goes with one VM: upgrade a guest on its own for a way back", .{});
+            if (ctx.globals.no_wait) return ctx.fail(error.Usage, "--no-wait goes with one VM: --all upgrades one guest after another and waits for each", .{});
             var c = try pve.Client.open(ctx);
             defer c.deinit();
             var op: UpgradeAllOp = .{ .c = &c };
@@ -734,9 +767,54 @@ test "vm upgrade --all: nothing pending is a no-op; usage" {
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
     try testing.expectEqual(Exit.refused, g.h.run(&root, "vm upgrade --all -y"));
-    try testing.expectEqualStrings("artoo: nothing to change: every guest already has the requested state\n", g.h.stderr());
+    // The skipped guests are named, not hidden behind a generic no-op line.
+    try testing.expectEqualStrings("artoo: nothing to upgrade (up to date: hoth, naboo, tatooine); skipped: bespin (role edge: 'artoo vm upgrade bespin'); dagobah (role router: 'artoo vm upgrade dagobah'); scarif (role watch: 'artoo vm upgrade scarif'); endor (stopped)\n", g.h.stderr());
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm upgrade naboo --all"));
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm upgrade --all --snapshot"));
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm upgrade --all -y --no-wait"));
+    try expectAll(g.h.stderr(), &.{"artoo: --no-wait goes with one VM: --all upgrades one guest after another and waits for each\n"});
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm upgrade"));
+}
+
+test "vm upgrade --all: a failing apt-get -s is a named skip; no pid is unknown (exit 7); a package left fails its guest; an unanswered reboot check claims nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const one = try execStatus(a, 0, "lists 1000\nnow 1100\nInst tmux [1] (2 Ubuntu:26.04/resolute-updates [amd64])\n", "");
+    const broken = try execStatus(a, 100, "", "E: dpkg was interrupted, you must manually run 'dpkg --configure -a'\n");
+    const read = [_]B{
+        ans(all_list),
+        ans(ping_body), ans(pid_body), ans(broken), // hoth: simulation fails → skipped
+        ans(ping_body), ans(pid_body), ans(one), // naboo
+        ans(ping_body), ans(pid_body), ans(one), // tatooine
+    };
+    var g: testkit.Gateway = undefined;
+    try g.init(&(read ++ [_]B{
+        ans("{\"data\":{}}"), // naboo: accepted, no pid
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), // tatooine upgraded
+        ans(pid_body), ans(one), // tmux still pending
+    } ++ read ++ [_]B{
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), // naboo upgraded
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), // tatooine upgraded
+        ans(pid_body), ans(try execStatus(a, 0, "lists 1000\nnow 1200\n", "")), // naboo verified
+        ans(pid_body), ans(try execStatus(a, 1, "", "")), // its reboot check fails
+        ans(pid_body), ans(try execStatus(a, 0, "lists 1000\nnow 1200\n", "")), // tatooine verified
+        ans(pid_body), ans(try execStatus(a, 0, "no\n", "")),
+    }));
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.unknown, g.h.run(&root, "vm upgrade --all -y"));
+    try expectAll(g.h.stdout(), &.{
+        "Skipped: hoth (apt-get -s failed on hoth (exit 100): E: dpkg was interrupted, you must manually run 'dpkg --configure -a').",
+        "? upgrade naboo     unknown  the guest agent of VM 205 returned no pid\n",
+        "✗ upgrade tatooine  failed  1 planned package still pending: tmux (log /var/log/artoo-upgrade.log)\n",
+    });
+    try expectAll(g.h.stderr(), &.{"artoo: the outcome on 1 guest is unknown and 1 failed; 'artoo vm verify --all' shows what is pending\n"});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm upgrade --all -y"));
+    try expectAll(g.h.stdout(), &.{
+        "✓ upgrade naboo     done  1 package; reboot state unknown ('artoo vm verify naboo')\n",
+        "✓ 2 packages upgraded on 2 guests; reboot state unknown on naboo\n",
+    });
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
