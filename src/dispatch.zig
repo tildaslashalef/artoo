@@ -103,6 +103,7 @@ fn dispatchInner(p: Process, root: *const cli.Command, words: []const []const u8
             try cli.help.write(p.out, h.path, .{
                 .title_on = out_ui.palette.on(.title),
                 .title_off = out_ui.palette.off(.title),
+                .width = out_ui.width,
             });
             return .ok;
         },
