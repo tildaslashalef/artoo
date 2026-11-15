@@ -39,7 +39,7 @@ pub fn exitFor(err: anyerror) Exit {
         // A named target that does not exist is the caller's mistake, not the network's.
         error.Usage, error.ConfigInvalid, error.ConfigMissing, error.ConfigExists, error.UnsafePath, error.NotFound => .usage,
         error.SecretMissing, error.SecretStoreUnavailable, error.AuthFailed, error.PermissionDenied => .auth,
-        error.Network, error.Tls, error.Protocol, error.Timeout, error.HttpStatus => .network,
+        error.Network, error.Tls, error.Protocol, error.Timeout, error.HttpStatus, error.RateLimited => .network,
         error.Refused, error.Declined, error.NonInteractive, error.TargetMismatch, error.NoChange, error.Changed => .refused,
         error.TaskFailed => .task_failed,
         error.OutcomeUnknown, error.WaitTimeout => .unknown,

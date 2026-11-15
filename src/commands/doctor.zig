@@ -13,6 +13,7 @@ const ui = @import("../ui.zig");
 const unifi = @import("../unifi/client.zig");
 const pve = @import("../pve/client.zig");
 const cf = @import("../cloudflare/client.zig");
+const ts = @import("../tailscale/client.zig");
 const version = @import("build_options").version;
 
 const Context = app.Context;
@@ -39,8 +40,9 @@ pub const doctor = struct {
     pub const summary = "Check the local installation, config, secrets and CA bundles";
     pub const details =
         \\Read-only. --connect also calls UniFi (GET /v1/info), Proxmox
-        \\(GET /version) and Cloudflare (token verify, zone lookup) with the
-        \\stored credentials.
+        \\(GET /version), Cloudflare (token verify, zone lookup) and Tailscale
+        \\(the OAuth token exchange and its granted scopes) with the stored
+        \\credentials.
     ;
     pub const flags = [_]cli.Flag{.{ .long = "connect", .short = 'c', .help = "Also probe both APIs (read-only)" }};
     pub const examples = [_][]const u8{ "artoo doctor", "artoo doctor --connect" };
@@ -52,12 +54,18 @@ pub const doctor = struct {
         var have_unifi = false;
         var have_pve = false;
         var have_cf = false;
+        var have_ts = false;
         if (cfg_ok) {
             const cfg = try ctx.config();
             if (try storeCheck(&r)) |store| {
                 have_unifi = try secretCheck(&r, store, "unifi", "unifi key", .failed, "needed for every gateway command");
                 have_pve = try secretCheck(&r, store, "pve", "pve token", .warning, "needed for Proxmox commands");
                 have_cf = try secretCheck(&r, store, "cloudflare", "cloudflare token", .warning, "needed for 'cf' commands");
+                have_ts = try secretCheck(&r, store, "tailscale", "tailscale client", .not_checked, "optional, for 'ts' commands and the tailnet steps (SPEC §19)");
+                if (have_ts and cfg.tailscale.client_id.len == 0) {
+                    try r.add("tailscale client", .warning, "secret stored, but tailscale.client_id is not set ('artoo config set tailscale.client_id ID')", .{});
+                    have_ts = false;
+                }
             }
             try caCheck(&r, "unifi CA", cfg.unifi.ca_bundle);
             try caCheck(&r, "pve CA", cfg.pve.ca_bundle);
@@ -68,6 +76,7 @@ pub const doctor = struct {
             try r.add("unifi", .not_checked, "use --connect", .{});
             try r.add("pve", .not_checked, "use --connect", .{});
             try r.add("cloudflare", .not_checked, "use --connect", .{});
+            try r.add("tailscale", .not_checked, "use --connect", .{});
         } else {
             if (cfg_ok and have_unifi) {
                 ctx.busy("probing UniFi", .{});
@@ -81,6 +90,10 @@ pub const doctor = struct {
                 ctx.busy("probing Cloudflare", .{});
                 try probeCloudflare(&r);
             } else try r.add("cloudflare", .not_checked, "{s}", .{if (cfg_ok) "no Cloudflare token stored" else "config unusable"});
+            if (cfg_ok and have_ts) {
+                ctx.busy("probing Tailscale", .{});
+                try probeTailscale(&r);
+            } else try r.add("tailscale", .not_checked, "{s}", .{if (cfg_ok) "no Tailscale OAuth client set up" else "config unusable"});
         }
         return render(ctx, r.checks.items);
     }
@@ -230,6 +243,29 @@ fn probeCloudflare(r: *Report) !void {
     try r.add("cloudflare", .ok, "token active (no expiry); zone {s}", .{c.zone_name});
 }
 
+/// The scopes SPEC §19 needs, and what each is for.
+const ts_scopes = [_]struct { []const u8, []const u8 }{
+    .{ "devices:core", "devices" },
+    .{ "devices:routes", "routes" },
+    .{ "auth_keys", "join keys" },
+    .{ "dns", "split DNS" },
+    .{ "policy_file:read", "policy" },
+};
+
+/// The token exchange, then the granted scopes against SPEC §19's table
+/// (the response's `scope`; its tags are not reported there).
+fn probeTailscale(r: *Report) !void {
+    const ctx = r.ctx;
+    var c = ts.Client.open(ctx, .main) catch |err| return probeFailed(r, "tailscale", err);
+    defer c.deinit();
+    const have = try ts.scopeList(ctx.arena, c.scopes);
+    var missing: std.ArrayList(u8) = .empty;
+    for (ts_scopes) |s| if (!ts.grants(have, s[0])) try missing.print(ctx.arena, "{s}{s} ({s})", .{ if (missing.items.len > 0) ", " else "", s[0], s[1] });
+    const granted = if (c.scopes.len > 0) c.scopes else "none reported";
+    if (missing.items.len > 0) return r.add("tailscale", .warning, "token granted: {s}; missing: {s} (SPEC §19)", .{ granted, missing.items });
+    try r.add("tailscale", .ok, "token granted: {s}; tailnet {s}", .{ granted, c.tailnet });
+}
+
 fn probeFailed(r: *Report, label: []const u8, err: anyerror) !void {
     if (err == error.OutOfMemory or err == error.Canceled) return err;
     const msg = r.ctx.diag orelse @errorName(err);
@@ -311,6 +347,51 @@ test "doctor: local checks without --connect; missing unifi key fails" {
     }
     try testing.expect(seen_unifi);
     try testing.expectEqualStrings("{\"schema_version\":1,\"error\":{\"kind\":\"partial\",\"exit_code\":8,\"message\":\"3 checks failed\"}}\n", h.stderr());
+}
+
+test "doctor --connect: the Tailscale token exchange reports granted and missing scopes" {
+    var f: @import("../testkit.zig").Gateway = undefined;
+    try f.initRoutes(&.{
+        .{ .match = "/v1/info", .behavior = .{ .respond = .{ .body = "{\"applicationVersion\":\"10.6.106\"}" } } },
+        .{ .match = "/version", .behavior = .{ .respond = .{ .body = "{\"data\":{\"version\":\"9.2.21\"}}" } } },
+        .{ .match = "/zones", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":[{\"id\":\"Z1\",\"name\":\"example.com\",\"account\":{\"id\":\"A1\"}}],\"result_info\":{\"page\":1,\"per_page\":100,\"count\":1,\"total_count\":1}}" } } },
+        .{ .match = "/tokens/verify", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":{\"id\":\"T1\",\"status\":\"active\"}}" } } },
+        .{ .match = "POST /oauth/token", .behavior = .{ .respond = .{ .body = "{\"access_token\":\"tskey-access-xyz\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"devices:core devices:routes auth_keys dns\"}" } } },
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    _ = f.h.run(&root, "doctor --connect");
+    const out = f.h.stdout();
+    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns; missing: policy_file:read (policy)") == null) {
+        std.debug.print("--- output:\n{s}\n", .{out});
+        return error.TestUnexpectedResult;
+    }
+    // The secret went only into the form body of the exchange.
+    var exchange: []const u8 = "";
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /oauth/token")) {
+        exchange = q;
+    };
+    try testing.expect(std.mem.find(u8, exchange, "content-type: application/x-www-form-urlencoded") != null);
+    try testing.expect(std.mem.endsWith(u8, exchange, "grant_type=client_credentials&client_id=kTEST1CNTRL&client_secret=tskey-client-test-secret"));
+    try testing.expect(std.mem.find(u8, out, "tskey-") == null);
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "tskey-") == null);
+}
+
+test "doctor --connect: a rejected Tailscale client fails without echoing the secret" {
+    var f: @import("../testkit.zig").Gateway = undefined;
+    try f.initRoutes(&.{
+        .{ .match = "/v1/info", .behavior = .{ .respond = .{ .body = "{\"applicationVersion\":\"10.6.106\"}" } } },
+        .{ .match = "/version", .behavior = .{ .respond = .{ .body = "{\"data\":{\"version\":\"9.2.21\"}}" } } },
+        .{ .match = "/zones", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":[{\"id\":\"Z1\",\"name\":\"example.com\",\"account\":{\"id\":\"A1\"}}],\"result_info\":{\"page\":1,\"per_page\":100,\"count\":1,\"total_count\":1}}" } } },
+        .{ .match = "/tokens/verify", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":{\"id\":\"T1\",\"status\":\"active\"}}" } } },
+        .{ .match = "POST /oauth/token", .behavior = .{ .respond = .{ .status = 401, .body = "{\"message\":\"invalid client credentials\"}" } } },
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(@import("../testkit.zig").Exit.partial, f.h.run(&root, "doctor --connect"));
+    const out = f.h.stdout();
+    try testing.expect(std.mem.find(u8, out, "Tailscale rejected the OAuth client (401): invalid client credentials") != null);
+    try testing.expect(std.mem.find(u8, out, "tskey-") == null);
 }
 
 test "doctor --connect: Cloudflare zone, then the account token's verify" {

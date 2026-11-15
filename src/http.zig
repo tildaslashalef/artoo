@@ -46,6 +46,8 @@ pub const Response = struct {
     reason: []const u8 = "",
     /// `Location` of a 3xx returned with `redirect = .give_back`.
     location: ?[]const u8 = null,
+    /// The `ETag` header, when sent (Tailscale's policy, SPEC §19).
+    etag: ?[]const u8 = null,
 };
 
 pub const Error = error{
@@ -288,6 +290,11 @@ const Attempt = struct {
         }
         // The head buffer is reused while the body streams: copy first.
         const reason = a.arena.dupe(u8, response.head.reason) catch return error.OutOfMemory;
+        var etag: ?[]const u8 = null;
+        var headers = response.head.iterateHeaders();
+        while (headers.next()) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "etag")) etag = a.arena.dupe(u8, h.value) catch return error.OutOfMemory;
+        }
         var transfer_buf: [64]u8 = undefined;
         const body_reader = response.reader(&transfer_buf);
         const max_body = a.req.max_body orelse c.opts.max_body;
@@ -298,7 +305,7 @@ const Attempt = struct {
                 else => a.fail(error.Network, "reading the response from {s} failed ({s})", .{ host, @errorName(e) }),
             } else a.fail(error.Network, "reading the response from {s} failed", .{host}),
         };
-        return .{ .status = status, .body = body, .reason = reason };
+        return .{ .status = status, .body = body, .reason = reason, .etag = etag };
     }
 
     fn sendFailed(a: *Attempt, err: anyerror, host: []const u8) Error {

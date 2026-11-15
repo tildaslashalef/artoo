@@ -23,7 +23,7 @@ const Context = app.Context;
 
 /// The credentials that always travel (`guest/<name>` passwords only
 /// with `--guest-passwords`).
-const credential_names = [_][]const u8{ "pve", "unifi", "cloudflare" };
+const credential_names = [_][]const u8{ "pve", "unifi", "cloudflare", "tailscale" };
 
 /// The sealed payload.
 const Bundle = struct {
@@ -45,7 +45,7 @@ pub const export_cmd = struct {
     pub const summary = "Write artoo's setup to an encrypted file (config, CA, credentials)";
     pub const details =
         \\Seals the config file, the CA bundles it names (pve.ca_bundle,
-        \\unifi.ca_bundle) and the stored pve, unifi and cloudflare
+        \\unifi.ca_bundle) and the stored pve, unifi, cloudflare and tailscale
         \\credentials into FILE under a passphrase (Argon2id, 64 MiB;
         \\XChaCha20-Poly1305), for 'artoo config import' on another Mac or
         \\Linux machine. --guest-passwords adds the stored sudo password of
@@ -602,7 +602,7 @@ test "config export --guest-passwords carries the stored passwords of Proxmox's 
         "no password stored here, not included: hoth",
         "name artoo stores no password under, not included: Kessel",
         "Not included: SSH keys.",
-        "Wrote ~/setup.txt: config, 0 CA bundle(s), 3 credential(s), 1 guest password(s); checked.",
+        "Wrote ~/setup.txt: config, 0 CA bundle(s), 4 credential(s), 1 guest password(s); checked.",
     }) |want| if (std.mem.find(u8, out1, want) == null) {
         std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out1 });
         return error.TestUnexpectedResult;
