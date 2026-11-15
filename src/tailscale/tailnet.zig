@@ -233,9 +233,13 @@ fn optBool(v: Value, key: []const u8) ?bool {
     return if (x == .bool) x.bool else null;
 }
 
+/// `GET /tailnet/{t}/keys?all=true`: without `all`, an OAuth client's
+/// token lists the tailnet's OAuth clients instead of its auth keys (the
+/// OpenAPI document). No key at all may come back as `null`.
 pub fn keys(c: *ts.Client) ![]KeyInfo {
-    const v = try c.get(try c.tailnetPath("/keys", .{}));
+    const v = try c.get(try c.tailnetPath("/keys?all=true", .{}));
     const list = ts.field(v, "keys");
+    if (list == .null) return &.{};
     if (list != .array) return c.ctx.fail(error.Protocol, "Tailscale sent an unexpected key list", .{});
     var out: std.ArrayList(KeyInfo) = .empty;
     for (list.array.items) |it| if (try keyInfo(c.ctx.arena, it)) |k| try out.append(c.ctx.arena, k);
