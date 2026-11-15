@@ -671,6 +671,42 @@ fn apply(c: *pve.Client, e: Enrollee) !void {
     try edge.run(c, e.vm.vmid, "starting alloy", files.enroll_start, step_timeout_ms);
 }
 
+/// The `host` label a guest's Alloy reports with (rendered by `watch
+/// enroll` from the VM's name); empty when the guest was never enrolled.
+pub fn guestLabel(c: *pve.Client, v: vms.Vm) ![]const u8 {
+    const ctx = c.ctx;
+    const r = try agent.sh(c, v.vmid, "sed -n 's/^ *labels *= *{ host = \"\\([^\"]*\\)\" }.*/\\1/p' " ++ alloy_config ++ " 2>/dev/null | head -n 1", 60_000);
+    if (!r.ok()) return ctx.fail(error.Protocol, "reading {s}'s Alloy host label failed: {s}", .{ v.name, try k.clean(ctx, edge.firstLine(r.err)) });
+    return std.mem.trim(u8, r.out, " \r\n");
+}
+
+/// Whether the watchdog's probes still label a service's upstream `vm`.
+pub fn probesName(c: *pve.Client, w: vms.Vm, vm: []const u8) !bool {
+    const ctx = c.ctx;
+    const r = try agent.sh(c, w.vmid, "cat " ++ alloy_config ++ " 2>/dev/null || true", 60_000);
+    if (!r.ok()) return ctx.fail(error.Protocol, "reading the probes on {s} failed: {s}", .{ w.name, try k.clean(ctx, edge.firstLine(r.err)) });
+    return std.mem.find(u8, r.out, try files.probeVmLabel(ctx.arena, vm)) != null;
+}
+
+const alloy_config = "/etc/alloy/artoo.alloy";
+
+/// Re-render the watchdog's own Alloy configuration (its probes, from the
+/// edge's current routes) as `watch setup` renders it, and restart Alloy
+/// when it changed — only that file, nothing else of `watch setup`.
+/// False when it was current (or there is no edge to probe through).
+pub fn refreshProbes(ctx: *Context, c: *pve.Client, w: vms.Vm) !bool {
+    if (try tagged(c, edge.role) == null) return false;
+    const managed = try managedFiles(ctx, w, try lab(ctx, c, true));
+    const f = for (managed) |m| {
+        if (std.mem.eql(u8, m.path, alloy_config)) break m;
+    } else return false;
+    const r = try agent.sh(c, w.vmid, "sha256sum " ++ alloy_config ++ " 2>/dev/null | cut -d' ' -f1", 60_000);
+    if (std.mem.eql(u8, std.mem.trim(u8, r.out, " \r\n"), try files.sha256Hex(ctx.arena, f.content))) return false;
+    try edge.writeFile(c, w.vmid, f);
+    try edge.run(c, w.vmid, "restarting alloy", "systemctl restart alloy", step_timeout_ms);
+    return true;
+}
+
 /// `vm new`'s step: enroll a fresh guest when a watchdog exists. Null when
 /// there is none (or the guest is the watchdog itself: `watch setup`, or
 /// tagged `no-watch`).
@@ -1121,9 +1157,14 @@ const metrics_url = "http://localhost:8428";
 /// Series of `host` stored in the last 3 days (the alert rules look back
 /// 1 day). Without `start`, `/api/v1/series` covers only recent minutes.
 pub fn hostSeries(c: *pve.Client, w: vms.Vm, host: []const u8) !usize {
+    return hostSeriesSince(c, w, host, "-3d");
+}
+
+/// Series of `host` with samples since `start` (`-5m`: is it reporting).
+pub fn hostSeriesSince(c: *pve.Client, w: vms.Vm, host: []const u8, start: []const u8) !usize {
     const ctx = c.ctx;
     const sel = try std.fmt.allocPrint(ctx.arena, "match[]={{host=\"{s}\"}}", .{host});
-    const r = try agent.exec(c, w.vmid, &.{ "curl", "-fsS", "-G", metrics_url ++ "/api/v1/series", "--data-urlencode", sel, "--data-urlencode", "start=-3d" }, null, 60_000);
+    const r = try agent.exec(c, w.vmid, &.{ "curl", "-fsS", "-G", metrics_url ++ "/api/v1/series", "--data-urlencode", sel, "--data-urlencode", try std.fmt.allocPrint(ctx.arena, "start={s}", .{start}) }, null, 60_000);
     if (!r.ok()) return ctx.fail(error.Protocol, "reading {s}'s series on {s} failed: {s}", .{ host, w.name, try k.clean(ctx, edge.firstLine(if (r.err.len > 0) r.err else r.out)) });
     const v = std.json.parseFromSliceLeaky(Value, ctx.arena, r.out, .{}) catch
         return ctx.fail(error.Protocol, "VictoriaMetrics on {s} sent an unexpected series answer", .{w.name});
