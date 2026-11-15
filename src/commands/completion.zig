@@ -19,10 +19,13 @@ pub const completion = struct {
     pub const name = "completion";
     pub const summary = "Print the shell completion script (fish, bash, zsh)";
     pub const details =
-        \\The script asks artoo on every Tab, so new commands and flags complete
-        \\without regenerating it. VM and template names are read from Proxmox
-        \\(1 s deadline; nothing is completed when Proxmox or the token is not
-        \\available); 'vm new' offers the curated names no VM carries yet.
+        \\Prints the completion script for your shell; install it once as in
+        \\the examples. The script asks artoo on every Tab, so new commands and
+        \\flags complete without regenerating it.
+        \\
+        \\VM and template names are read from Proxmox with a 1-second deadline;
+        \\nothing is offered when Proxmox or its token is unavailable. 'vm new'
+        \\offers the curated guest names no VM carries yet.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "SHELL", .help = "fish, bash or zsh" }};
     pub const examples = [_][]const u8{

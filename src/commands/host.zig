@@ -71,7 +71,12 @@ pub fn read(c: *pve.Client) !Host {
 
 pub const show = struct {
     pub const name = "show";
-    pub const summary = "Proxmox node: versions, CPU, load, memory, root filesystem, uptime";
+    pub const summary = "Show the Proxmox node: versions, CPU, memory, disk, uptime";
+    pub const details =
+        \\Shows the node named by pve.node: Proxmox VE and kernel versions, boot
+        \\mode, uptime, CPU model, usage and load, RAM and swap, and the root
+        \\filesystem. Read-only; for pass/fail checks use 'artoo host health'.
+    ;
     pub const examples = [_][]const u8{ "artoo host show", "artoo host show -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -235,17 +240,26 @@ fn runCheck(ctx: *Context, c: *pve.Client, check: Check) !Result {
 
 pub const health = struct {
     pub const name = "health";
-    pub const summary = "Named health checks for Proxmox (default: all)";
+    pub const summary = "Run health checks on the Proxmox node (default: all)";
     pub const details =
-        \\Checks: api, node (RAM ≥90% warn/≥97% fail, root FS ≥85%/≥95%, load
-        \\above threads), storage (inactive fails; ≥85%/≥95%), tasks (failures or
-        \\warnings in the last 24 h warn), zfs (pool health ONLINE), services
-        \\(pve-cluster, pvedaemon, pveproxy, pvestatd, pvescheduler, chrony, cron).
-        \\Exit 8 when a check fails or cannot run; warnings do not fail. If the
-        \\API itself is unreachable the usual network/auth exit applies.
+        \\Runs health checks on the Proxmox node and shows each as ok, warn or
+        \\fail: after an upgrade, or when something seems wrong. Name checks to
+        \\run only those. Read-only.
+        \\
+        \\Checks:
+        \\  api       the API answers
+        \\  node      RAM (warn at 90%, fail at 97%), root filesystem (85% / 95%), load above the thread count
+        \\  storage   an inactive storage fails; usage 85% / 95%
+        \\  tasks     failed or warning tasks in the last 24 h warn
+        \\  zfs       every pool is ONLINE
+        \\  services  pve-cluster, pvedaemon, pveproxy, pvestatd, pvescheduler, chrony, cron
+        \\
+        \\Exit 8 when a check fails or cannot run; warnings alone do not fail. If
+        \\the API itself is unreachable, the usual network or authentication exit
+        \\applies.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "CHECK", .help = "api, node, storage, tasks, zfs, services", .required = false, .variadic = true }};
-    pub const examples = [_][]const u8{ "artoo host health", "artoo host health zfs services" };
+    pub const examples = [_][]const u8{ "artoo host health", "artoo host health zfs services", "artoo host health -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var wanted: std.ArrayList(Check) = .empty;
@@ -296,7 +310,7 @@ pub const health = struct {
     }
 };
 
-pub const group = cli.group("host", "The Proxmox node (read-only)", &.{ cli.leaf(show), cli.leaf(health) });
+pub const group = cli.group("host", "The Proxmox node: versions, load and health (read-only)", &.{ cli.leaf(show), cli.leaf(health) });
 
 // ---------------------------------------------------------------- tests
 

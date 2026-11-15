@@ -42,18 +42,24 @@ const file_limit = 1 << 20;
 
 pub const export_cmd = struct {
     pub const name = "export";
-    pub const summary = "Write artoo's setup to an encrypted file (config, CA, credentials)";
+    pub const summary = "Seal the config, CA bundles and credentials into one file";
     pub const details =
-        \\Seals the config file, the CA bundles it names (pve.ca_bundle,
+        \\Seals this machine's artoo setup into one passphrase-encrypted FILE,
+        \\to set up another Mac or Linux machine with 'artoo config import'.
+        \\
+        \\FILE holds the config file, the CA bundles it names (pve.ca_bundle,
         \\unifi.ca_bundle) and the stored pve, unifi, cloudflare and tailscale
-        \\credentials into FILE under a passphrase (Argon2id, 64 MiB;
-        \\XChaCha20-Poly1305), for 'artoo config import' on another Mac or
-        \\Linux machine. --guest-passwords adds the stored sudo password of
-        \\every VM on Proxmox (guest/<name>); SSH keys are never included. The
-        \\passphrase comes from a hidden prompt (asked twice) or the first
-        \\line of --stdin; at least 12 characters. FILE is written with mode
-        \\0600 and opened again to check it. Anyone with FILE and the
-        \\passphrase holds your lab credentials: delete it after importing.
+        \\credentials. --guest-passwords adds the stored sudo password of every
+        \\VM on Proxmox (guest/<name>). SSH keys are never included.
+        \\
+        \\The passphrase, at least 12 characters, is asked twice in a hidden
+        \\prompt, or read from the first line of standard input with --stdin.
+        \\The contents are encrypted with XChaCha20-Poly1305 under an Argon2id
+        \\key (64 MiB). The plan is shown and confirmed first; -n stops there.
+        \\FILE is written with mode 0600 and read back to check it.
+        \\
+        \\Anyone with FILE and the passphrase holds your lab's credentials:
+        \\delete FILE once it is imported.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "FILE", .help = "Output file (e.g. ~/artoo-setup.txt)" }};
     pub const flags = [_]cli.Flag{
@@ -167,16 +173,22 @@ pub const import_cmd = struct {
     pub const name = "import";
     pub const summary = "Set artoo up from a file written by 'config export'";
     pub const details =
-        \\Opens FILE with its passphrase (hidden prompt or --stdin) and
-        \\installs the config file, its CA bundles and the credentials (guest
-        \\passwords too, when exported with --guest-passwords) into this
-        \\machine's secret store (credentials.store). Paths under the
-        \\exporting machine's home move to this home; a store this system
-        \\lacks (keychain off macOS, secret-service on macOS) becomes auto.
-        \\Each item is new, same (skipped) or different; replacing anything
-        \\different needs --force. SSH keys are this machine's own: set
-        \\guests.ssh_public_key and pve.ssh_identity, then 'artoo doctor
-        \\--connect'.
+        \\Sets artoo up on this machine from a FILE that 'artoo config export'
+        \\wrote on another: the config file, its CA bundles, and the credentials
+        \\(and guest passwords, when exported) into this machine's secret store
+        \\(credentials.store). The passphrase is asked in a hidden prompt, or
+        \\read with --stdin.
+        \\
+        \\Paths under the other machine's home move to this home, and a secret
+        \\store this system lacks (keychain off macOS, secret-service on macOS)
+        \\becomes auto. Each item is shown as new, same (skipped) or different;
+        \\replacing anything different needs --force. The plan is confirmed
+        \\first; -n changes nothing.
+        \\
+        \\SSH keys stay per machine: afterwards set guests.ssh_public_key and
+        \\pve.ssh_identity to this machine's key, add it to root's
+        \\authorized_keys on Proxmox, and run 'artoo doctor --connect'. Delete
+        \\FILE when you no longer need it.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "FILE", .help = "File from 'artoo config export'" }};
     pub const flags = [_]cli.Flag{

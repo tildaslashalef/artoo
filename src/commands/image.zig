@@ -17,7 +17,7 @@ const k = @import("node.zig");
 const Context = app.Context;
 const Pin = images.Pin;
 
-const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "Non-interactive confirmation (with --yes)" };
+const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "Confirm the target without a prompt (with --yes)" };
 
 /// A file in `local:import`.
 pub const File = struct {
@@ -114,7 +114,13 @@ fn stateCell(ctx: *Context, s: State) !ui.table.Cell {
 
 pub const ls = struct {
     pub const name = "ls";
-    pub const summary = "Pinned images and the files in Proxmox's local:import";
+    pub const summary = "List pinned images and the files in local:import";
+    pub const details =
+        \\Lists the guest images this artoo pins, with release, build, size and
+        \\whether each is on Proxmox, plus any other file in the local:import
+        \\storage. Read-only. Templates are built from the pinned images with
+        \\'artoo template build'.
+    ;
     pub const examples = [_][]const u8{ "artoo image ls", "artoo image ls -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -233,9 +239,12 @@ pub const fetch = struct {
     pub const name = "fetch";
     pub const summary = "Have Proxmox download and verify a pinned image";
     pub const details =
-        \\Proxmox downloads the pinned build into local:import and checks its SHA-256
-        \\before keeping it; nothing passes through the workstation. An image that
-        \\is already present is left alone (exit 5).
+        \\Makes Proxmox download a pinned image into local:import and check its
+        \\SHA-256 before keeping it; the image never passes through this
+        \\machine. 'artoo template build' fetches the image itself, so use this
+        \\to get it ahead of time.
+        \\
+        \\An image that is already present is left alone (exit 5).
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "IMAGE", .help = "Pinned image (see 'artoo image ls')" }};
     pub const examples = [_][]const u8{ "artoo image fetch ubuntu-2604 -n", "artoo image fetch ubuntu-2604 -y" };
@@ -320,14 +329,18 @@ const RmOp = struct {
 
 pub const rm = struct {
     pub const name = "rm";
-    pub const summary = "Remove an image from Proxmox (destructive confirmation)";
+    pub const summary = "Remove an image from Proxmox (typed confirmation)";
     pub const details =
-        \\IMAGE is a pinned name or a file name in local:import. Type the IMAGE word
-        \\to confirm, or --yes --confirm IMAGE.
+        \\Deletes an image file from local:import on Proxmox: a pinned image by
+        \\its name, or any other file by its file name. 'artoo image fetch' can
+        \\download a pinned image again.
+        \\
+        \\This cannot be undone: type IMAGE to confirm, or pass --yes --confirm
+        \\IMAGE when not interactive. -n shows the plan only.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "IMAGE", .help = "Pinned image or file name in local:import" }};
     pub const flags = [_]cli.Flag{confirm_flag};
-    pub const examples = [_][]const u8{ "artoo image rm ubuntu-2604", "artoo image rm old.qcow2 --yes --confirm old.qcow2" };
+    pub const examples = [_][]const u8{ "artoo image rm ubuntu-2604 -n", "artoo image rm ubuntu-2604", "artoo image rm old.qcow2 --yes --confirm old.qcow2" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -337,7 +350,7 @@ pub const rm = struct {
     }
 };
 
-pub const group = cli.group("image", "Pinned guest images on Proxmox (never the workstation)", &.{ cli.leaf(ls), cli.leaf(fetch), cli.leaf(rm) });
+pub const group = cli.group("image", "Pinned guest images, downloaded by Proxmox itself", &.{ cli.leaf(ls), cli.leaf(fetch), cli.leaf(rm) });
 
 // ---------------------------------------------------------------- tests
 

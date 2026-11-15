@@ -31,7 +31,7 @@ pub const disk_storage = "local-zfs";
 /// Templates get the lowest free VMID from here (guests start at 200).
 pub const first_vmid = 9000;
 
-const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "Non-interactive confirmation (with --yes)" };
+const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "Confirm the target without a prompt (with --yes)" };
 const template_arg: cli.Positional = .{ .name = "TEMPLATE", .complete = .template, .help = "Template name or VMID" };
 
 // ---------------------------------------------------------------- metadata
@@ -147,11 +147,16 @@ fn stateCell(ctx: *Context, state: []const u8) !ui.table.Cell {
 
 pub const ls = struct {
     pub const name = "ls";
-    pub const summary = "Templates on Proxmox and whether they match the pins";
+    pub const summary = "List templates on Proxmox and whether they match the pins";
     pub const details =
-        \\STATE: current (built from the pinned image and this artoo's vendor
-        \\snippet), outdated (rebuild with 'artoo template build'), unpinned (no pin
-        \\of that name), unmanaged (not built by artoo).
+        \\Lists the guest templates on Proxmox with VMID, image, vendor snippet,
+        \\disk and state, to see whether one needs rebuilding. Read-only.
+        \\
+        \\States:
+        \\  current    built from the pinned image with this artoo's vendor snippet
+        \\  outdated   rebuild it with 'artoo template build'
+        \\  unpinned   no pinned image of that name
+        \\  unmanaged  not built by artoo
     ;
     pub const examples = [_][]const u8{ "artoo template ls", "artoo template ls -o json" };
 
@@ -202,9 +207,14 @@ fn memoryBytes(cfg: std.json.Value) ?u64 {
 
 pub const show = struct {
     pub const name = "show";
-    pub const summary = "One template: image, vendor snippet and hardware";
+    pub const summary = "Show one template: image, vendor snippet and hardware";
+    pub const details =
+        \\Shows one template: its state, the image and SHA-256 it was built
+        \\from, its vendor snippet and whether that is present on Proxmox, its
+        \\tags and its hardware. TEMPLATE is the name or the VMID. Read-only.
+    ;
     pub const positionals = [_]cli.Positional{template_arg};
-    pub const examples = [_][]const u8{"artoo template show ubuntu-2604"};
+    pub const examples = [_][]const u8{ "artoo template show ubuntu-2604", "artoo template show 9000 -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -449,15 +459,21 @@ pub fn createParams(arena: std.mem.Allocator, vmid: u32, p: *const Pin, s: vendo
 
 pub const build = struct {
     pub const name = "build";
-    pub const summary = "Build (or bring up to date) the template of a pinned image";
+    pub const summary = "Build or update the template of a pinned image";
     pub const details =
-        \\Steps, each only when needed: Proxmox fetches the pinned image (SHA-256
-        \\checked); the vendor snippet is placed in local:snippets over root SSH
-        \\(pve.ssh_host, pve.ssh_identity); a VM is created from the imported disk
-        \\with a cloud-init drive, guest agent and serial console; it is converted to
-        \\a template tagged artoo-template. An existing template built from the same
-        \\image only gets the current vendor snippet. Re-running continues an
-        \\interrupted build; a template from another image is refused.
+        \\Builds the guest template that 'artoo vm new' clones, from a pinned
+        \\image. Run it once per image, and again when 'artoo template ls' shows
+        \\the template outdated.
+        \\
+        \\Each step runs only when needed:
+        \\  1. Proxmox fetches the pinned image (SHA-256 checked)
+        \\  2. the vendor snippet goes to local:snippets over root SSH (pve.ssh_host, pve.ssh_identity)
+        \\  3. a VM is created from the image with a cloud-init drive, guest agent and serial console
+        \\  4. the VM is converted to a template tagged artoo-template
+        \\
+        \\A template already built from the same image only gets the current
+        \\vendor snippet. Re-running continues an interrupted build. A template
+        \\of that name built from another image is refused.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "TEMPLATE", .help = "Pinned image name (see 'artoo image ls')" }};
     pub const flags = [_]cli.Flag{.{ .long = "id", .kind = .int, .metavar = "VMID", .help = "VMID for a new template (default: lowest free ≥ 9000)" }};
@@ -537,11 +553,18 @@ const RmOp = struct {
 
 pub const rm = struct {
     pub const name = "rm";
-    pub const summary = "Remove a template and its disks (destructive confirmation)";
-    pub const details = "Type the template's name to confirm, or --yes --confirm NAME. Image and vendor snippet stay.";
+    pub const summary = "Remove a template and its disks (typed confirmation)";
+    pub const details =
+        \\Deletes a template and its disks from Proxmox. The pinned image in
+        \\local:import and the vendor snippet stay, so 'artoo template build' can
+        \\make it again.
+        \\
+        \\This cannot be undone: type the template's name to confirm, or pass
+        \\--yes --confirm NAME when not interactive. -n shows the plan only.
+    ;
     pub const positionals = [_]cli.Positional{template_arg};
     pub const flags = [_]cli.Flag{confirm_flag};
-    pub const examples = [_][]const u8{ "artoo template rm ubuntu-2604", "artoo template rm ubuntu-2604 --yes --confirm ubuntu-2604" };
+    pub const examples = [_][]const u8{ "artoo template rm ubuntu-2604 -n", "artoo template rm ubuntu-2604", "artoo template rm ubuntu-2604 --yes --confirm ubuntu-2604" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -556,8 +579,12 @@ pub const rm = struct {
 pub const vendor_cmd = struct {
     pub const name = "vendor";
     pub const summary = "Print the vendor-data snippet this artoo places on Proxmox";
-    pub const details = "Local and read-only: the exact cloud-config document, named by its content hash.";
-    pub const positionals = [_]cli.Positional{.{ .name = "TEMPLATE", .help = "Pinned image name", .required = false }};
+    pub const details =
+        \\Prints the exact cloud-config document that 'artoo template build'
+        \\places in local:snippets, named by its content hash: to review what
+        \\new guests run at first boot. Local and read-only.
+    ;
+    pub const positionals = [_]cli.Positional{.{ .name = "TEMPLATE", .help = "Pinned image name (default: the first pin)", .required = false }};
     pub const examples = [_][]const u8{ "artoo template vendor", "artoo template vendor -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
@@ -570,7 +597,7 @@ pub const vendor_cmd = struct {
     }
 };
 
-pub const group = cli.group("template", "Guest templates on Proxmox", &.{
+pub const group = cli.group("template", "Guest templates built from the pinned images", &.{
     cli.leaf(ls),
     cli.leaf(show),
     cli.leaf(build),
