@@ -11,7 +11,7 @@ const transfer = @import("config_transfer.zig");
 
 const Context = app.Context;
 
-fn loaded(ctx: *Context) !*config.Loaded {
+pub fn loaded(ctx: *Context) !*config.Loaded {
     return switch (ctx.loaded) {
         .ok => |*l| l,
         .failed => |f| ctx.fail(f.err, "{s}", .{f.message}),
@@ -236,7 +236,7 @@ pub const edit = struct {
 };
 
 /// Atomic, locked save into a private directory; symlinks refused.
-fn save(ctx: *Context, path: []const u8, text: []const u8) !void {
+pub fn save(ctx: *Context, path: []const u8, text: []const u8) !void {
     const dir = std.fs.path.dirname(path) orelse ".";
     files.ensurePrivateDir(ctx.io, dir) catch |err| switch (err) {
         error.UnsafePath => return ctx.fail(error.UnsafePath, "{s} is not a directory", .{ctx.tilde(dir)}),

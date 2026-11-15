@@ -212,7 +212,7 @@ pub fn validName(s: []const u8) bool {
 /// Writes the route (base64 on stdin) for service `$1`, has Caddy
 /// validate the whole configuration with it, then reloads; a rejected or
 /// failed reload puts the previous file back.
-const apply_script =
+pub const apply_script =
     \\set -eu
     \\d=/etc/caddy/services
     \\f="$d/$1.caddy"; t="$d/.$1.artoo-new"; b="$d/.$1.artoo-old"
