@@ -3285,10 +3285,14 @@ both pointing at the gateway.
   is sent otherwise; `tag:lab-router` is never accepted, and the subnet
   router is refused (its tag belongs to `router setup`). Tailscale
   refuses a tag the client or the policy's `tagOwners` does not name
-  (400, nothing changed). Moving a device to a new tag: the tag in
-  `tagOwners` (`ts policy apply`), given to the OAuth client, added to
-  `tailscale.guest_tags`, then `ts device tag`; the old tag leaves the
-  policy last.
+  (400, nothing changed), and refuses to take away a tag the node
+  advertises itself ("cannot remove current tags"): the error then names
+  `ts join VM --tag TAG`, which moves an artoo guest by logging it in
+  again. `ts device tag` therefore suits devices whose tags were set
+  through the API or the console. Moving a guest to a new tag: the tag in
+  `tagOwners` (`ts policy apply`), given to the OAuth client (on both
+  `devices:core` and `auth_keys`), added to `tailscale.guest_tags`, then
+  `ts join VM --tag NEW`; the old tag leaves the policy last.
 - `ts device rm NAME` — typed confirmation; `DELETE /device/{id}`,
   verified by a read answering 404.
 - `ts routes approve ROUTER` — `POST /device/{id}/routes` with exactly
@@ -3316,7 +3320,15 @@ both pointing at the gateway.
   `role-edge`, `role-watch` and `role-router` (which joins with `router
   setup`), a stopped guest or a silent agent; a guest whose
   `tailscale status` already says `Running` is only reported (exit 5,
-  nothing created). Verified by the guest's `tailscale status --json`
+  nothing created) — unless `--tag` names a tag it does not carry
+  alone: then it **moves** to that tag. A node's advertised tags change
+  only when it logs in again (Tailscale logs out a node whose
+  `tailscale up --advertise-tags` changes, and the API refuses to take
+  away tags a node advertises, "cannot remove current tags" — found
+  live), so the move is the join with `--force-reauth`: a new key with
+  the new tag, the same node and address, its connections down for a few
+  seconds. The plan shows old → new tags; the step ledger and verify
+  are the join's. Verified by the guest's `tailscale status --json`
   (`Running`, the tag) and the device appearing in the API with the tag —
   the device is the node the guest reports (`Self.ID`, the API's `nodeId`),
   never one found by name (a stale device may keep the name).
@@ -3373,6 +3385,14 @@ device.
 the Free plan (the console offers Trust credentials there); whether a
 tag-limited `devices:core` client may delete untagged devices (artoo's
 ownership rule protects them either way); the rate limits behind `429`.
+Settled live: OAuth clients work on the plan in use, and a token's
+`tags` list follows console edits within about a minute. Open, found
+live: a client whose guest tag was added by editing it was refused
+a join key with that tag ("requested tags … are invalid or not
+permitted", 400, nothing created) although the policy's `tagOwners`,
+the client's `auth_keys` tags and its token all named it; no key has
+yet been created live with this client for any tag. Next check: a
+client created with its tags from the start, then one `ts join`.
 
 **Testing.** Offline: a fake server for the token exchange, every
 endpoint used, `{"message"}` errors, `429`, and every refusal
