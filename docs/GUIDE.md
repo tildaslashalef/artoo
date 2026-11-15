@@ -361,13 +361,56 @@ artoo router status        # Running, tag:lab-router, route advertised and appro
 artoo router setup -n      # what a (re)built router still needs
 ```
 
-- Only the router joins the tailnet; guests are reached through it and
-  need no key.
+- Guests are reached through the router and need no key, unless one must
+  be a tailnet device of its own (tag `tailnet`, e.g. to listen on its
+  tailnet address): `artoo ts join VM [--tag TAG]` creates a single-use
+  key and runs `tailscale up` on the guest — never type that command by
+  hand.
 - Rebuilding the router: `vm new NAME --role router --size small --cores
-  1`, `vm set NAME onboot=1`, remove the old machine in the Tailscale
-  console, then the operator generates a **single-use auth key** tagged
-  `tag:lab-router` and runs `artoo router setup` in their own terminal (the
-  key is asked after the plan is confirmed, hidden).
+  1`, `vm set NAME onboot=1`, `artoo ts device rm OLD` (or the console),
+  then `artoo router setup`. With the `tailscale` credential artoo
+  creates the single-use key itself and approves the route; without
+  it, the operator generates a **single-use auth key** tagged
+  `tag:lab-router` and runs `artoo router setup` in their own terminal
+  (the key is asked after the plan is confirmed, hidden).
+
+### The tailnet through the API (SPEC §19)
+
+The `tailscale` OAuth client (`tailscale.client_id`, secret `tailscale`)
+covers everyday tailnet work; the console keeps only the OAuth clients
+and personal logins.
+
+```console
+artoo ts devices ls                    # every device; LAB says which are the lab's and why
+artoo ts device show NAME
+artoo ts keys ls                       # auth key metadata, never a key
+artoo ts dns show                      # split DNS
+artoo ts policy show | validate FILE | preview WHO
+artoo ts join VM [--tag TAG]           # a guest tagged tailnet joins (or moves to TAG)
+artoo ts device rename NAME NEW        # a guest: 'vm rename' instead
+artoo ts device tag NAME TAGS          # devices whose tags came from the API or console
+artoo ts device rm NAME                # typed confirmation
+artoo ts routes approve ROUTER
+```
+
+- **Tags.** Guest tags are `tailscale.guest_tags` (default
+  `tag:lab-guest`; keep the `lab-` prefix). A tag must be in the
+  policy's `tagOwners` and on the OAuth client (on both Devices Core and
+  Auth Keys) before artoo can use it.
+- **Moving a guest to another tag:** add the new tag to the policy
+  (`ts policy apply`, below) next to the old one, give it to the client,
+  add it to `guest_tags`, `artoo ts join VM --tag NEW` (the guest logs in
+  again with a new key, a few seconds offline), then remove the old tag
+  from the policy, the client and `guest_tags`.
+- **Changing the policy:** the operator creates a second OAuth client
+  with only Policy File write (the console adds Devices Core read and
+  Posture Attributes read), the agent sets `tailscale.policy_client_id`,
+  the operator runs `artoo auth set tailscale-policy`. Keep the lab's
+  policy file in the lab record, save the live one first (`ts policy
+  show > before.hujson`), then `ts policy apply FILE -n` (Tailscale
+  validates it and runs its tests; the diff), and after approval the
+  same without `-n`. Afterwards the operator revokes that client and
+  runs `artoo auth rm tailscale-policy`.
 - Devices other than the workstation warn about Proxmox's and UniFi's
   certificates until they trust the mkcert **public** root
   (`~/.artoo/tls/rootCA.pem`; on iOS: install it as a profile, then
