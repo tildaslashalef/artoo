@@ -549,8 +549,15 @@ pub const max_pages = 100;
 /// Every `INTERNET_AND_WAN` event in [from, to] (epoch ms), all pages,
 /// oldest first, duplicates (by ID) dropped. Each page is one `POST`
 /// that changes nothing; never retried.
-pub fn events(c: *unifi.Client, from_ms: i64, to_ms: i64) ![]Event {
+pub const Log = struct {
+    events: []Event,
+    /// Set when paging may have missed events.
+    warning: ?[]const u8 = null,
+};
+
+pub fn events(c: *unifi.Client, from_ms: i64, to_ms: i64) !Log {
     const arena = c.ctx.arena;
+    var warning: ?[]const u8 = null;
     var out: std.ArrayList(Event) = .empty;
     var seen: std.StringHashMapUnmanaged(void) = .empty;
     var page: u32 = 0;
@@ -574,15 +581,22 @@ pub fn events(c: *unifi.Client, from_ms: i64, to_ms: i64) ![]Event {
             }
             try out.append(arena, e);
         }
-        const pages = int(v, "total_page_count") orelse 1;
-        if (items.len == 0 or page + 1 >= pages) break;
+        if (items.len == 0) break;
+        if (int(v, "total_page_count")) |pages| {
+            if (page + 1 >= pages) break;
+        } else {
+            // No page count: read on while pages come back full.
+            warning = "the gateway sent no page count; read until a short page";
+            if (items.len < page_size) break;
+        }
+        if (page + 1 == max_pages) warning = std.fmt.comptimePrint("stopped after {d} pages of {d} events; older events were not read", .{ max_pages, page_size });
     }
     std.mem.sort(Event, out.items, {}, struct {
         fn lt(_: void, a: Event, b: Event) bool {
             return a.timestamp < b.timestamp;
         }
     }.lt);
-    return out.items;
+    return .{ .events = out.items, .warning = warning };
 }
 
 // ---------------------------------------------------------------- outages
@@ -811,7 +825,7 @@ pub fn summarize(arena: Allocator, outages: []const Outage, groups: []const []co
             const start = end - len_ms;
             const clipped = @max(0, @min(end, now_ms) - @max(start, from_ms));
             down_ms += clipped;
-            s.longest_seconds = @max(s.longest_seconds, @divTrunc(len_ms, 1000));
+            s.longest_seconds = @max(s.longest_seconds, @divTrunc(clipped, 1000));
         }
         s.downtime_seconds = @divTrunc(down_ms, 1000);
         s.availability = @max(0, 1 - @as(f64, @floatFromInt(down_ms)) / window);
@@ -921,6 +935,9 @@ test "fold: closed, back to back, ongoing, lead-up, before the window, unknown e
     // 0 of the first (before the window, clipped) + 150 + 60 + 30.
     try testing.expectEqual(@as(i64, 240), s[0].downtime_seconds);
     try testing.expectEqual(@as(i64, 150), s[0].longest_seconds);
+    // Longest is clipped to the window like the total.
+    const clipped = try summarize(a.allocator(), f.outages, &.{"WAN"}, 16 * m, 60 * m);
+    try testing.expectEqual(@as(i64, 60), clipped[0].longest_seconds);
     try testing.expectEqual(@as(i64, 30 * 60), s[1].downtime_seconds);
     try testing.expectApproxEqAbs(@as(f64, 0.5), s[1].availability, 1e-9);
 }
