@@ -85,6 +85,8 @@ const Observed = struct {
     on_tailnet: bool,
     ts_state: ?ts_cmd.GuestState,
     device: ?tn.Device,
+    /// Why the Tailscale API is left out (a broken credential).
+    ts_note: ?[]const u8,
     watch_vm: ?vms.Vm,
     old_series: usize,
     watch_note: ?[]const u8,
@@ -280,11 +282,22 @@ const RenameOp = struct {
         const on_tailnet = template.taggedWith(v.tags, "tailnet") or (role != null and std.mem.eql(u8, role.?, "router"));
         var ts_state: ?ts_cmd.GuestState = null;
         var device: ?tn.Device = null;
+        var ts_note: ?[]const u8 = null;
         if (on_tailnet) {
             ts_state = try ts_cmd.guestState(op.c, v.vmid);
             if (ts_state.?.running() and ts_state.?.node_id.len > 0 and try tsapi.configured(ctx)) {
-                if (op.tsc == null) op.tsc = try tsapi.Client.open(ctx, .main);
-                device = try tn.getDevice(&op.tsc.?, ts_state.?.node_id);
+                // A credential that does not work leaves out only the API
+                // part: the guest's own 'tailscale set' still runs.
+                device = op.tailnetDevice(ctx, ts_state.?.node_id) catch |err| switch (err) {
+                    error.OutOfMemory, error.Canceled => |e| return e,
+                    else => blk: {
+                        ts_note = try std.fmt.allocPrint(a, "The Tailscale API did not answer ({s}): the tailnet step runs 'tailscale set --hostname' only; check the device afterwards with 'artoo ts device show {s}'.", .{ ctx.diag orelse @errorName(err), op.new });
+                        ctx.diag = null;
+                        if (op.tsc) |*t| t.deinit();
+                        op.tsc = null;
+                        break :blk null;
+                    },
+                };
             }
         }
 
@@ -326,10 +339,17 @@ const RenameOp = struct {
             .on_tailnet = on_tailnet,
             .ts_state = ts_state,
             .device = device,
+            .ts_note = ts_note,
             .watch_vm = watch_vm,
             .old_series = old_series,
             .watch_note = watch_note,
         };
+    }
+
+    /// The guest's device by the node ID it reports.
+    fn tailnetDevice(op: *RenameOp, ctx: *Context, node_id: []const u8) !?tn.Device {
+        if (op.tsc == null) op.tsc = try tsapi.Client.open(ctx, .main);
+        return tn.getDevice(&op.tsc.?, node_id);
     }
 
     fn pending(op: *const RenameOp, o: Observed) Pending {
@@ -401,6 +421,7 @@ const RenameOp = struct {
         if (!p.proxmox) try notes.append(a, try std.fmt.allocPrint(a, "{s} is already {s} on Proxmox: this run continues a rename that stopped.", .{ op.old, op.new }));
         if (o.dns_note) |n| try notes.append(a, n);
         if (o.watch_note) |n| try notes.append(a, n);
+        if (o.ts_note) |n| try notes.append(a, n);
         try notes.append(a, "Steps run in this order, each checking observed state first; after a failure run the same command again to continue.");
         try notes.append(a, "The UniFi rename uses PUT rest/user/{_id} with the name alone: expected from the classic API, not yet verified live.");
         try notes.append(a, try std.fmt.allocPrint(a, "Cloud-init's instance ID may follow the new name: a cold start of {s} may then regenerate its SSH host keys. If 'ssh {s}' then refuses the key, re-pin it with 'artoo vm ssh-config' (not yet verified live).", .{ op.new, op.new }));
@@ -423,18 +444,24 @@ const RenameOp = struct {
     }
 
     /// A failure after the first step is exit 8 (what is done and what is
-    /// left is in the ledger); an unknown outcome stays exit 7.
+    /// left is in the ledger); an unknown outcome stays exit 7. Both name
+    /// the re-run that continues. A step that ended in a definitive answer
+    /// (a refusal, a failed command) is failed, never unknown.
     pub fn send(op: *RenameOp, ctx: *Context) !void {
         op.steps(ctx) catch |err| {
-            switch (err) {
-                error.OutOfMemory, error.Canceled, error.OutcomeUnknown, error.Partial => return err,
-                else => {},
-            }
-            var done_n: usize = 0;
-            for (op.ledger.steps.items) |s| done_n += @intFromBool(s.state == .done);
-            if (done_n == 0) return err;
+            if (err == error.OutOfMemory or err == error.Canceled) return err;
             const why = ctx.diag orelse @errorName(err);
-            return ctx.fail(error.Partial, "the rename stopped after {d} step{s}: {s}; run 'artoo vm rename {s} {s}' again to continue", .{ done_n, if (done_n == 1) "" else "s", why, op.old, op.new });
+            const unknown = err == error.OutcomeUnknown;
+            const l = &op.ledger;
+            if (!unknown) for (l.steps.items, 0..) |s, i| if (s.state == .unknown) l.set(i, .failed, if (s.detail.len > 0) s.detail else why);
+            ctx.out.writeAll("\n") catch {};
+            l.render(ctx.out, &ctx.ui) catch {};
+            var done_n: usize = 0;
+            for (l.steps.items) |s| done_n += @intFromBool(s.state == .done);
+            if (done_n == 0) return err;
+            const s_word = if (done_n == 1) "" else "s";
+            if (unknown) return ctx.fail(error.OutcomeUnknown, "the rename stopped after {d} step{s} with an unknown outcome: {s}; check that place, then run 'artoo vm rename {s} {s}' again to continue", .{ done_n, s_word, why, op.old, op.new });
+            return ctx.fail(error.Partial, "the rename stopped after {d} step{s}: {s}; run 'artoo vm rename {s} {s}' again to continue", .{ done_n, s_word, why, op.old, op.new });
         };
     }
 
@@ -458,10 +485,7 @@ const RenameOp = struct {
         const s_guest = if (p.guest) try l.add(a, "set the hostname") else null;
         const s_unifi = if (p.unifi) try l.add(a, "rename the client record") else null;
         const s_dns_rm = if (p.dns_rm) try l.add(a, "remove old DNS record") else null;
-        errdefer {
-            ctx.out.writeAll("\n") catch {};
-            l.render(ctx.out, &ctx.ui) catch {};
-        }
+        // (On failure `send` settles the running step and shows the ledger.)
         const vmid = o.vm.vmid;
 
         if (s_pve) |i| {
@@ -974,8 +998,89 @@ test "vm rename: a failure after the first step is exit 8 and says how to contin
     try testing.expect(std.mem.find(u8, g.h.stderr(), "the rename stopped after 3 steps") != null);
     try testing.expect(std.mem.find(u8, g.h.stderr(), "run 'artoo vm rename naboo hoth' again to continue") != null);
     try testing.expect(std.mem.find(u8, g.h.stdout(), "✓ set the hostname") != null);
+    // UniFi's 400 is a refusal: the step failed, it is not unknown.
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "rename the client record  failed") != null);
     // OLD's DNS record goes last: never removed by a run that stopped.
     for (g.srv.received) |req| if (req) |q| try testing.expect(!std.mem.startsWith(u8, q, "DELETE /v1/sites/S1/dns/policies"));
+}
+
+test "vm rename: a failure reported from inside a step also names the re-run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try renameReads(a, list_old, users_old, dns_old_body, "naboo", true));
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("POST /v1/sites/S1/dns/policies", "{}"),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        rt("exec-status", try agentOut(a, 1, "")),
+    });
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "the rename stopped after 2 steps: setting the hostname of hoth failed") != null);
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "run 'artoo vm rename naboo hoth' again to continue") != null);
+    var failed_line = false;
+    var it = std.mem.splitScalar(u8, g.h.stdout(), '\n');
+    while (it.next()) |ln| failed_line = failed_line or (std.mem.find(u8, ln, "set the hostname") != null and std.mem.find(u8, ln, "failed") != null);
+    try testing.expect(failed_line);
+}
+
+test "vm rename: a broken Tailscale credential is a note; the guest's own tailscale set still runs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const list_ts_old = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;tailnet\"}]}";
+    const list_ts_new = "{\"data\":[{\"vmid\":201,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo;tailnet\"}]}";
+    const status = struct {
+        fn f(al: std.mem.Allocator, host: []const u8) ![]const u8 {
+            return agentOut(al, 0, try std.fmt.allocPrint(al, "{{\"BackendState\":\"Running\",\"Self\":{{\"ID\":\"nN\",\"HostName\":\"{s}\",\"DNSName\":\"{s}.example.ts.net.\",\"Tags\":[\"tag:lab-guest\"]}}}}", .{ host, host }));
+        }
+    }.f;
+    const reads = struct {
+        fn f(al: std.mem.Allocator, list: []const u8, users: []const u8, records: []const u8, host: []const u8, site: bool, ts_host: []const u8) ![]const R {
+            const base = try renameReads(al, list, users, records, host, site);
+            var out: std.ArrayList(R) = .empty;
+            try out.appendSlice(al, base[0 .. base.len - 1]);
+            try out.appendSlice(al, &.{
+                rt("agent/exec HTTP", "{\"data\":{\"pid\":44}}"),
+                rt("exec-status", try status(al, ts_host)),
+                .{ .match = "POST /oauth/token", .behavior = .{ .respond = .{ .status = 401, .body = "{\"message\":\"invalid client\"}" } } },
+            });
+            try out.append(al, base[base.len - 1]);
+            return out.items;
+        }
+    }.f;
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try reads(a, list_ts_old, users_old, dns_old_body, "naboo", true, "naboo"));
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("POST /v1/sites/S1/dns/policies", "{}"),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":45}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":46}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+        rt("PUT /proxy/network/api/s/default/rest/user/U1", users_new),
+        rt("DELETE /v1/sites/S1/dns/policies/R1", ""),
+    });
+    try routes.appendSlice(a, try reads(a, list_ts_new, users_new, dns_new_body, "hoth", false, "hoth"));
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try g.tailscaleConfig("");
+    const code = g.h.run(&root, "vm rename naboo hoth -y --confirm naboo");
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "The Tailscale API did not answer") != null);
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "runs 'tailscale set --hostname' only") != null);
+    var set = false;
+    for (g.srv.received) |req| if (req) |q| {
+        set = set or std.mem.find(u8, q, "tailscale%20set%20--hostname") != null or std.mem.find(u8, q, "tailscale+set+--hostname") != null;
+    };
+    try testing.expect(set);
 }
 
 test "vm rename: NEW's DNS record comes first, OLD's is removed last" {

@@ -2250,7 +2250,13 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
 - **Send** in the table's order, each step its own ledger entry. Every
   step checks observed state first, so running `vm rename OLD NEW` again
   after a failure finds the VM under either name and continues; a
-  failure stops with exit 8 naming what is done and what is left.
+  failure stops with exit 8 naming what is done and what is left, and
+  every failure after a finished step — reported by the step itself or
+  not — names that re-run (an unknown outcome stays exit 7, with the
+  re-run after a check). A step that got a definitive answer (a 4xx
+  refusal such as UniFi's 400, a failed command) is marked failed, never
+  unknown. A Tailscale credential that does not work while reading is a
+  plan note: the tailnet step then runs only the guest's `tailscale set`.
   Rollback is `vm rename NEW OLD`.
 - **Verify:** `vm verify NEW` (§9.4) passes; OLD resolves nowhere, has
   no UniFi record, store entry or pinned key; `ssh NEW` logs in with
