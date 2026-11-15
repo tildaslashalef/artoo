@@ -87,7 +87,7 @@ fn joinClean(ctx: *Context, list: []const []const u8) ![]const u8 {
 
 fn header(ctx: *Context, c: *const ts.Client) !void {
     try ui.blocks.header(ctx.out, &ctx.ui, ctx.path, try std.fmt.allocPrint(ctx.arena, "tailscale {s} tailnet {s} {s} {f}", .{
-        ctx.ui.glyphs.dot, try clean(ctx, c.tailnet), ctx.ui.glyphs.dot, ui.values.clock(ctx.ui.now, &ctx.ui.zone),
+        ctx.ui.glyphs.dot, try clean(ctx, c.shownName()), ctx.ui.glyphs.dot, ui.values.clock(ctx.ui.now, &ctx.ui.zone),
     }));
 }
 
@@ -520,7 +520,7 @@ fn labDevice(ctx: *Context, c: *ts.Client, word: []const u8) !struct { tn.Device
 }
 
 fn deviceTarget(ctx: *Context, c: *const ts.Client) ![]const u8 {
-    return std.fmt.allocPrint(ctx.arena, "Tailscale (tailnet {s})", .{try clean(ctx, c.tailnet)});
+    return std.fmt.allocPrint(ctx.arena, "Tailscale (tailnet {s})", .{try clean(ctx, c.shownName())});
 }
 
 const RenameOp = struct {

@@ -80,6 +80,9 @@ pub const Client = struct {
     base: []const u8,
     /// The tailnet path segment (`-` = the client's own).
     tailnet: []const u8,
+    /// The tailnet's DNS name (`example.ts.net`), learned from the first
+    /// device list this invocation read; for display only.
+    seen_name: ?[]const u8 = null,
     credential: Credential,
     /// `Bearer <access token>`, for this invocation only.
     authorization: []const u8,
@@ -170,6 +173,13 @@ pub const Client = struct {
             429 => ctx.fail(error.RateLimited, "Tailscale rate limited the token exchange (429){s}{s}; try again later", .{ s, msg }),
             else => ctx.fail(error.HttpStatus, "Tailscale answered {d} to the token exchange{s}{s}", .{ r.status, s, msg }),
         };
+    }
+
+    /// The tailnet as shown to the operator: the configured name, else
+    /// the name a device list showed, else "default" (the client's own).
+    pub fn shownName(c: *const Client) []const u8 {
+        if (!std.mem.eql(u8, c.tailnet, "-")) return c.tailnet;
+        return c.seen_name orelse "default";
     }
 
     /// `/tailnet/<tailnet><rest>`.
