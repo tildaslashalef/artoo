@@ -109,7 +109,7 @@ artoo vm new NAME [--size S] [--cores N] [--memory SIZE] [--disk SIZE] [--ip ADD
 artoo vm verify VM|--all [--no-dns]   read-only readiness checks (§9.4)
 artoo vm upgrade VM [--snapshot]      install the guest's pending package updates (§9.12, §9.16)
 artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
-artoo vm ssh-config                   write ~/.artoo/ssh_config: strict plain ssh/scp/rsync (§9.10)
+artoo vm ssh-config [--repin VM]      write ~/.artoo/ssh_config: strict plain ssh/scp/rsync; re-pin a changed host key (§9.10)
 artoo vm cp SRC DST [-r] [--force]    copy as <user> to, from or between guests, SHA-256 checked (§9.10)
 artoo vm password VM [--show|--reset] copy the guest user's password to the clipboard; --show prints it (TTY only, §7); --reset sets a new one (§9.17)
 artoo vm fence VM [--off]             Proxmox NIC firewall around a guest (§9.11)
@@ -650,7 +650,9 @@ that is defined (§9.3).
   every NIC; an up NIC cannot be renamed to Proxmox's `eth0`, so the
   static config would never apply (live 2026-10-10). Vendor-data drops
   networking from the initramfs (`/etc/dracut.conf.d/90-artoo-no-initrd-network.conf`,
-  `dracut -f --regenerate-all` in `runcmd`) and runs `netplan apply` once
+  `dracut -f` in `runcmd`, the running kernel only: a cloud-init that
+  runs again as a new instance (§9.18) finds older kernels' boot
+  directories gone, which `--regenerate-all` failed on) and runs `netplan apply` once
   on the first boot (whose initramfs already ran; that boot also pays
   cloud-init's 2-minute wait-online timeout, and cloud-init records the
   rename/wait-online messages, which `vm verify` counts as handled).
@@ -1655,6 +1657,15 @@ guest agent (§9.7, §9.9).
     the file to stdout and writes nothing. `-o json` lists the blocks
     (`name`, `hostname`, `jump`, `pinned`). No prompt: the file is artoo's
     own, like `known_hosts`.
+  - **`--repin VM`** replaces a pinned key whose guest has new host keys
+    (cloud-init starting over after `vm rename`, §9.18; a rebuilt
+    guest): the key is read through the guest agent — the trusted path,
+    as at first pinning (§9.3 step 7) — and the plan shows the pinned
+    and the new SHA256 fingerprint, so the operator can compare the new
+    one with what `ssh` reported; it is confirmed like any change
+    (`-y` skips the prompt, `-n` shows the plan and writes nothing), then
+    the file is rewritten as usual. A key equal to the pin changes
+    nothing. Refused for a VM that is not a running artoo guest.
 
 - **`artoo vm cp SRC DST [-r] [--force]`** copies one file, or one
   directory tree with `-r`, as the guest user.
@@ -2318,11 +2329,14 @@ that renames a client record (`PUT rest/user/{_id}` is expected, §17.1)
 — checked with a disposable record; whether cloud-init's per-boot
 hostname modules keep NEW across a reboot (Proxmox derives the
 cloud-init hostname from `name`, so they should) — checked by a reboot
-of a disposable guest; whether cloud-init's instance ID follows the new
-name, so that a cold start regenerates the SSH host keys — checked by a
-cold start after a rename, comparing the host key with the pinned one.
-No mitigation is built: the plan notes that a cold start may change
-the host key and that `vm ssh-config` re-pins it. The `/etc/hosts`
+of a disposable guest. Settled live: cloud-init's instance ID follows
+the name, so the next boot after a rename — a guest reboot too, not
+only a cold start — runs cloud-init as a new instance: new SSH host
+keys, and the once-per-instance modules (`runcmd`, users, keys) run
+again; the hostname stays NEW. No mitigation is built: the plan says
+so, and `vm ssh-config --repin NEW` re-pins the key read through the
+guest agent (§9.10). `runcmd` is safe to run again (§9.3: `dracut -f`
+rebuilds only the running kernel's initramfs). The `/etc/hosts`
 rewrite takes a line's trailing CR off before comparing names and puts
 it back.
 
