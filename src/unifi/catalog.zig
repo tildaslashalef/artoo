@@ -149,7 +149,7 @@ pub const resources = [_]Resource{
     .{
         .name = "sites",
         .label = "site",
-        .summary = "Local sites",
+        .summary = "Sites the gateway manages",
         .tag = "Sites",
         .site = false,
         .list = .{ .path = "/v1/sites", .id = "getSiteOverviewPage" },
@@ -173,10 +173,10 @@ pub const resources = [_]Resource{
         .list = .{ .path = "/v1/sites/{siteId}/devices", .id = "getAdoptedDeviceOverviewPage" },
         .show = .{ .path = "/v1/sites/{siteId}/devices/{deviceId}", .id = "getAdoptedDeviceDetails" },
         .extras = &.{
-            .{ .verb = "stats", .summary = "Latest statistics (CPU, memory, load, uptime, radios)", .op = .{ .path = "/v1/sites/{siteId}/devices/{deviceId}/statistics/latest", .id = "getAdoptedDeviceLatestStatistics" } },
+            .{ .verb = "stats", .summary = "Show latest device statistics: CPU, memory, uptime, radios", .op = .{ .path = "/v1/sites/{siteId}/devices/{deviceId}/statistics/latest", .id = "getAdoptedDeviceLatestStatistics" } },
             .{
                 .verb = "pending",
-                .summary = "Devices pending adoption",
+                .summary = "List devices waiting for adoption",
                 .targeted = false,
                 .shape = .page,
                 .op = .{ .path = "/v1/pending-devices", .id = "getPendingDevicePage" },
@@ -203,8 +203,8 @@ pub const resources = [_]Resource{
         .writes = &.{
             .{ .verb = "adopt", .summary = "Adopt a pending device by MAC address", .kind = .adopt, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/devices", .id = "adoptDevice" }, .fields = &.{ "ignoreDeviceLimit", "macAddress" }, .required = &.{ "ignoreDeviceLimit", "macAddress" } },
             .{ .verb = "restart", .summary = "Restart a device", .kind = .action, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/devices/{deviceId}/actions", .id = "executeAdoptedDeviceAction" }, .destructive = true, .action = "RESTART" },
-            .{ .verb = "port-cycle", .summary = "Power-cycle PoE on a device port", .kind = .port_action, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/devices/{deviceId}/interfaces/ports/{portIdx}/actions", .id = "executePortAction" }, .destructive = true, .action = "POWER_CYCLE" },
-            .{ .verb = "rm", .summary = "Remove (forget) an adopted device", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/devices/{deviceId}", .id = "removeDevice" }, .destructive = true },
+            .{ .verb = "port-cycle", .summary = "Power-cycle PoE on one port of a device", .kind = .port_action, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/devices/{deviceId}/interfaces/ports/{portIdx}/actions", .id = "executePortAction" }, .destructive = true, .action = "POWER_CYCLE" },
+            .{ .verb = "rm", .summary = "Forget an adopted device", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/devices/{deviceId}", .id = "removeDevice" }, .destructive = true },
         },
         .columns = &.{
             .{ .title = "NAME", .path = "name", .id = true },
@@ -239,8 +239,8 @@ pub const resources = [_]Resource{
         .list = .{ .path = "/v1/sites/{siteId}/clients", .id = "getConnectedClientOverviewPage" },
         .show = .{ .path = "/v1/sites/{siteId}/clients/{clientId}", .id = "getConnectedClientDetails" },
         .writes = &.{
-            .{ .verb = "authorize", .summary = "Authorize guest access for a client", .kind = .action, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/clients/{clientId}/actions", .id = "executeConnectedClientAction" }, .action = "AUTHORIZE_GUEST_ACCESS", .fields = &.{ "dataUsageLimitMBytes", "rxRateLimitKbps", "timeLimitMinutes", "txRateLimitKbps" } },
-            .{ .verb = "unauthorize", .summary = "Revoke guest access for a client", .kind = .action, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/clients/{clientId}/actions", .id = "executeConnectedClientAction" }, .action = "UNAUTHORIZE_GUEST_ACCESS", .fields = &.{ "dataUsageLimitMBytes", "rxRateLimitKbps", "timeLimitMinutes", "txRateLimitKbps" } },
+            .{ .verb = "authorize", .summary = "Give a client guest network access", .kind = .action, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/clients/{clientId}/actions", .id = "executeConnectedClientAction" }, .action = "AUTHORIZE_GUEST_ACCESS", .fields = &.{ "dataUsageLimitMBytes", "rxRateLimitKbps", "timeLimitMinutes", "txRateLimitKbps" } },
+            .{ .verb = "unauthorize", .summary = "Revoke a client's guest network access", .kind = .action, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/clients/{clientId}/actions", .id = "executeConnectedClientAction" }, .action = "UNAUTHORIZE_GUEST_ACCESS", .fields = &.{ "dataUsageLimitMBytes", "rxRateLimitKbps", "timeLimitMinutes", "txRateLimitKbps" } },
         },
         .columns = &.{
             .{ .title = "NAME", .path = "name", .id = true },
@@ -270,11 +270,11 @@ pub const resources = [_]Resource{
         .list = .{ .path = "/v1/sites/{siteId}/networks", .id = "getNetworksOverviewPage" },
         .show = .{ .path = "/v1/sites/{siteId}/networks/{networkId}", .id = "getNetworkDetails" },
         .extras = &.{
-            .{ .verb = "refs", .summary = "Resources that reference the network", .op = .{ .path = "/v1/sites/{siteId}/networks/{networkId}/references", .id = "getNetworkReferences" } },
+            .{ .verb = "refs", .summary = "Show what references a network", .op = .{ .path = "/v1/sites/{siteId}/networks/{networkId}/references", .id = "getNetworkReferences" } },
         },
         .writes = &.{
             .{ .verb = "add", .summary = "Create a network", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/networks", .id = "createNetwork" }, .destructive = true, .fields = &.{ "cellularBackupEnabled", "deviceId", "dhcpGuarding", "enabled", "internetAccessEnabled", "ipv4Configuration", "ipv6Configuration", "isolationEnabled", "management", "mdnsForwardingEnabled", "name", "vlanId", "zoneId" }, .required = &.{ "enabled", "management", "name", "vlanId" } },
-            .{ .verb = "set", .summary = "Replace a network (complete body)", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/networks/{networkId}", .id = "updateNetwork" }, .destructive = true, .fields = &.{ "cellularBackupEnabled", "deviceId", "dhcpGuarding", "enabled", "internetAccessEnabled", "ipv4Configuration", "ipv6Configuration", "isolationEnabled", "management", "mdnsForwardingEnabled", "name", "vlanId", "zoneId" }, .required = &.{ "enabled", "management", "name", "vlanId" } },
+            .{ .verb = "set", .summary = "Replace a network with a complete body", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/networks/{networkId}", .id = "updateNetwork" }, .destructive = true, .fields = &.{ "cellularBackupEnabled", "deviceId", "dhcpGuarding", "enabled", "internetAccessEnabled", "ipv4Configuration", "ipv6Configuration", "isolationEnabled", "management", "mdnsForwardingEnabled", "name", "vlanId", "zoneId" }, .required = &.{ "enabled", "management", "name", "vlanId" } },
             .{ .verb = "rm", .summary = "Delete a network", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/networks/{networkId}", .id = "deleteNetwork" }, .destructive = true, .force = true },
         },
         .read_only = &.{ "default", "id", "metadata" },
@@ -306,7 +306,7 @@ pub const resources = [_]Resource{
         .show = .{ .path = "/v1/sites/{siteId}/wifi/broadcasts/{wifiBroadcastId}", .id = "getWifiBroadcastDetails" },
         .writes = &.{
             .{ .verb = "add", .summary = "Create a Wi-Fi broadcast", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/wifi/broadcasts", .id = "createWifiBroadcast" }, .destructive = true, .fields = &.{ "advertiseDeviceName", "arpProxyEnabled", "bandSteeringEnabled", "basicDataRateKbpsByFrequencyGHz", "blackoutScheduleConfiguration", "broadcastingDeviceFilter", "broadcastingFrequenciesGHz", "bssTransitionEnabled", "channel2gLockedTo6", "clientFilteringPolicy", "clientIsolationEnabled", "dnsAssistanceConfiguration", "dtimPeriod2gLockedTo3", "dtimPeriodByFrequencyGHzOverride", "enabled", "handoffSuggestionsConfiguration", "hideName", "hotspotConfiguration", "mdnsProxyConfiguration", "mloEnabled", "multicastFilteringPolicy", "multicastToUnicastConversionEnabled", "name", "network", "securityConfiguration", "type", "uapsdEnabled" }, .required = &.{ "channel2gLockedTo6", "clientIsolationEnabled", "dtimPeriod2gLockedTo3", "enabled", "hideName", "multicastToUnicastConversionEnabled", "name", "securityConfiguration", "type", "uapsdEnabled" } },
-            .{ .verb = "set", .summary = "Replace a Wi-Fi broadcast (complete body)", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/wifi/broadcasts/{wifiBroadcastId}", .id = "updateWifiBroadcast" }, .destructive = true, .fields = &.{ "advertiseDeviceName", "arpProxyEnabled", "bandSteeringEnabled", "basicDataRateKbpsByFrequencyGHz", "blackoutScheduleConfiguration", "broadcastingDeviceFilter", "broadcastingFrequenciesGHz", "bssTransitionEnabled", "channel2gLockedTo6", "clientFilteringPolicy", "clientIsolationEnabled", "dnsAssistanceConfiguration", "dtimPeriod2gLockedTo3", "dtimPeriodByFrequencyGHzOverride", "enabled", "handoffSuggestionsConfiguration", "hideName", "hotspotConfiguration", "mdnsProxyConfiguration", "mloEnabled", "multicastFilteringPolicy", "multicastToUnicastConversionEnabled", "name", "network", "securityConfiguration", "type", "uapsdEnabled" }, .required = &.{ "channel2gLockedTo6", "clientIsolationEnabled", "dtimPeriod2gLockedTo3", "enabled", "hideName", "multicastToUnicastConversionEnabled", "name", "securityConfiguration", "type", "uapsdEnabled" } },
+            .{ .verb = "set", .summary = "Replace a Wi-Fi broadcast with a complete body", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/wifi/broadcasts/{wifiBroadcastId}", .id = "updateWifiBroadcast" }, .destructive = true, .fields = &.{ "advertiseDeviceName", "arpProxyEnabled", "bandSteeringEnabled", "basicDataRateKbpsByFrequencyGHz", "blackoutScheduleConfiguration", "broadcastingDeviceFilter", "broadcastingFrequenciesGHz", "bssTransitionEnabled", "channel2gLockedTo6", "clientFilteringPolicy", "clientIsolationEnabled", "dnsAssistanceConfiguration", "dtimPeriod2gLockedTo3", "dtimPeriodByFrequencyGHzOverride", "enabled", "handoffSuggestionsConfiguration", "hideName", "hotspotConfiguration", "mdnsProxyConfiguration", "mloEnabled", "multicastFilteringPolicy", "multicastToUnicastConversionEnabled", "name", "network", "securityConfiguration", "type", "uapsdEnabled" }, .required = &.{ "channel2gLockedTo6", "clientIsolationEnabled", "dtimPeriod2gLockedTo3", "enabled", "hideName", "multicastToUnicastConversionEnabled", "name", "securityConfiguration", "type", "uapsdEnabled" } },
             .{ .verb = "rm", .summary = "Delete a Wi-Fi broadcast", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/wifi/broadcasts/{wifiBroadcastId}", .id = "deleteWifiBroadcast" }, .destructive = true, .force = true },
         },
         .read_only = &.{ "id", "metadata" },
@@ -337,19 +337,19 @@ pub const resources = [_]Resource{
     .{
         .name = "fw-policies",
         .label = "firewall policy",
-        .summary = "Firewall policies (zone-based firewall)",
+        .summary = "Firewall policies between zones",
         .tag = "Firewall",
         .list = .{ .path = "/v1/sites/{siteId}/firewall/policies", .id = "getFirewallPolicies" },
         .show = .{ .path = "/v1/sites/{siteId}/firewall/policies/{firewallPolicyId}", .id = "getFirewallPolicy" },
         .extras = &.{
-            .{ .verb = "order", .summary = "User-defined policy order between two zones", .targeted = false, .shape = .zone_pair, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/ordering", .id = "getFirewallPolicyOrdering" } },
+            .{ .verb = "order", .summary = "Show the user-defined policy order between two zones", .targeted = false, .shape = .zone_pair, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/ordering", .id = "getFirewallPolicyOrdering" } },
         },
         .writes = &.{
             .{ .verb = "add", .summary = "Create a firewall policy", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies", .id = "createFirewallPolicy" }, .destructive = true, .fields = &.{ "action", "connectionStateFilter", "description", "destination", "enabled", "ipProtocolScope", "ipsecFilter", "loggingEnabled", "name", "schedule", "source" }, .required = &.{ "action", "destination", "enabled", "ipProtocolScope", "loggingEnabled", "name", "source" } },
-            .{ .verb = "set", .summary = "Replace a firewall policy (complete body)", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/{firewallPolicyId}", .id = "updateFirewallPolicy" }, .destructive = true, .fields = &.{ "action", "connectionStateFilter", "description", "destination", "enabled", "ipProtocolScope", "ipsecFilter", "loggingEnabled", "name", "schedule", "source" }, .required = &.{ "action", "destination", "enabled", "ipProtocolScope", "loggingEnabled", "name", "source" } },
-            .{ .verb = "patch", .summary = "Change selected firewall policy fields", .kind = .patch, .method = .PATCH, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/{firewallPolicyId}", .id = "patchFirewallPolicy" }, .destructive = true, .fields = &.{"loggingEnabled"} },
+            .{ .verb = "set", .summary = "Replace a firewall policy with a complete body", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/{firewallPolicyId}", .id = "updateFirewallPolicy" }, .destructive = true, .fields = &.{ "action", "connectionStateFilter", "description", "destination", "enabled", "ipProtocolScope", "ipsecFilter", "loggingEnabled", "name", "schedule", "source" }, .required = &.{ "action", "destination", "enabled", "ipProtocolScope", "loggingEnabled", "name", "source" } },
+            .{ .verb = "patch", .summary = "Change selected fields of a firewall policy", .kind = .patch, .method = .PATCH, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/{firewallPolicyId}", .id = "patchFirewallPolicy" }, .destructive = true, .fields = &.{"loggingEnabled"} },
             .{ .verb = "rm", .summary = "Delete a firewall policy", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/{firewallPolicyId}", .id = "deleteFirewallPolicy" }, .destructive = true },
-            .{ .verb = "reorder", .summary = "Replace the policy order between two zones", .kind = .ordering, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/ordering", .id = "updateFirewallPolicyOrdering" }, .destructive = true, .fields = &.{"orderedFirewallPolicyIds"}, .required = &.{"orderedFirewallPolicyIds"} },
+            .{ .verb = "reorder", .summary = "Set the policy order between two zones", .kind = .ordering, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/firewall/policies/ordering", .id = "updateFirewallPolicyOrdering" }, .destructive = true, .fields = &.{"orderedFirewallPolicyIds"}, .required = &.{"orderedFirewallPolicyIds"} },
         },
         .read_only = &.{ "id", "index", "metadata" },
         .columns = &.{
@@ -373,13 +373,13 @@ pub const resources = [_]Resource{
     .{
         .name = "fw-zones",
         .label = "firewall zone",
-        .summary = "Firewall zones (zone-based firewall)",
+        .summary = "Firewall zones (groups of networks)",
         .tag = "Firewall",
         .list = .{ .path = "/v1/sites/{siteId}/firewall/zones", .id = "getFirewallZones" },
         .show = .{ .path = "/v1/sites/{siteId}/firewall/zones/{firewallZoneId}", .id = "getFirewallZone" },
         .writes = &.{
             .{ .verb = "add", .summary = "Create a firewall zone", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/firewall/zones", .id = "createFirewallZone" }, .destructive = true, .fields = &.{ "name", "networkIds" }, .required = &.{ "name", "networkIds" } },
-            .{ .verb = "set", .summary = "Replace a firewall zone (complete body)", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/firewall/zones/{firewallZoneId}", .id = "updateFirewallZone" }, .destructive = true, .fields = &.{ "name", "networkIds" }, .required = &.{ "name", "networkIds" } },
+            .{ .verb = "set", .summary = "Replace a firewall zone with a complete body", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/firewall/zones/{firewallZoneId}", .id = "updateFirewallZone" }, .destructive = true, .fields = &.{ "name", "networkIds" }, .required = &.{ "name", "networkIds" } },
             .{ .verb = "rm", .summary = "Delete a firewall zone", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/firewall/zones/{firewallZoneId}", .id = "deleteFirewallZone" }, .destructive = true },
         },
         .read_only = &.{ "id", "metadata" },
@@ -408,9 +408,9 @@ pub const resources = [_]Resource{
         },
         .writes = &.{
             .{ .verb = "add", .summary = "Create an ACL rule", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/acl-rules", .id = "createAclRule" }, .destructive = true, .fields = &.{ "action", "description", "destinationFilter", "enabled", "enforcingDeviceFilter", "index", "name", "networkIdFilter", "protocolFilter", "sourceFilter", "type" }, .required = &.{ "action", "enabled", "name", "type" } },
-            .{ .verb = "set", .summary = "Replace an ACL rule (complete body)", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/acl-rules/{aclRuleId}", .id = "updateAclRule" }, .destructive = true, .fields = &.{ "action", "description", "destinationFilter", "enabled", "enforcingDeviceFilter", "index", "name", "networkIdFilter", "protocolFilter", "sourceFilter", "type" }, .required = &.{ "action", "enabled", "name", "type" } },
+            .{ .verb = "set", .summary = "Replace an ACL rule with a complete body", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/acl-rules/{aclRuleId}", .id = "updateAclRule" }, .destructive = true, .fields = &.{ "action", "description", "destinationFilter", "enabled", "enforcingDeviceFilter", "index", "name", "networkIdFilter", "protocolFilter", "sourceFilter", "type" }, .required = &.{ "action", "enabled", "name", "type" } },
             .{ .verb = "rm", .summary = "Delete an ACL rule", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/acl-rules/{aclRuleId}", .id = "deleteAclRule" }, .destructive = true },
-            .{ .verb = "reorder", .summary = "Replace the ACL rule order", .kind = .ordering, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/acl-rules/ordering", .id = "updateAclRuleOrdering" }, .destructive = true, .fields = &.{"orderedAclRuleIds"}, .required = &.{"orderedAclRuleIds"} },
+            .{ .verb = "reorder", .summary = "Set the ACL rule order", .kind = .ordering, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/acl-rules/ordering", .id = "updateAclRuleOrdering" }, .destructive = true, .fields = &.{"orderedAclRuleIds"}, .required = &.{"orderedAclRuleIds"} },
         },
         .read_only = &.{ "id", "metadata" },
         .columns = &.{
@@ -451,13 +451,13 @@ pub const resources = [_]Resource{
     .{
         .name = "dns-policies",
         .label = "DNS policy",
-        .summary = "DNS policies (A/AAAA/CNAME/MX/SRV/TXT records, forwarding)",
+        .summary = "DNS policies: local records and forwarding",
         .tag = "DNS Policies",
         .list = .{ .path = "/v1/sites/{siteId}/dns/policies", .id = "getDnsPolicyPage" },
         .show = .{ .path = "/v1/sites/{siteId}/dns/policies/{dnsPolicyId}", .id = "getDnsPolicy" },
         .writes = &.{
             .{ .verb = "add", .summary = "Create a DNS policy", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/dns/policies", .id = "createDnsPolicy" }, .fields = &.{ "domain", "enabled", "ipAddress", "ipv4Address", "ipv6Address", "mailServerDomain", "port", "priority", "protocol", "serverDomain", "service", "targetDomain", "text", "ttlSeconds", "type", "weight" }, .required = &.{ "enabled", "type" } },
-            .{ .verb = "set", .summary = "Replace a DNS policy (complete body)", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/dns/policies/{dnsPolicyId}", .id = "updateDnsPolicy" }, .fields = &.{ "domain", "enabled", "ipAddress", "ipv4Address", "ipv6Address", "mailServerDomain", "port", "priority", "protocol", "serverDomain", "service", "targetDomain", "text", "ttlSeconds", "type", "weight" }, .required = &.{ "enabled", "type" } },
+            .{ .verb = "set", .summary = "Replace a DNS policy with a complete body", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/dns/policies/{dnsPolicyId}", .id = "updateDnsPolicy" }, .fields = &.{ "domain", "enabled", "ipAddress", "ipv4Address", "ipv6Address", "mailServerDomain", "port", "priority", "protocol", "serverDomain", "service", "targetDomain", "text", "ttlSeconds", "type", "weight" }, .required = &.{ "enabled", "type" } },
             .{ .verb = "rm", .summary = "Delete a DNS policy", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/dns/policies/{dnsPolicyId}", .id = "deleteDnsPolicy" }, .destructive = true },
         },
         .read_only = &.{ "id", "metadata" },
@@ -493,13 +493,13 @@ pub const resources = [_]Resource{
     .{
         .name = "traffic-lists",
         .label = "traffic matching list",
-        .summary = "Traffic matching lists (ports, IPs)",
+        .summary = "Traffic matching lists (ports, IP addresses)",
         .tag = "Traffic Matching Lists",
         .list = .{ .path = "/v1/sites/{siteId}/traffic-matching-lists", .id = "getTrafficMatchingLists" },
         .show = .{ .path = "/v1/sites/{siteId}/traffic-matching-lists/{trafficMatchingListId}", .id = "getTrafficMatchingList" },
         .writes = &.{
             .{ .verb = "add", .summary = "Create a traffic matching list", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/traffic-matching-lists", .id = "createTrafficMatchingList" }, .fields = &.{ "items", "name", "type" }, .required = &.{ "name", "type" } },
-            .{ .verb = "set", .summary = "Replace a traffic matching list (complete body)", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/traffic-matching-lists/{trafficMatchingListId}", .id = "updateTrafficMatchingList" }, .fields = &.{ "items", "name", "type" }, .required = &.{ "name", "type" } },
+            .{ .verb = "set", .summary = "Replace a traffic matching list with a complete body", .kind = .replace, .method = .PUT, .op = .{ .path = "/v1/sites/{siteId}/traffic-matching-lists/{trafficMatchingListId}", .id = "updateTrafficMatchingList" }, .fields = &.{ "items", "name", "type" }, .required = &.{ "name", "type" } },
             .{ .verb = "rm", .summary = "Delete a traffic matching list", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/traffic-matching-lists/{trafficMatchingListId}", .id = "deleteTrafficMatchingList" }, .destructive = true },
         },
         .read_only = &.{"id"},
@@ -521,9 +521,9 @@ pub const resources = [_]Resource{
         .list = .{ .path = "/v1/sites/{siteId}/hotspot/vouchers", .id = "getVouchers" },
         .show = .{ .path = "/v1/sites/{siteId}/hotspot/vouchers/{voucherId}", .id = "getVoucher" },
         .writes = &.{
-            .{ .verb = "add", .summary = "Create hotspot vouchers", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/hotspot/vouchers", .id = "createVouchers" }, .fields = &.{ "authorizedGuestLimit", "count", "dataUsageLimitMBytes", "name", "rxRateLimitKbps", "timeLimitMinutes", "txRateLimitKbps" }, .required = &.{ "name", "timeLimitMinutes" } },
+            .{ .verb = "add", .summary = "Create one or more hotspot vouchers", .kind = .create, .method = .POST, .op = .{ .path = "/v1/sites/{siteId}/hotspot/vouchers", .id = "createVouchers" }, .fields = &.{ "authorizedGuestLimit", "count", "dataUsageLimitMBytes", "name", "rxRateLimitKbps", "timeLimitMinutes", "txRateLimitKbps" }, .required = &.{ "name", "timeLimitMinutes" } },
             .{ .verb = "rm", .summary = "Delete a voucher", .kind = .delete, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/hotspot/vouchers/{voucherId}", .id = "deleteVoucher" }, .destructive = true },
-            .{ .verb = "purge", .summary = "Delete every voucher matching --filter", .kind = .purge, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/hotspot/vouchers", .id = "deleteVouchers" }, .destructive = true },
+            .{ .verb = "purge", .summary = "Delete every voucher that matches a filter", .kind = .purge, .method = .DELETE, .op = .{ .path = "/v1/sites/{siteId}/hotspot/vouchers", .id = "deleteVouchers" }, .destructive = true },
         },
         .read_only = &.{ "activatedAt", "authorizedGuestCount", "code", "createdAt", "expired", "expiresAt", "id" },
         .columns = &.{
@@ -617,7 +617,7 @@ pub const resources = [_]Resource{
     .{
         .name = "lags",
         .label = "LAG",
-        .summary = "Link aggregation groups",
+        .summary = "Link aggregation groups (LAGs)",
         .tag = "Switching",
         .list = .{ .path = "/v1/sites/{siteId}/switching/lags", .id = "getLagPage" },
         .show = .{ .path = "/v1/sites/{siteId}/switching/lags/{lagId}", .id = "getLag" },
@@ -680,7 +680,7 @@ pub const resources = [_]Resource{
     .{
         .name = "dpi-apps",
         .label = "DPI application",
-        .summary = "DPI applications",
+        .summary = "DPI applications (deep packet inspection)",
         .tag = "Supporting Resources",
         .site = false,
         .list = .{ .path = "/v1/dpi/applications", .id = "getDpiApplications" },

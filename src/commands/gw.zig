@@ -19,20 +19,21 @@ const Value = std.json.Value;
 // ---------------------------------------------------------------- flags
 
 const page_flags = [_]cli.Flag{
-    .{ .long = "limit", .short = 'l', .kind = .int, .metavar = "N", .default = "200", .help = "Items per request (1-200)" },
+    .{ .long = "limit", .short = 'l', .kind = .int, .metavar = "N", .default = "200", .help = "Items per page, 1-200" },
     .{ .long = "offset", .kind = .int, .metavar = "N", .default = "0", .help = "Skip the first N items" },
-    .{ .long = "all", .help = "Fetch every page (pages of 200; not a snapshot)" },
+    .{ .long = "all", .help = "Read every page (not one consistent snapshot)" },
 };
 
 const filter_flags = [_]cli.Flag{
-    .{ .long = "filter", .kind = .string, .metavar = "EXPR", .help = "Server-side filter (grammar above)" },
+    .{ .long = "filter", .kind = .string, .metavar = "EXPR", .help = "Filter applied by UniFi, e.g. name.eq('x') (grammar above)" },
 } ++ page_flags;
 
 const filter_grammar =
-    \\Filter grammar (server-side): PROPERTY.FUNCTION(ARGS), e.g. name.eq('x').
-    \\Strings take single quotes, booleans are bare (enabled.eq(true)), like
-    \\uses * wildcards (name.like('web*')), in takes a list (name.in('a','b')).
-    \\Combine with and(A, B), or(A, B), not(A). Quote EXPR for the shell.
+    \\--filter is applied by UniFi, so only matching items are sent. Its grammar
+    \\is PROPERTY.FUNCTION(ARGS), e.g. name.eq('x'). Strings take single quotes,
+    \\booleans are bare (enabled.eq(true)), like takes * wildcards
+    \\(name.like('web*')) and in takes a list (name.in('a','b')). Combine with
+    \\and(A, B), or(A, B) and not(A). Quote EXPR for the shell.
 ;
 
 /// Help details for a filterable list: grammar plus an aligned property
@@ -102,7 +103,8 @@ fn Ls(comptime r: *const catalog.Resource) type {
     return struct {
         pub const name = "ls";
         pub const summary = "List " ++ lowerFirst(r.summary);
-        pub const details = if (r.filter) filterHelp(r.filterable) else "";
+        pub const details = listIntro("Lists " ++ lowerFirst(r.summary) ++ (if (r.site) " on the configured site" else "") ++ ".") ++
+            (if (r.filter) "\n\n" ++ filterHelp(r.filterable) else "");
         pub const flags = if (r.filter) filter_flags else page_flags;
         pub const examples = [_][]const u8{"artoo gw " ++ r.name ++ " ls"} ++
             (if (r.filter) if (exampleFilter(r.filterable)) |f| [_][]const u8{"artoo gw " ++ r.name ++ " ls --filter \"" ++ f ++ "\""} else [_][]const u8{} else [_][]const u8{}) ++
@@ -118,6 +120,35 @@ fn Ls(comptime r: *const catalog.Resource) type {
     };
 }
 
+/// The opening paragraph of a list page: what it lists, then paging.
+fn listIntro(comptime first: []const u8) []const u8 {
+    return first ++ " A page holds up to --limit items and its footer names the next --offset;" ++
+        " --all reads every page. -o json keeps the fields the table leaves out.";
+}
+
+/// A realistic name for examples (an ID where names do not resolve).
+pub fn sample(comptime r: *const catalog.Resource) []const u8 {
+    if (r.match.len == 0) return "ID";
+    const names = .{
+        .{ "sites", "Default" },
+        .{ "devices", "office-ap" },
+        .{ "clients", "hoth" },
+        .{ "networks", "IoT" },
+        .{ "wifi", "Guest" },
+        .{ "fw-policies", "allow-ssh" },
+        .{ "fw-zones", "Lab" },
+        .{ "acl", "block-guests" },
+        .{ "dns-policies", "naboo.lab.example.com" },
+        .{ "traffic-lists", "web-ports" },
+        .{ "vouchers", "weekend" },
+        .{ "countries", "DE" },
+    };
+    inline for (names) |n| {
+        if (std.mem.eql(u8, n[0], r.name)) return n[1];
+    }
+    return "NAME";
+}
+
 /// "Adopted UniFi devices" → "adopted UniFi devices"; acronyms and
 /// hyphenated words ("WAN", "Wi-Fi") stay as they are.
 fn lowerFirst(comptime s: []const u8) []const u8 {
@@ -131,19 +162,41 @@ fn lowerFirst(comptime s: []const u8) []const u8 {
 
 pub fn targetHelp(comptime r: *const catalog.Resource) []const u8 {
     comptime {
-        var s: []const u8 = "ID";
-        for (r.match) |m| s = s ++ ", or exact " ++ m;
+        if (r.match.len == 0) return "ID";
+        var s: []const u8 = "ID, or exact ";
+        for (r.match, 0..) |m, i| s = s ++ (if (i == 0) "" else if (i + 1 == r.match.len) " or " else ", ") ++ m;
         return s;
     }
+}
+
+/// How a target is named, for details: "by ID or exact name".
+fn targetWords(comptime r: *const catalog.Resource) []const u8 {
+    comptime {
+        if (r.match.len == 0) return "by ID";
+        var s: []const u8 = "by ID or by exact ";
+        for (r.match, 0..) |m, i| s = s ++ (if (i == 0) "" else if (i + 1 == r.match.len) " or " else ", ") ++ m;
+        return s;
+    }
+}
+
+fn hasReplace(comptime r: *const catalog.Resource) bool {
+    for (r.writes) |w| if (w.kind == .replace) return true;
+    return false;
 }
 
 fn Show(comptime r: *const catalog.Resource) type {
     return struct {
         pub const name = "show";
         pub const summary = "Show one " ++ r.label ++ " in detail";
-        pub const details = "Names match exactly first, then case-insensitively; an ambiguous name\nlists the matching IDs.";
+        pub const details = "Shows every field of one " ++ r.label ++ ", named " ++ targetWords(r) ++ "." ++
+            (if (r.match.len > 0) " A name matches exactly first, then case-insensitively; an ambiguous name lists the matching IDs." else "") ++
+            " Secrets are shown as <redacted>." ++
+            (if (hasReplace(r)) "\n\nThe -o json document is a starting point for 'artoo gw " ++ r.name ++ " set': edit it and put the real secrets back." else "");
         pub const positionals = [_]cli.Positional{.{ .name = "ID|NAME", .help = targetHelp(r) }};
-        pub const examples = [_][]const u8{"artoo gw " ++ r.name ++ " show ID"};
+        pub const examples = [_][]const u8{
+            "artoo gw " ++ r.name ++ " show " ++ sample(r),
+            "artoo gw " ++ r.name ++ " show " ++ sample(r) ++ " -o json",
+        };
 
         pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
             var c = try unifi.Client.open(ctx);
@@ -162,10 +215,11 @@ fn Show(comptime r: *const catalog.Resource) type {
 fn Extra(comptime r: *const catalog.Resource, comptime e: catalog.Extra) type {
     return struct {
         pub const name = e.verb;
-        pub const summary = e.summary;
-        pub const details = switch (e.shape) {
-            .page => filterHelp(e.filterable),
-            .zone_pair => "Zones by ID or exact name (see 'artoo gw fw-zones ls').",
+        // An untargeted object's summary is also its view's title.
+        pub const summary = if (e.shape == .object and !e.targeted) "Show the " ++ lowerInitial(e.summary) else e.summary;
+        pub const details = extraIntro(r, e) ++ switch (e.shape) {
+            .page => "\n\n" ++ filterHelp(e.filterable),
+            .zone_pair => "\n\nZones are named by ID or exact name (see 'artoo gw fw-zones ls').",
             .object => "",
         };
         pub const flags = switch (e.shape) {
@@ -175,10 +229,11 @@ fn Extra(comptime r: *const catalog.Resource, comptime e: catalog.Extra) type {
         pub const positionals = if (e.shape == .zone_pair)
             zone_positionals
         else if (e.targeted) [_]cli.Positional{.{ .name = "ID|NAME", .help = targetHelp(r) }} else [_]cli.Positional{};
-        pub const examples = [_][]const u8{"artoo gw " ++ r.name ++ " " ++ e.verb ++ switch (e.shape) {
+        const cmd = "artoo gw " ++ r.name ++ " " ++ e.verb ++ switch (e.shape) {
             .zone_pair => " Internal External",
-            else => if (e.targeted) " ID" else "",
-        }};
+            else => if (e.targeted) " " ++ sample(r) else "",
+        };
+        pub const examples = [_][]const u8{ cmd, cmd ++ " -o json" };
 
         pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
             const opts: unifi.ListOptions = if (comptime e.shape == .page) try listOptions(ctx, @This(), args) else .{};
@@ -209,6 +264,45 @@ fn Extra(comptime r: *const catalog.Resource, comptime e: catalog.Extra) type {
             }
         }
     };
+}
+
+/// The opening paragraph of an extra read verb.
+fn extraIntro(comptime r: *const catalog.Resource, comptime e: catalog.Extra) []const u8 {
+    const key = r.name ++ " " ++ e.verb;
+    const texts = .{
+        .{
+            "devices stats",
+            "Shows a device's latest statistics as UniFi last collected them: uptime, CPU and memory use, load averages, and per-radio figures for access points. Use it to check a device that seems slow or unstable; 'artoo gw devices show' has its configuration and ports.",
+        },
+        .{
+            "devices pending",
+            "Lists devices UniFi has discovered that are not adopted yet, with their model, address and firmware. Adopt one with 'artoo gw devices adopt MAC'.",
+        },
+        .{
+            "networks refs",
+            "Shows the resources that reference a network (Wi-Fi broadcasts, firewall zones and others), so you know what a change or a deletion affects before making it. 'artoo gw networks rm --force' deletes a network even while it is referenced.",
+        },
+        .{
+            "fw-policies order",
+            "Shows the order of the user-defined firewall policies from one zone to another; UniFi applies them in this order. Change it with 'artoo gw fw-policies reorder': this command's -o json output is a starting point for its file.",
+        },
+        .{
+            "acl order",
+            "Shows the order of the user-defined ACL rules; UniFi applies them in this order. Change it with 'artoo gw acl reorder': this command's -o json output is a starting point for its file.",
+        },
+    };
+    inline for (texts) |t| {
+        if (std.mem.eql(u8, t[0], key)) return t[1];
+    }
+    @compileError(key ++ ": no help text");
+}
+
+/// "User-defined ACL rule order" → "user-defined ACL rule order".
+fn lowerInitial(comptime s: []const u8) []const u8 {
+    comptime {
+        if (s.len < 2 or !std.ascii.isLower(s[1])) return s;
+        return .{std.ascii.toLower(s[0])} ++ s[1..];
+    }
 }
 
 pub const zone_positionals = [_]cli.Positional{
@@ -277,10 +371,14 @@ const InfoData = struct {
 
 pub const info = struct {
     pub const name = "info";
-    pub const summary = "Gateway summary: version, site, devices, clients, networks, Wi-Fi, WANs, DNS";
+    pub const summary = "Show the gateway at a glance: version, site and counts";
     pub const details =
-        \\Read-only. Each section is fetched separately; a section that fails is
-        \\shown as unavailable and the command exits 8.
+        \\Shows the UniFi Network version, the site, and the devices (online of total),
+        \\clients (wired and wireless), networks, Wi-Fi broadcasts, WANs and DNS policies.
+        \\Use it as a first check that the gateway answers and artoo can reach it.
+        \\
+        \\Read-only. Each section is read on its own: one that fails is shown as
+        \\unavailable, the others are still shown, and the command exits 8.
     ;
     pub const examples = [_][]const u8{ "artoo gw info", "artoo gw info -o json" };
 
@@ -402,23 +500,28 @@ fn unavailable(key: []const u8, errors: []const SectionError, label: []const u8)
 
 pub const spec_cmd = struct {
     pub const name = "spec";
-    pub const summary = "Compare the gateway's OpenAPI document with the built-in catalog";
+    pub const summary = "Compare the gateway's API document with artoo's catalog";
     pub const details =
-        \\Read-only. Fetches the live document (GET /proxy/network/api-docs/
-        \\integration.json, API key) or reads --file, then reports operations the
-        \\catalog lacks, no longer finds or names differently, drift in each
-        \\write's request-body fields and in each list's filterable properties.
-        \\Any drift exits 8. --save keeps the fetched document (never
-        \\overwrites) for diffing after a firmware update.
+        \\Checks that the gateway still offers the API artoo was built against. Run it
+        \\after a UniFi Network update, before relying on the gw commands.
+        \\
+        \\Reads the OpenAPI document from the gateway (or --file) and reports:
+        \\  - operations the catalog lacks
+        \\  - catalog operations the document no longer has, or names differently
+        \\  - changed request-body fields of each write
+        \\  - changed filterable properties of each list
+        \\
+        \\Read-only. Any drift exits 8. --save keeps the fetched document, never
+        \\overwriting a file, so a later update can be compared with --file.
     ;
     pub const flags = [_]cli.Flag{
         .{ .long = "file", .short = 'f', .kind = .string, .metavar = "PATH", .help = "Compare a local OpenAPI export instead" },
-        .{ .long = "save", .kind = .string, .metavar = "PATH", .help = "Also write the fetched document to PATH (new file)" },
+        .{ .long = "save", .kind = .string, .metavar = "PATH", .help = "Also write the fetched document to PATH (a new file)" },
     };
     pub const examples = [_][]const u8{
         "artoo gw spec",
-        "artoo gw spec --save live_openapi.json",
-        "artoo gw spec --file ../homelab/api/unifi/network_v10.6.106_openapi.json",
+        "artoo gw spec --save unifi_openapi.json",
+        "artoo gw spec --file unifi_openapi.json -o json",
     };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {

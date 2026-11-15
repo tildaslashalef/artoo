@@ -37,7 +37,13 @@ fn recordText(ctx: *Context, domain: []const u8, ipv4: []const u8) ![]const u8 {
 pub const ls = struct {
     pub const name = "ls";
     pub const summary = "List A records on UniFi";
-    pub const details = "Other DNS policy types are listed by 'artoo gw dns-policies ls'.";
+    pub const details =
+        \\Lists the A records the UniFi gateway answers for clients that use it for
+        \\DNS: name, address, TTL and whether each is enabled.
+        \\
+        \\Other DNS policy types (CNAME, TXT, forwarding, ...) are listed by
+        \\'artoo gw dns-policies ls'.
+    ;
     pub const examples = [_][]const u8{ "artoo dns ls", "artoo dns ls -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -148,20 +154,33 @@ pub const add = struct {
     pub const name = "add";
     pub const summary = "Add an A record on UniFi";
     pub const details =
-        \\NAME without a dot gets guests.domain (lab.example.com by default).
-        \\Names or addresses of Proxmox and UniFi are refused outside
-        \\home.arpa. An existing record with another address is
-        \\refused; remove it first.
+        \\Adds an A record, so clients that use the gateway for DNS resolve NAME to IP.
+        \\A NAME without a dot gets guests.domain from the config (lab.example.com by
+        \\default); a dotted name is used as given.
+        \\
+        \\Steps:
+        \\  1. Reads the records; the plan names others already pointing at IP
+        \\  2. Shows the plan; -n stops here
+        \\  3. Asks for confirmation (--yes skips it; required without a terminal)
+        \\  4. Sends one request, never retried
+        \\  5. Reads the records again to verify
+        \\
+        \\A record for NAME with another address, or a disabled one, is refused: remove
+        \\it first with 'artoo dns rm'. The same record already in place changes
+        \\nothing (exit 5). A name outside home.arpa for the Proxmox host or the gateway, by
+        \\name or address, is refused. A lost response is reported as unknown (exit
+        \\7): check with 'artoo dns ls' before trying again.
     ;
     pub const positionals = [_]cli.Positional{
-        .{ .name = "NAME", .help = "Host name or FQDN" },
-        .{ .name = "IP", .help = "IPv4 address" },
+        .{ .name = "NAME", .help = "Host name (gets guests.domain) or FQDN" },
+        .{ .name = "IP", .help = "IPv4 address the name resolves to" },
     };
     pub const flags = [_]cli.Flag{
-        .{ .long = "ttl", .kind = .int, .metavar = "SECONDS", .default = "300", .help = "Record TTL (0-86400)" },
+        .{ .long = "ttl", .kind = .int, .metavar = "SECONDS", .default = "300", .help = "Record TTL in seconds, 0-86400" },
     };
     pub const examples = [_][]const u8{
-        "artoo dns add web-01 192.168.1.201 --dry-run",
+        "artoo dns add web-01 192.168.1.201 -n",
+        "artoo dns add web-01 192.168.1.201",
         "artoo dns add nas.home.arpa 192.168.1.90 --ttl 3600",
     };
 
@@ -235,16 +254,22 @@ const RmOp = struct {
 
 pub const rm = struct {
     pub const name = "rm";
-    pub const summary = "Delete an A record on UniFi (destructive)";
+    pub const summary = "Delete an A record on UniFi";
     pub const details =
-        \\Interactive: type the record's full name to confirm. Non-interactive:
-        \\--yes --confirm FQDN. A missing record changes nothing (exit 5).
+        \\Deletes the A record for NAME (a NAME without a dot gets guests.domain), then
+        \\reads the records again to check it is gone. Clients may keep a cached answer
+        \\until its TTL runs out; the plan shows the command that recreates it.
+        \\
+        \\Destructive: confirm by typing the record's full name, or pass --yes --confirm
+        \\FQDN when there is no terminal. The request is sent once, never retried. A
+        \\missing record changes nothing (exit 5).
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "NAME", .help = "Host name or FQDN" }};
+    pub const positionals = [_]cli.Positional{.{ .name = "NAME", .help = "Host name (gets guests.domain) or FQDN" }};
     pub const flags = [_]cli.Flag{
-        .{ .long = "confirm", .kind = .string, .metavar = "FQDN", .help = "Non-interactive confirmation (with --yes)" },
+        .{ .long = "confirm", .kind = .string, .metavar = "FQDN", .help = "With --yes: the record's full name" },
     };
     pub const examples = [_][]const u8{
+        "artoo dns rm web-01 -n",
         "artoo dns rm web-01",
         "artoo dns rm web-01 --yes --confirm web-01.lab.example.com",
     };
@@ -258,7 +283,7 @@ pub const rm = struct {
     }
 };
 
-pub const group = cli.group("dns", "A records on UniFi (shortcut for gw dns-policies)", &.{
+pub const group = cli.group("dns", "A records on UniFi (a shortcut for gw dns-policies)", &.{
     cli.leaf(ls),
     cli.leaf(add),
     cli.leaf(rm),
