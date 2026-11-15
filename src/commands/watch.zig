@@ -1140,6 +1140,7 @@ pub const status = struct {
         }
         try checks.append(a, .{ .name = "reboot pending", .status = if (st.reboot) .warning else .ok, .detail = if (st.reboot) "yes — reboot when convenient" else "no" });
         if (ctx.json()) return ui.json.envelope(ctx.out, .pve, .{ .vm = v.name, .checks = checks.items }, .{ .collected_at = ctx.ui.now });
+        ctx.subject = try k.clean(ctx, v.name);
         try k.header(ctx, &c);
         try vm_new.renderChecks(ctx, checks.items);
         var failed: usize = 0;

@@ -30,6 +30,9 @@ pub const Context = struct {
     err_ui: Ui = .{},
     /// Command path for hints, e.g. "vm ls".
     path: []const u8 = "",
+    /// The one object a view shows (a VM, a device), named in the header
+    /// line; null for lists and summaries.
+    subject: ?[]const u8 = null,
     /// Message for the error a handler returns (rendered by main).
     diag: ?[]const u8 = null,
     /// The step ledger of the workflow that ran (`exec.run`), for the JSON

@@ -59,8 +59,8 @@ fn ttlText(ctx: *Context, ttl: ?i64) ![]const u8 {
     return if (t == records.ttl_auto) "auto" else std.fmt.allocPrint(ctx.arena, "{d}", .{t});
 }
 
-fn header(ctx: *Context, c: *const cf.Client) !void {
-    try ui.blocks.header(ctx.out, &ctx.ui, ctx.path, try std.fmt.allocPrint(ctx.arena, "cloudflare {s} {s} {s} {f}", .{
+pub fn header(ctx: *Context, c: *const cf.Client) !void {
+    try ui.blocks.header(ctx.out, &ctx.ui, ctx.subject, try std.fmt.allocPrint(ctx.arena, "cloudflare {s} {s} {s} {f}", .{
         ctx.ui.glyphs.dot, c.zone_name, ctx.ui.glyphs.dot, ui.values.clock(ctx.ui.now, &ctx.ui.zone),
     }));
 }

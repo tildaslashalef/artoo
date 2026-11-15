@@ -1340,6 +1340,7 @@ pub const verify = struct {
             for (checks, out) |ch, *j| j.* = .{ .check = ch.name, .status = ch.status.word(), .detail = ch.detail };
             try ui.json.envelope(ctx.out, .pve, out, .{ .collected_at = ctx.ui.now, .vmid = v.vmid, .failed = failed });
         } else {
+            ctx.subject = try k.clean(ctx, v.name);
             try k.header(ctx, &c);
             try renderChecks(ctx, checks);
         }

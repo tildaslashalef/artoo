@@ -131,7 +131,7 @@ pub const export_cmd = struct {
             if (unnamed.items.len > 0) try fields.append(a, .{ .key = "guests", .value = try std.fmt.allocPrint(a, "name artoo stores no password under, not included: {s}", .{try std.mem.join(a, ", ", unnamed.items)}), .role = .warn });
         }
         try fields.append(a, .{ .key = "file", .value = try std.fmt.allocPrint(a, "{s} (0600, passphrase-sealed)", .{ctx.tilde(out)}), .role = .changed });
-        try plan(ctx, "config export", where, fields.items, &.{
+        try plan(ctx, where, fields.items, &.{
             if (with_guests) "Not included: SSH keys." else "Not included: guest passwords (--guest-passwords), SSH keys.",
             "Anyone with the file and the passphrase holds these credentials; delete it after importing.",
         });
@@ -231,7 +231,7 @@ pub const import_cmd = struct {
             const st: State = if (have == null) .new else if (std.mem.eql(u8, have.?, s.value)) .same else .different;
             try note(ctx, &fields, s.name, where, st, &changes, &different);
         }
-        try plan(ctx, "config import", ctx.tilde(in), fields.items, notes.items);
+        try plan(ctx, ctx.tilde(in), fields.items, notes.items);
 
         if (changes == 0) return ctx.out.writeAll("This machine already has this setup; nothing to do.\n");
         if (different.items.len > 0 and !args.has("force"))
@@ -424,9 +424,9 @@ fn passphrase(ctx: *Context, from_stdin: bool, twice: bool) ![]const u8 {
     return pass;
 }
 
-fn plan(ctx: *Context, what: []const u8, right: []const u8, fields: []const ui.blocks.Field, notes: []const []const u8) !void {
+fn plan(ctx: *Context, right: []const u8, fields: []const ui.blocks.Field, notes: []const []const u8) !void {
     const u = &ctx.ui;
-    try ui.blocks.header(ctx.out, u, what, right);
+    try ui.blocks.header(ctx.out, u, null, right);
     try ui.blocks.detail(ctx.out, u, &.{.{ .fields = fields }});
     for (notes) |n| try ctx.out.print("{s}{s}{s}\n", .{ u.palette.on(.muted), n, u.palette.off(.muted) });
     try ctx.out.writeAll("\n");
