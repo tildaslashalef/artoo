@@ -66,6 +66,8 @@ const tailnet_script =
 /// What the guest's places hold now.
 const Observed = struct {
     vm: vms.Vm,
+    /// Proxmox's VM list as read.
+    list: []const vms.Vm,
     cfg: Value,
     digest: []const u8,
     mac: ?[]const u8,
@@ -83,6 +85,8 @@ const Observed = struct {
     ssh_old: bool,
     ssh_new: bool,
     edge_vm: ?vms.Vm,
+    /// Every route on the edge, and those whose upstream is OLD.
+    edge_routes: []const svc.Route,
     routes: []const svc.Route,
     fence_entries: usize,
     fenced: []const []const u8,
@@ -150,6 +154,16 @@ pub fn renameFenceList(a: std.mem.Allocator, s: []const u8, old: []const u8, new
     return if (hit) out.items else null;
 }
 
+/// A fence the plan shows and the fence step applies: its rules as the
+/// renamed lab derives them.
+const FenceWant = struct { name: []const u8, rules: []const edge.Rule };
+
+fn sameRules(x: []const edge.Rule, y: []const edge.Rule) bool {
+    if (x.len != y.len) return false;
+    for (x, y) |p, q| if (!p.eql(q)) return false;
+    return true;
+}
+
 const RenameOp = struct {
     c: *pve.Client,
     u: *unifi.Client,
@@ -163,6 +177,9 @@ const RenameOp = struct {
     p: Pending = undefined,
     fp: []const u8 = "",
     ledger: exec.Ledger = .{},
+    /// False for verify's read: a finished rename leaves no trace of OLD.
+    check_trace: bool = true,
+    fence_want: []const FenceWant = &.{},
 
     fn observe(op: *RenameOp, ctx: *Context) !Observed {
         const a = ctx.arena;
@@ -188,6 +205,9 @@ const RenameOp = struct {
             if (under_new) |y| return ctx.fail(error.Refused, "a VM named {s} already exists ({d})", .{ op.new, y.vmid });
             break :blk x;
         } else under_new orelse return ctx.fail(error.NotFound, "no VM named {s} (nor {s}, which a stopped rename would have left)", .{ op.old, op.new });
+        // Found only under NEW: a stopped rename, if the VM still carries a
+        // trace of OLD (checked once everything is read).
+        const continuation = under_old == null;
         if (v.template) return ctx.fail(error.Refused, "{s} is a template; templates are not renamed this way", .{v.name});
         if (!template.taggedWith(v.tags, "artoo")) return ctx.fail(error.Refused, "{s} is not an artoo guest (no tag artoo); a foreign VM is renamed with 'artoo vm set {s} name={s}'", .{ v.name, v.name, op.new });
         if (vm_cmd.roleOf(v.tags)) |r| if (std.mem.eql(u8, r, "edge") or std.mem.eql(u8, r, "watch"))
@@ -203,6 +223,7 @@ const RenameOp = struct {
         if (!g.ok()) return ctx.fail(error.Protocol, "reading the hostname of {s} failed: {s}", .{ v.name, try k.clean(ctx, edge.firstLine(g.err)) });
         const sep = std.mem.find(u8, g.out, "\n---\n") orelse return ctx.fail(error.Protocol, "unexpected hostname answer from {s}", .{v.name});
         const hostname = std.mem.trim(u8, g.out[0..sep], " \r\n");
+        const hosts_old = hostsNames(g.out[sep + 5 ..], op.old);
 
         // UniFi: the record by MAC; NEW on another client refuses.
         const records = try classic.records(op.u);
@@ -230,6 +251,9 @@ const RenameOp = struct {
         const s_new = try std.fmt.allocPrint(a, "guest/{s}", .{op.new});
         const secret_old = try store.exists(ctx.io, a, s_old);
         const secret_new = try store.exists(ctx.io, a, s_new);
+        // Before the rename began, a password under NEW is another
+        // guest's leftover.
+        if (!continuation and secret_new) return ctx.fail(error.Refused, "{s} already exists; it belongs to no guest being renamed — remove it first ('artoo auth rm {s}' or 'artoo vm password')", .{ s_new, s_new });
         if (secret_old and secret_new) {
             const x = (try store.get(ctx.io, a, s_old)) orelse "";
             const y = (try store.get(ctx.io, a, s_new)) orelse "";
@@ -239,6 +263,7 @@ const RenameOp = struct {
         // SSH.
         const key_old = try known_hosts.lookup(ctx, op.old);
         const key_new = try known_hosts.lookup(ctx, op.new);
+        if (!continuation and key_new != null) return ctx.fail(error.Refused, "{s} already pins a host key under {s}; remove that line first", .{ known_hosts.default_path, op.new });
         if (key_old != null and key_new != null and !std.mem.eql(u8, key_old.?, key_new.?))
             return ctx.fail(error.Refused, "{s} pins another host key under {s}; remove it first", .{ known_hosts.default_path, op.new });
         var ssh_old = false;
@@ -255,9 +280,11 @@ const RenameOp = struct {
             if (std.mem.eql(u8, r, edge.role) and !x.template) edge_vm = x;
         }
         var routes: std.ArrayList(svc.Route) = .empty;
+        var edge_routes: []const svc.Route = &.{};
         if (edge_vm) |e| {
             if (!e.running()) return ctx.fail(error.Refused, "the edge VM {s} is {s}: the services that name {s} cannot be read; start it first", .{ e.name, e.status, op.old });
             const view = try svc.readEdge(op.c, e.vmid, try svc.domains(ctx));
+            edge_routes = view.routes;
             for (view.routes) |r| if (std.ascii.eqlIgnoreCase(r.vm, op.old)) {
                 if (!r.managed()) return ctx.fail(error.Refused, "the route of service {s} on {s} was edited by hand; fix it first", .{ r.name, e.name });
                 try routes.append(a, r);
@@ -270,6 +297,13 @@ const RenameOp = struct {
         var fenced: std.ArrayList([]const u8) = .empty;
         if (template.taggedWith(v.tags, vm_fence.tag)) try fenced.append(a, op.new);
         for (entries) |f| {
+            // An entry already naming NEW is another guest's, unless this
+            // is a stopped rename whose fence step ran (no OLD left).
+            if (std.mem.eql(u8, f.vm, op.new) or std.mem.eql(u8, f.peer, op.new)) {
+                var names_old = false;
+                for (entries) |x| names_old = names_old or std.mem.eql(u8, x.vm, op.old) or std.mem.eql(u8, x.peer, op.old);
+                if (!continuation or names_old) return ctx.fail(error.Refused, "guests.fence_allow_out already names {s} ({s} {s} {s} {s}); fix it first ('artoo config set guests.fence_allow_out')", .{ op.new, f.vm, f.peer, f.proto, f.ports });
+            }
             const names_vm = std.mem.eql(u8, f.vm, op.old);
             const names_peer = std.mem.eql(u8, f.peer, op.old);
             if (!names_vm and !names_peer) continue;
@@ -321,14 +355,23 @@ const RenameOp = struct {
             }
         };
 
+        if (continuation and op.check_trace) {
+            const traced = std.ascii.eqlIgnoreCase(hostname, op.old) or hosts_old or
+                (record != null and std.ascii.eqlIgnoreCase(record.?.name, op.old)) or dns_old != null or
+                (ts_state != null and std.ascii.eqlIgnoreCase(ts_state.?.hostname, op.old)) or
+                (device != null and std.ascii.eqlIgnoreCase(device.?.machine, op.old));
+            if (!traced) return ctx.fail(error.Refused, "no VM is named {s}, and {s} carries no trace of it (hostname, /etc/hosts, UniFi record, {s}'s DNS record at its address, tailnet name): nothing to continue — a finished rename, or another guest", .{ op.old, v.name, op.old });
+        }
+
         return .{
             .vm = v,
+            .list = list,
             .cfg = vcfg,
             .digest = pve.str(vcfg, "digest") orelse "",
             .mac = mac,
             .address = address,
             .hostname = hostname,
-            .hosts_old = hostsNames(g.out[sep + 5 ..], op.old),
+            .hosts_old = hosts_old,
             .record = record,
             .dns_old = dns_old,
             .dns_new = dns_new,
@@ -340,6 +383,7 @@ const RenameOp = struct {
             .ssh_old = ssh_old,
             .ssh_new = ssh_new,
             .edge_vm = edge_vm,
+            .edge_routes = edge_routes,
             .routes = routes.items,
             .fence_entries = fence_entries,
             .fenced = fenced.items,
@@ -428,6 +472,7 @@ const RenameOp = struct {
         try ch.append(a, if (p.ssh) .{ .field = "SSH", .from = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ if (o.key_old != null) "pinned key" else "", if (o.key_old != null and o.ssh_old) " and " else "", if (o.ssh_old) "ssh_config block" else "" }), .to = try std.fmt.allocPrint(a, "HostKeyAlias {s}{s}", .{ op.new, if (o.ssh_old) ", Host block rewritten" else "" }) } else .{ .field = "SSH", .from = if (o.key_new != null or o.ssh_new) try same(a, "pinned key") else none, .to = if (o.key_new != null or o.ssh_new) op.new else none });
         try ch.append(a, if (o.secret_old) .{ .field = "secret store", .from = try std.fmt.allocPrint(a, "guest/{s}", .{op.old}), .to = try std.fmt.allocPrint(a, "guest/{s} (read back before guest/{s} is removed)", .{ op.new, op.old }) } else if (o.secret_new) .{ .field = "secret store", .from = try same(a, "password"), .to = try std.fmt.allocPrint(a, "guest/{s}", .{op.new}) } else .{ .field = "secret store", .from = none, .to = "nothing to change" });
         try ch.append(a, if (o.fence_entries > 0) .{ .field = "fence", .from = try std.fmt.allocPrint(a, "{d} guests.fence_allow_out entr{s} naming {s}", .{ o.fence_entries, if (o.fence_entries == 1) "y" else "ies", op.old }), .to = try std.fmt.allocPrint(a, "naming {s}; fences re-derived ({s})", .{ op.new, if (o.fenced.len > 0) try std.mem.join(a, ", ", o.fenced) else "none fenced" }) } else if (p.fence) .{ .field = "fence", .from = "unchanged entries", .to = try std.fmt.allocPrint(a, "fences re-derived ({s}), applied where they differ", .{try std.mem.join(a, ", ", o.fenced)}) } else .{ .field = "fence", .from = none, .to = "nothing to change" });
+        try op.fenceDiffs(ctx, &ch);
         try ch.append(a, if (o.ts_state) |s| .{ .field = "tailnet", .from = if (p.tailnet) try std.fmt.allocPrint(a, "{s}{s}", .{ if (s.running()) try k.clean(ctx, s.hostname) else "not joined", if (o.device) |d| try std.fmt.allocPrint(a, " (device {s})", .{try k.clean(ctx, d.name)}) else "" }) else try same(a, "tailnet name"), .to = try std.fmt.allocPrint(a, "{s} (tailscale set --hostname{s})", .{ op.new, if (op.tsc != null) ", checked with the API" else "" }) } else .{ .field = "tailnet", .from = none, .to = "nothing to change" });
         try ch.append(a, if (o.watch_vm) |w| .{ .field = "watchdog", .from = try std.fmt.allocPrint(a, "{d} series of {s} on {s}", .{ o.old_series, op.old, w.name }), .to = try std.fmt.allocPrint(a, "watch enroll {s}, then {s}'s series deleted", .{ op.new, op.old }) } else .{ .field = "watchdog", .from = none, .to = "nothing to change" });
         try ch.append(a, .{ .field = "guest", .from = if (p.guest) try std.fmt.allocPrint(a, "hostname {s}{s}", .{ try k.clean(ctx, o.hostname), if (o.hosts_old) ", /etc/hosts" else "" }) else try same(a, "hostname"), .to = try std.fmt.allocPrint(a, "hostname {s} and /etc/hosts (agent)", .{op.new}) });
@@ -452,6 +497,50 @@ const RenameOp = struct {
             .recovery = try std.fmt.allocPrint(a, "artoo vm rename {s} {s}", .{ op.new, op.old }),
             .notes = notes.items,
         };
+    }
+
+    /// The rule diff of every fence the fence step re-applies, as the
+    /// renamed lab derives it (the VM under NEW, routes and
+    /// `guests.fence_allow_out` naming NEW); kept for the step.
+    fn fenceDiffs(op: *RenameOp, ctx: *Context, ch: *std.ArrayList(ui.blocks.Change)) !void {
+        const a = ctx.arena;
+        const o = op.o;
+        if (o.fenced.len == 0) return;
+        const cfg = try ctx.config();
+        const allow = (try renameFenceList(a, cfg.guests.fence_allow_out, op.old, op.new)) orelse cfg.guests.fence_allow_out;
+        const list = try a.dupe(vms.Vm, o.list);
+        for (list) |*x| if (x.vmid == o.vm.vmid) {
+            x.name = op.new;
+        };
+        const routes = try a.dupe(svc.Route, o.edge_routes);
+        for (routes) |*r| if (std.ascii.eqlIgnoreCase(r.vm, op.old)) {
+            r.vm = op.new;
+        };
+        const edge_addr = if (o.edge_vm) |e| try svc.edgeAddress(op.c, e) else null;
+        const lab = try vm_fence.labFor(ctx, op.c, list, o.edge_vm, edge_addr, routes);
+        var wants: std.ArrayList(FenceWant) = .empty;
+        for (o.fenced) |name| {
+            const x = for (list) |y| {
+                if (!y.template and std.ascii.eqlIgnoreCase(y.name, name)) break y;
+            } else continue;
+            const want = try vm_fence.rules(a, try vm_fence.inputsWith(ctx, op.c, lab, x, routes, allow));
+            try wants.append(a, .{ .name = x.name, .rules = want });
+            const have = (try vm_fence.readState(op.c, x, want)).host.rules;
+            var changed = false;
+            for (0..@max(have.len, want.len)) |i| {
+                const h: ?edge.Rule = if (i < have.len) have[i] else null;
+                const w: ?edge.Rule = if (i < want.len) want[i] else null;
+                if (h != null and w != null and h.?.eql(w.?)) continue;
+                changed = true;
+                try ch.append(a, .{
+                    .field = try std.fmt.allocPrint(a, "fence {s} rule {d}", .{ x.name, i + 1 }),
+                    .from = if (h) |r| try k.clean(ctx, try std.fmt.allocPrint(a, "{s} ({s})", .{ try vm_fence.describe(a, r), r.comment })) else null,
+                    .to = if (w) |r| try std.fmt.allocPrint(a, "{s} ({s})", .{ try vm_fence.describe(a, r), r.comment }) else null,
+                });
+            }
+            if (!changed) try ch.append(a, .{ .field = try std.fmt.allocPrint(a, "fence {s}", .{x.name}), .from = try std.fmt.allocPrint(a, "{d} rules", .{have.len}), .to = "rules unchanged" });
+        }
+        op.fence_want = wants.items;
     }
 
     pub fn fingerprint(op: *RenameOp) []const u8 {
@@ -576,6 +665,11 @@ const RenameOp = struct {
             for (o.fenced) |name| {
                 const v = try vms.resolve(op.c, name);
                 const want = try vm_fence.derive(ctx, op.c, v);
+                // Only the rules the plan showed are applied.
+                for (op.fence_want) |fw| if (std.ascii.eqlIgnoreCase(fw.name, v.name) and !sameRules(fw.rules, want)) {
+                    l.set(i, .failed, v.name);
+                    return ctx.fail(error.Partial, "the fence of {s} derives differently than the plan showed (the lab changed meanwhile); nothing applied to it — review with 'artoo vm fence {s} -n'", .{ v.name, v.name });
+                };
                 const st = try vm_fence.readState(op.c, v, want);
                 if (st.converged()) continue;
                 try vm_fence.apply(op.c, v, want, st);
@@ -647,6 +741,7 @@ const RenameOp = struct {
         try ctx.out.writeAll("\n");
         try op.ledger.render(ctx.out, &ctx.ui);
         if (!op.ledger.complete()) return false;
+        op.check_trace = false;
         const o = try op.observe(ctx);
         const left = op.pending(o);
         if (left.any()) return false;
@@ -890,9 +985,9 @@ test "vm rename: a service whose upstream is OLD moves to NEW:PORT on the edge, 
     }.f;
     const list = "{\"data\":[{\"vmid\":201,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":204,\"name\":\"bespin\",\"status\":\"running\",\"tags\":\"artoo;role-edge\"}]}";
     const pass = struct {
-        fn f(al: std.mem.Allocator, l: []const u8, site: bool, edge_out: []const u8) ![]const R {
+        fn f(al: std.mem.Allocator, l: []const u8, users: []const u8, site: bool, edge_out: []const u8) ![]const R {
             var out: std.ArrayList(R) = .empty;
-            const reads = try renameReads(al, l, users_new, dns_new_body, "hoth", site);
+            const reads = try renameReads(al, l, users, dns_new_body, "hoth", site);
             // The edge is read between DNS and the watchdog's lookup.
             try out.appendSlice(al, reads[0 .. reads.len - 1]);
             try out.appendSlice(al, &.{
@@ -904,12 +999,14 @@ test "vm rename: a service whose upstream is OLD moves to NEW:PORT on the edge, 
         }
     }.f;
     var routes: std.ArrayList(R) = .empty;
-    try routes.appendSlice(a, try pass(a, list, true, try dump(a, d, "naboo")));
+    // A stopped rename: the UniFi record still names OLD (its trace).
+    try routes.appendSlice(a, try pass(a, list, users_old, true, try dump(a, d, "naboo")));
     try routes.appendSlice(a, &.{
         rt("POST /api2/json/nodes/pve/qemu/204/agent/exec HTTP", "{\"data\":{\"pid\":51}}"),
         rt("qemu/204/agent/exec-status", try agentOut(a, 0, "")),
+        rt("PUT /proxy/network/api/s/default/rest/user/U1", users_new),
     });
-    try routes.appendSlice(a, try pass(a, list, false, try dump(a, d, "hoth")));
+    try routes.appendSlice(a, try pass(a, list, users_new, false, try dump(a, d, "hoth")));
     var g: testkit.Gateway = undefined;
     try g.initRoutes(routes.items);
     defer g.deinit();
@@ -1052,6 +1149,78 @@ test "vm rename: a failure reported from inside a step also names the re-run" {
     var it = std.mem.splitScalar(u8, g.h.stdout(), '\n');
     while (it.next()) |ln| failed_line = failed_line or (std.mem.find(u8, ln, "set the hostname") != null and std.mem.find(u8, ln, "failed") != null);
     try testing.expect(failed_line);
+}
+
+test "vm rename: a VM under NEW alone continues only with a trace of OLD; leftovers under NEW refuse" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Case = struct { list: []const u8, users: []const u8, dns: []const u8, host: []const u8, setup: enum { none, secret, key, fence }, want: []const u8 };
+    const cases = [_]Case{
+        // hoth is no stopped rename of naboo: nothing on it names naboo.
+        .{ .list = list_new, .users = users_new, .dns = dns_new_body, .host = "hoth", .setup = .none, .want = "no VM is named naboo, and hoth carries no trace of it" },
+        // Before the rename began, NEW's places hold another guest's leftovers.
+        .{ .list = list_old, .users = users_old, .dns = dns_old_body, .host = "naboo", .setup = .secret, .want = "guest/hoth already exists" },
+        .{ .list = list_old, .users = users_old, .dns = dns_old_body, .host = "naboo", .setup = .key, .want = "already pins a host key under hoth" },
+        .{ .list = list_old, .users = users_old, .dns = dns_old_body, .host = "naboo", .setup = .fence, .want = "guests.fence_allow_out already names hoth" },
+    };
+    for (cases) |cs| {
+        var g: testkit.Gateway = undefined;
+        try g.initRoutes(try renameReads(a, cs.list, cs.users, cs.dns, cs.host, true));
+        defer g.deinit();
+        try g.tmp.dir.createDirPath(testing.io, ".artoo");
+        switch (cs.setup) {
+            .none => {},
+            .secret => try g.mem.map.put(g.h.arena.allocator(), "guest/hoth", "someone-else"),
+            .key => try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/known_hosts", .data = "hoth " ++ test_key ++ "\n" }),
+            .fence => try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"guests\":{\"fence_allow_out\":\"hoth 192.168.1.50 tcp 5432\"}}\n" }),
+        }
+        try testing.expectEqual(Exit.refused, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
+        if (std.mem.find(u8, g.h.stderr(), cs.want) == null) {
+            std.debug.print("want {s}, got: {s}\n", .{ cs.want, g.h.stderr() });
+            return error.TestUnexpectedResult;
+        }
+        for (g.srv.received) |req| if (req) |q| try testing.expect(std.mem.startsWith(u8, q, "GET ") or std.mem.find(u8, q, "/agent/") != null);
+    }
+}
+
+test "vm rename: the plan shows the rule diff of every fence it re-applies" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const list = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":207,\"name\":\"endor\",\"status\":\"running\",\"tags\":\"artoo;fenced\"}]}";
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try renameReads(a, list, users_old, dns_old_body, "naboo", true));
+    try routes.appendSlice(a, &.{
+        // endor's exception names naboo: its address is read for the rule.
+        rt("GET /api2/json/nodes/pve/qemu/201/config", cfg_body),
+        rt("GET /api2/json/nodes/pve/qemu/207/config", "{\"data\":{\"name\":\"endor\",\"net0\":\"virtio=BC:24:11:00:00:07,bridge=vmbr0,firewall=1\",\"ipconfig0\":\"ip=192.168.1.240/24,gw=192.168.1.1\",\"tags\":\"artoo;fenced\",\"digest\":\"d7\"}}"),
+        rt("GET /api2/json/nodes/pve/qemu/207/firewall/options", "{\"data\":{}}"),
+        rt("GET /api2/json/nodes/pve/qemu/207/firewall/rules", "{\"data\":[{\"pos\":0,\"type\":\"out\",\"action\":\"ACCEPT\",\"dest\":\"192.168.1.230\",\"proto\":\"tcp\",\"dport\":\"5432\",\"comment\":\"artoo: allow-out naboo (config)\"}]}"),
+        rt("GET /api2/json/nodes/pve/qemu/207/firewall/ipset", "{\"data\":[]}"),
+    });
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try g.tmp.dir.createDirPath(testing.io, ".artoo");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"guests\":{\"fence_allow_out\":\"endor naboo tcp 5432\"}}\n" });
+    const code = g.h.run(&root, "vm rename naboo hoth -n");
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    const out = g.h.stdout();
+    for ([_][]const u8{
+        "1 guests.fence_allow_out entry naming naboo",
+        "fence endor rule 1",
+        "OUT ACCEPT tcp 5432 to 192.168.1.230 (artoo: allow-out naboo (config))",
+        "allow-out hoth (config)",
+    }) |line| if (std.mem.find(u8, out, line) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+        return error.TestUnexpectedResult;
+    };
+    // A dry run: the configuration still names naboo.
+    const cfg = try g.tmp.dir.readFileAlloc(testing.io, ".artoo/config.json", a, .limited(1 << 16));
+    try testing.expect(std.mem.find(u8, cfg, "endor naboo tcp 5432") != null);
 }
 
 test "vm rename: a broken Tailscale credential is a note; the guest's own tailscale set still runs" {
