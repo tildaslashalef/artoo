@@ -144,6 +144,14 @@ pub const Ledger = struct {
         if (l.progress) |p| p.update(l, i, before);
     }
 
+    /// After `err` stopped the run: a step still in progress ended in a
+    /// definitive answer (a refusal, a failed command) and is failed,
+    /// unless `err` itself says the outcome is unknown.
+    pub fn settle(l: *Ledger, err: anyerror) void {
+        if (err == error.OutcomeUnknown or err == error.Network or err == error.Timeout) return;
+        for (l.steps.items, 0..) |st, i| if (st.state == .unknown) l.set(i, .failed, st.detail);
+    }
+
     /// New detail for a running step (e.g. a wait's latest status).
     /// Never starts or finishes a step.
     pub fn note(l: *Ledger, i: usize, detail: []const u8) void {
@@ -688,4 +696,20 @@ test "liveLine: spinner, elapsed, detail; cut to the terminal width" {
     const ascii: ui.Ui = .{ .glyphs = &ui.style.ascii };
     try liveLine(&buf.writer, &ascii, .{ .name = "x" }, 1, 0, 1, null);
     try testing.expectEqualStrings("  / x  0s", buf.written());
+}
+
+test "ledger settle: a definitive error fails the open step; an unknown outcome keeps it unknown" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var l: Ledger = .{};
+    const k = try l.add(a, "create the join key");
+    const j = try l.add(a, "join the tailnet");
+    l.set(k, .unknown, "");
+    l.settle(error.Refused);
+    try std.testing.expectEqual(Ledger.State.failed, l.steps.items[k].state);
+    try std.testing.expectEqual(Ledger.State.not_run, l.steps.items[j].state);
+    l.set(j, .unknown, "");
+    l.settle(error.OutcomeUnknown);
+    try std.testing.expectEqual(Ledger.State.unknown, l.steps.items[j].state);
 }

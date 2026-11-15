@@ -1027,16 +1027,21 @@ const JoinOp = struct {
     }
 
     pub fn send(op: *JoinOp, ctx: *Context) !void {
+        op.steps(ctx) catch |err| {
+            op.ledger.settle(err);
+            op.dropKey(ctx);
+            ctx.out.writeAll("\n") catch {};
+            op.ledger.render(ctx.out, &ctx.ui) catch {};
+            return err;
+        };
+    }
+
+    fn steps(op: *JoinOp, ctx: *Context) !void {
         const a = ctx.arena;
         const l = &op.ledger;
         const s_key = try l.add(a, "create the join key");
         op.key_step = s_key;
         const s_join = try l.add(a, "join the tailnet");
-        errdefer {
-            op.dropKey(ctx);
-            ctx.out.writeAll("\n") catch {};
-            l.render(ctx.out, &ctx.ui) catch {};
-        }
         l.set(s_key, .unknown, "");
         const nk = try tn.createJoinKey(op.tsc, &.{op.tag}, try tn.keyDescription(a, &.{ "artoo", "join", op.vm.name }));
         op.key = nk;
@@ -1347,7 +1352,7 @@ test "ts: without tailscale.client_id nothing is sent; Tailscale's messages and 
         route("POST /oauth/token", token_ok),
         .{ .match = "GET /tailnet/-/devices", .behavior = .{ .respond = .{ .status = 429, .body = "{\"message\":\"rate limited\"}" } } },
         route("POST /oauth/token", token_ok),
-        .{ .match = "GET /tailnet/-/keys", .behavior = .{ .respond = .{ .status = 403, .body = "{\"message\":\"missing scope auth_keys:read\"}" } } },
+        .{ .match = "GET /tailnet/-/keys?all=true", .behavior = .{ .respond = .{ .status = 403, .body = "{\"message\":\"missing scope auth_keys:read\"}" } } },
     });
     defer f.deinit();
     try testing.expectEqual(Exit.usage, f.h.run(&root, "ts devices ls"));
@@ -1383,12 +1388,12 @@ test "ts keys ls: metadata only, never a key value" {
     var f: Fixture = undefined;
     try f.initRoutes(&.{
         route("POST /oauth/token", token_ok),
-        route("GET /tailnet/-/keys",
+        route("GET /tailnet/-/keys?all=true",
             \\{"keys":[{"id":"kAuth1","key":"tskey-auth-LEAKED","keyType":"auth","description":"artoo router dagobah","capabilities":{"devices":{"create":{"reusable":false,"ephemeral":false,"preauthorized":true,"tags":["tag:lab-router"]}}},"created":"2026-11-15T10:00:00Z","expires":"2026-11-15T10:10:00Z"},
             \\{"id":"kClient","keyType":"client","description":"artoo","scopes":["devices:core"],"tags":["tag:lab-router"],"created":"2026-11-01T10:00:00Z"}]}
         ),
         route("POST /oauth/token", token_ok),
-        route("GET /tailnet/-/keys", "{\"keys\":[{\"id\":\"kAuth1\",\"key\":\"tskey-auth-LEAKED\",\"keyType\":\"auth\"}]}"),
+        route("GET /tailnet/-/keys?all=true", "{\"keys\":[{\"id\":\"kAuth1\",\"key\":\"tskey-auth-LEAKED\",\"keyType\":\"auth\"}]}"),
     });
     defer f.deinit();
     try f.tailscaleConfig("");
