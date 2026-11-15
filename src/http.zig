@@ -332,6 +332,10 @@ fn hostOf(arena: Allocator, uri: std.Uri) []const u8 {
 
 const testing = std.testing;
 
+/// Connections (and routes) one fake server serves; long workflows such
+/// as `vm rename` with the watchdog need well over a hundred.
+const fake_max_requests = 256;
+
 /// In-process HTTP/1.1 server on 127.0.0.1 with one scripted behavior per
 /// connection; it always closes the connection after each exchange (like
 /// pveproxy's idle close), so any client-side reuse would fail.
@@ -344,10 +348,10 @@ pub const FakeServer = struct {
     /// whose `match` occurs in its request line, so concurrent clients may
     /// arrive in any order.
     routes: []const Route = &.{},
-    used: [64]bool = @splat(false),
+    used: [fake_max_requests]bool = @splat(false),
     accepted: std.atomic.Value(usize) = .init(0),
     /// Requests fully read (method line + body), per connection.
-    received: [64]?[]const u8 = @splat(null),
+    received: [fake_max_requests]?[]const u8 = @splat(null),
     arena: std.heap.ArenaAllocator,
     future: ?Io.Future(void) = null,
 
