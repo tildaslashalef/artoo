@@ -86,6 +86,9 @@ pub const State = struct {
     hostname: []const u8 = "",
     version: []const u8 = "",
     tags: []const []const u8 = &.{},
+    /// `Self.ID`: the stable node ID the API calls `nodeId` — how artoo
+    /// finds this node's device (never by name: an old device may keep it).
+    node_id: []const u8 = "",
     /// Routes this node serves (approved and primary).
     primary: []const []const u8 = &.{},
     /// Routes it advertises (prefs).
@@ -129,6 +132,7 @@ pub fn parseState(a: std.mem.Allocator, out: []const u8) !State {
     const self = field(ts, "Self");
     st.hostname = pve.str(self, "HostName") orelse "";
     st.tags = try strings(a, field(self, "Tags"));
+    st.node_id = pve.str(self, "ID") orelse "";
     st.primary = try strings(a, field(self, "PrimaryRoutes"));
     st.advertised = try strings(a, field(prefs, "AdvertiseRoutes"));
     return st;
@@ -217,7 +221,7 @@ const SetupOp = struct {
         op.state = try probe(op.c, op.vm.vmid);
         op.steps = try plannedSteps(ctx.arena, op.state, op.route);
         if (op.tsc) |c| {
-            op.ts_dev = try findRouter(c, op.vm.name);
+            op.ts_dev = if (op.state.running()) try findRouter(c, op.state.node_id) else null;
             op.approve = if (op.ts_dev) |d| !tn.sameSet(d.enabled, &.{op.route}) else true;
             return;
         }
@@ -323,6 +327,12 @@ const SetupOp = struct {
             op.key_used = true;
             l.set(i, .done, tag);
         }
+        // The node this guest now is (its new device, whatever an old one
+        // of the same name says).
+        const node_id = if (op.tsc != null) blk: {
+            if (!op.steps.enroll) break :blk op.state.node_id;
+            break :blk (try probe(c, id)).node_id;
+        } else "";
         if (s_routes) |i| {
             l.set(i, .unknown, "");
             const r = try agent.exec(c, id, &.{ "tailscale", "set", try std.fmt.allocPrint(a, "--advertise-routes={s}", .{op.route}) }, null, timeout_ms);
@@ -334,13 +344,13 @@ const SetupOp = struct {
         }
         if (s_approve) |i| {
             l.set(i, .unknown, "");
-            const d = try op.waitAdvertised(ctx);
+            const d = try op.waitAdvertised(ctx, node_id);
             const routes = try tn.routes(op.tsc.?, d.id);
             if (!tn.sameSet(routes.enabled, &.{op.route})) try tn.setRoutes(op.tsc.?, d.id, &.{op.route});
             l.set(i, .done, op.route);
         }
         if (s_expiry) |i| {
-            const d = (try findRouter(op.tsc.?, op.vm.name)) orelse {
+            const d = (try findRouter(op.tsc.?, node_id)) orelse {
                 l.set(i, .failed, "not on the tailnet");
                 return ctx.fail(error.Partial, "{s} is not on the tailnet as {s}", .{ op.vm.name, tag });
             };
@@ -366,10 +376,10 @@ const SetupOp = struct {
 
     /// The router on the tailnet once it advertises the LAN (polled
     /// briefly after `tailscale up`).
-    fn waitAdvertised(op: *SetupOp, ctx: *Context) !tn.Device {
+    fn waitAdvertised(op: *SetupOp, ctx: *Context, node_id: []const u8) !tn.Device {
         var tries: usize = 0;
         while (true) : (tries += 1) {
-            if (try findRouter(op.tsc.?, op.vm.name)) |d| {
+            if (try findRouter(op.tsc.?, node_id)) |d| {
                 if (tn.contains(d.advertised, op.route)) return d;
             }
             if (tries >= 10) return ctx.fail(error.Partial, "{s} does not advertise {s} on the tailnet yet; run 'artoo ts routes approve {s}' later", .{ op.vm.name, op.route, op.vm.name });
@@ -441,13 +451,13 @@ pub const setup = struct {
     }
 };
 
-/// The router's device on the tailnet: its machine name, tagged
-/// `tag:lab-router` (a lab device, SPEC §19).
-pub fn findRouter(c: *tsapi.Client, vm_name: []const u8) !?tn.Device {
-    for (try tn.devices(c)) |d| {
-        if (d.hasTag(tag) and std.ascii.eqlIgnoreCase(d.machine, vm_name)) return d;
-    }
-    return null;
+/// The router's device on the tailnet: the node the guest says it is
+/// (`Self.ID`), tagged `tag:lab-router` (SPEC §19). Never matched by
+/// name: a stale device of the same name may still be listed.
+pub fn findRouter(c: *tsapi.Client, node_id: []const u8) !?tn.Device {
+    if (node_id.len == 0) return null;
+    const d = (try tn.getDevice(c, node_id)) orelse return null;
+    return if (d.hasTag(tag)) d else null;
 }
 
 // ---------------------------------------------------------------- status
@@ -485,13 +495,13 @@ pub fn health(ctx: *Context, c: *pve.Client) !Health {
     try checks.append(a, .{ .name = "approved", .status = if (has(st.primary, route)) .ok else .failed, .detail = if (has(st.primary, route)) route else "not approved — check the policy's autoApprovers" });
     try checks.append(a, .{ .name = "forwarding", .status = if (st.forwarding) .ok else .failed, .detail = if (st.forwarding) "IPv4 + IPv6" else "off — 'artoo router setup'" });
     try checks.append(a, .{ .name = "version", .status = .ok, .detail = try k.clean(ctx, st.version) });
-    if (try tsapi.configured(ctx)) try tailnetChecks(ctx, &checks, v.name, route);
+    if (try tsapi.configured(ctx)) try tailnetChecks(ctx, &checks, v.name, st.node_id, route);
     return .{ .vm = v.name, .checks = checks.items };
 }
 
 /// The tailnet's view of the router (SPEC §19): tags, approved and
 /// primary routes, key expiry and last seen.
-fn tailnetChecks(ctx: *Context, checks: *std.ArrayList(vm_new.Check), vm_name: []const u8, route: []const u8) !void {
+fn tailnetChecks(ctx: *Context, checks: *std.ArrayList(vm_new.Check), vm_name: []const u8, node_id: []const u8, route: []const u8) !void {
     const a = ctx.arena;
     var c = tsapi.Client.open(ctx, .main) catch |err| switch (err) {
         error.OutOfMemory, error.Canceled => |e| return e,
@@ -502,7 +512,7 @@ fn tailnetChecks(ctx: *Context, checks: *std.ArrayList(vm_new.Check), vm_name: [
         },
     };
     defer c.deinit();
-    const found = findRouter(&c, vm_name) catch |err| switch (err) {
+    const found = findRouter(&c, node_id) catch |err| switch (err) {
         error.OutOfMemory, error.Canceled => |e| return e,
         else => {
             try checks.append(a, .{ .name = "tailnet API", .status = .failed, .detail = try k.clean(ctx, ctx.diag orelse @errorName(err)) });
@@ -511,7 +521,7 @@ fn tailnetChecks(ctx: *Context, checks: *std.ArrayList(vm_new.Check), vm_name: [
         },
     };
     const d = found orelse {
-        try checks.append(a, .{ .name = "tailnet device", .status = .failed, .detail = try std.fmt.allocPrint(a, "no device {s} tagged {s}", .{ vm_name, tag }) });
+        try checks.append(a, .{ .name = "tailnet device", .status = .failed, .detail = if (node_id.len == 0) "the router reports no node ID (not joined)" else try std.fmt.allocPrint(a, "no device {s} ({s}) tagged {s}", .{ vm_name, try k.clean(ctx, node_id), tag }) });
         return;
     };
     try checks.append(a, .{ .name = "tailnet device", .status = .ok, .detail = try k.clean(ctx, try std.fmt.allocPrint(a, "{s} ({s}), tags {s}", .{ d.name, d.id, try std.mem.join(a, ", ", d.tags) })) });
@@ -652,13 +662,18 @@ const RouterFixture = struct {
     }
 
     fn probeOut(a: std.mem.Allocator, backend: []const u8, primary: []const u8) ![]const u8 {
-        return agentOut(a, 0, try std.fmt.allocPrint(a, "sysctl {s}\nfwd4 1\nfwd6 1\n---\n{{\"BackendState\":\"{s}\",\"CurrentTailnet\":{{\"Name\":\"example.ts.net\"}},\"Self\":{{\"Tags\":[\"tag:lab-router\"],\"PrimaryRoutes\":[{s}]}}}}\n---\n{{\"AdvertiseRoutes\":[\"192.168.1.0/24\"]}}\n", .{ try edge_files_hash(a, sysctl), backend, primary }), "");
+        return probeOutAs(a, backend, primary, "nR");
+    }
+
+    fn probeOutAs(a: std.mem.Allocator, backend: []const u8, primary: []const u8, id: []const u8) ![]const u8 {
+        return agentOut(a, 0, try std.fmt.allocPrint(a, "sysctl {s}\nfwd4 1\nfwd6 1\n---\n{{\"BackendState\":\"{s}\",\"CurrentTailnet\":{{\"Name\":\"example.ts.net\"}},\"Self\":{{\"ID\":\"{s}\",\"Tags\":[\"tag:lab-router\"],\"PrimaryRoutes\":[{s}]}}}}\n---\n{{\"AdvertiseRoutes\":[\"192.168.1.0/24\"]}}\n", .{ try edge_files_hash(a, sysctl), backend, id, primary }), "");
     }
 };
 
 const ts_token = "{\"access_token\":\"tskey-access-xyz\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"devices:core devices:routes auth_keys dns\"}";
 const router_vms = "{\"data\":[{\"vmid\":202,\"name\":\"dagobah\",\"status\":\"running\",\"tags\":\"artoo;role-router\"}]}";
-const router_dev = "{\"devices\":[{\"nodeId\":\"nR\",\"name\":\"dagobah.example.ts.net\",\"tags\":[\"tag:lab-router\"],\"keyExpiryDisabled\":true,\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[]}]}";
+const router_new = "{\"nodeId\":\"nNew\",\"name\":\"dagobah.example.ts.net\",\"tags\":[\"tag:lab-router\"],\"keyExpiryDisabled\":true,\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[]}";
+const router_dev = "{\"devices\":[{\"nodeId\":\"nR\",\"name\":\"dagobah.example.ts.net\",\"tags\":[\"tag:lab-router\"],\"keyExpiryDisabled\":false,\"connectedToControl\":false,\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[]}]}";
 
 test "router setup with the Tailscale credential: artoo creates the key, joins, approves the LAN, checks key expiry" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -672,22 +687,26 @@ test "router setup with the Tailscale credential: artoo creates the key, joins, 
         F.r("agent/ping", "{\"data\":{\"result\":{}}}"),
         F.r("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
         F.r("exec-status", try F.probeOut(a, "NeedsLogin", "")),
-        F.r("GET /tailnet/-/devices", "{\"devices\":[]}"),
         F.r("POST /tailnet/-/keys", "{\"id\":\"kNew\",\"key\":\"tskey-auth-SECRETVALUE\",\"keyType\":\"auth\"}"),
         F.r("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
         F.r("exec-status", try F.agentOut(a, 0, "", "")),
-        F.r("GET /tailnet/-/devices", router_dev),
-        F.r("GET /device/nR/routes", "{\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[]}"),
-        F.r("POST /device/nR/routes", "{\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[\"192.168.1.0/24\"]}"),
-        F.r("GET /tailnet/-/devices", router_dev),
         F.r("agent/exec HTTP", "{\"data\":{\"pid\":44}}"),
-        F.r("exec-status", try F.probeOut(a, "Running", "\"192.168.1.0/24\"")),
+        F.r("exec-status", try F.probeOutAs(a, "Running", "", "nNew")),
+        F.r("GET /device/nNew?", router_new),
+        F.r("GET /device/nNew/routes", "{\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[]}"),
+        F.r("POST /device/nNew/routes", "{\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[\"192.168.1.0/24\"]}"),
+        F.r("GET /device/nNew?", router_new),
+        F.r("agent/exec HTTP", "{\"data\":{\"pid\":45}}"),
+        F.r("exec-status", try F.probeOutAs(a, "Running", "\"192.168.1.0/24\"", "nNew")),
+        // A stale, offline device of the same name: never consulted.
+        F.r("GET /tailnet/-/devices", router_dev),
     });
     defer g.deinit();
     try g.tailscaleConfig("");
     const root = cli.group("artoo", "t", &.{group});
     try testing.expectEqual(F.testkit.Exit.ok, g.h.run(&root, "router setup -y"));
-    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expectEqual(@as(usize, 1), g.srv.unused());
+    for (g.srv.received) |req| if (req) |q| try testing.expect(std.mem.find(u8, q, "/device/nR") == null);
     const out = g.h.stdout();
     for ([_][]const u8{
         "tailnet   NeedsLogin → dagobah joins as tag:lab-router, advertises 192.168.1.0/24 (single-use key created by artoo, 10 min, never shown)",
@@ -722,7 +741,6 @@ test "router setup with the Tailscale credential: a failed join deletes the unus
         F.r("agent/ping", "{\"data\":{\"result\":{}}}"),
         F.r("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
         F.r("exec-status", try F.probeOut(a, "NeedsLogin", "")),
-        F.r("GET /tailnet/-/devices", "{\"devices\":[]}"),
         F.r("POST /tailnet/-/keys", "{\"id\":\"kNew\",\"key\":\"tskey-auth-SECRETVALUE\",\"keyType\":\"auth\"}"),
         F.r("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
         F.r("exec-status", try F.agentOut(a, 1, "", "invalid key tskey-auth-SECRETVALUE: not valid")),
@@ -752,7 +770,7 @@ test "router status with the Tailscale credential adds the tailnet's view" {
         F.r("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
         F.r("exec-status", try F.probeOut(a, "Running", "\"192.168.1.0/24\"")),
         F.r("POST /oauth/token", ts_token),
-        F.r("GET /tailnet/-/devices", "{\"devices\":[{\"nodeId\":\"nR\",\"name\":\"dagobah.example.ts.net\",\"tags\":[\"tag:lab-router\"],\"keyExpiryDisabled\":false,\"expires\":\"2027-01-01T00:00:00Z\",\"connectedToControl\":true,\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[\"192.168.1.0/24\"]}]}"),
+        F.r("GET /device/nR?", "{\"nodeId\":\"nR\",\"name\":\"dagobah.example.ts.net\",\"tags\":[\"tag:lab-router\"],\"keyExpiryDisabled\":false,\"expires\":\"2027-01-01T00:00:00Z\",\"connectedToControl\":true,\"advertisedRoutes\":[\"192.168.1.0/24\"],\"enabledRoutes\":[\"192.168.1.0/24\"]}"),
     });
     defer g.deinit();
     try g.tailscaleConfig("");
