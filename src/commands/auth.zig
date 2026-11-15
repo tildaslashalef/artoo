@@ -15,6 +15,7 @@ const Kind = enum {
     unifi,
     cloudflare,
     tailscale,
+    @"tailscale-policy",
 
     fn label(k: Kind) []const u8 {
         return switch (k) {
@@ -22,6 +23,7 @@ const Kind = enum {
             .unifi => "UniFi API key",
             .cloudflare => "Cloudflare API token (DNS records, tunnels)",
             .tailscale => "Tailscale OAuth client secret (tskey-client-…)",
+            .@"tailscale-policy" => "Tailscale policy-writing OAuth client secret",
         };
     }
 };
@@ -29,10 +31,10 @@ const Kind = enum {
 const kinds = std.meta.tags(Kind);
 
 fn kindArg(ctx: *Context, word: []const u8) !Kind {
-    return std.meta.stringToEnum(Kind, word) orelse ctx.fail(error.Usage, "unknown secret '{s}' (expected pve, unifi, cloudflare or tailscale)", .{word});
+    return std.meta.stringToEnum(Kind, word) orelse ctx.fail(error.Usage, "unknown secret '{s}' (expected pve, unifi, cloudflare, tailscale or tailscale-policy)", .{word});
 }
 
-const secret_arg = [_]cli.Positional{.{ .name = "SECRET", .help = "pve, unifi, cloudflare or tailscale" }};
+const secret_arg = [_]cli.Positional{.{ .name = "SECRET", .help = "pve, unifi, cloudflare, tailscale or tailscale-policy" }};
 
 pub const set = struct {
     pub const name = "set";
@@ -63,7 +65,7 @@ pub const set = struct {
             return ctx.fail(error.Usage, "the secret must be one line of 1-4096 printable characters", .{});
         }
         // SPEC §19: an OAuth client, never a personal API access token.
-        if (kind == .tailscale and !std.mem.startsWith(u8, secret, "tskey-client-"))
+        if ((kind == .tailscale or kind == .@"tailscale-policy") and !std.mem.startsWith(u8, secret, "tskey-client-"))
             return ctx.fail(error.Usage, "expected a Tailscale OAuth client secret (tskey-client-…); personal API access tokens (tskey-api-…) are not used (SPEC §19)", .{});
         if (present) try ctx.confirm("Replace the existing {s} secret in {s}?", .{ @tagName(kind), where });
         if (ctx.globals.dry_run) {
@@ -92,19 +94,20 @@ pub const status = struct {
             return ui.json.envelope(ctx.out, .local, .{
                 .store = store.kind(),
                 .location = where,
-                .secrets = .{ .pve = present[0], .unifi = present[1], .cloudflare = present[2], .tailscale = present[3] },
+                .secrets = .{ .pve = present[0], .unifi = present[1], .cloudflare = present[2], .tailscale = present[3], .@"tailscale-policy" = present[4] },
             }, .{});
         }
         const u = &ctx.ui;
         try ui.blocks.header(ctx.out, u, "auth", where);
         var rows: [kinds.len][]const ui.table.Cell = undefined;
         for (kinds, 0..) |k, i| {
-            const st: ui.style.Status = if (present[i]) .ok else .failed;
+            const optional = k == .@"tailscale-policy";
+            const st: ui.style.Status = if (present[i]) .ok else if (optional) .not_checked else .failed;
             const cells = try ctx.arena.alloc(ui.table.Cell, 3);
             cells[0] = .{ .text = @tagName(k), .role = .id };
             cells[1] = .{ .text = k.label() };
             cells[2] = .{
-                .text = try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ st.glyph(u.glyphs), if (present[i]) "stored" else "missing" }),
+                .text = try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ st.glyph(u.glyphs), if (present[i]) "stored" else if (optional) "not stored" else "missing" }),
                 .role = st.role(),
             };
             rows[i] = cells;
@@ -114,7 +117,9 @@ pub const status = struct {
             .{ .title = "PURPOSE", .drop = 1 },
             .{ .title = "STATUS" },
         }, &rows);
-        if (std.mem.findScalar(bool, &present, false) != null) {
+        // The policy client is created only to change the policy and
+        // revoked afterwards (SPEC §19): its absence is no gap.
+        if (std.mem.findScalar(bool, present[0..4], false) != null) {
             try ctx.out.print("\n{s}Add a missing secret with 'artoo auth set pve|unifi|cloudflare|tailscale'.{s}\n", .{ u.palette.on(.muted), u.palette.off(.muted) });
         }
     }
@@ -201,11 +206,12 @@ test "auth: set via prompt and --stdin, status, rm with confirmations" {
     try testing.expectEqualStrings(
         \\ARTOO · auth  memory (test)
         \\
-        \\SECRET      PURPOSE                                         STATUS
-        \\pve         Proxmox API token secret (artoo@pve!cli)        ✗ missing
-        \\unifi       UniFi API key                                   ✓ stored
-        \\cloudflare  Cloudflare API token (DNS records, tunnels)     ✗ missing
-        \\tailscale   Tailscale OAuth client secret (tskey-client-…)  ✗ missing
+        \\SECRET            PURPOSE                                         STATUS
+        \\pve               Proxmox API token secret (artoo@pve!cli)        ✗ missing
+        \\unifi             UniFi API key                                   ✓ stored
+        \\cloudflare        Cloudflare API token (DNS records, tunnels)     ✗ missing
+        \\tailscale         Tailscale OAuth client secret (tskey-client-…)  ✗ missing
+        \\tailscale-policy  Tailscale policy-writing OAuth client secret    – not stored
         \\
         \\Add a missing secret with 'artoo auth set pve|unifi|cloudflare|tailscale'.
         \\

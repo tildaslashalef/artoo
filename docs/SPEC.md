@@ -138,7 +138,7 @@ artoo config show | get KEY | set KEY VALUE | unset KEY | edit | init
 artoo config export FILE [--guest-passwords] | import FILE   artoo's setup to another machine (§6.1)
 artoo completion fish|bash|zsh        print the shell completion script (§3.5)
 artoo update [VERSION] [--check]      replace this binary with a verified GitHub release (§18)
-artoo auth set pve|unifi|cloudflare|tailscale | status | rm pve|unifi|cloudflare|tailscale
+artoo auth set SECRET | status | rm SECRET   SECRET: pve, unifi, cloudflare, tailscale, tailscale-policy
 ```
 
 Command availability follows delivery: a command is absent from the table
@@ -364,7 +364,9 @@ is printed, so the output is the same as without it.
   "tailscale": {
     "client_id": "",
     "tailnet": "-",
-    "timeout_seconds": 10
+    "timeout_seconds": 10,
+    "guest_tag": "tag:lab-guest",
+    "policy_client_id": ""
   },
   "guests": {
     "domain": "lab.example.com",
@@ -413,6 +415,9 @@ The values shown are the defaults. Six `guests` keys need a word:
 while it is empty the Tailscale integrations are off, whatever the
 store holds. `tailscale.tailnet` is `-` (the client's own tailnet) or a
 tailnet ID — one URL path segment: letters, digits, `.`, `_`, `-`, `@`.
+`tailscale.guest_tag` is the tag `ts join` gives guests (never
+`tag:lab-router`); `tailscale.policy_client_id` is the separate
+policy-writing client's ID, used by `ts policy apply` alone (§19).
 
 `config show` prints an empty value as `--`.
 
@@ -430,7 +435,9 @@ Simple and secure on macOS **and** Linux.
 Five secret kinds: `pve` (Proxmox API token secret), `unifi` (UniFi API
 key), `cloudflare` (Cloudflare API token: `example.com` DNS + the account's tunnels, §15),
 `tailscale` (the tailnet's OAuth client secret, `tskey-client-…`, §19),
-`guest/<name>` (per-guest password of the guest user). One small `SecretStore`
+`guest/<name>` (per-guest password of the guest user); and an optional
+sixth, `tailscale-policy` (a second OAuth client that may write the
+policy, used only by `ts policy apply`, §19). One small `SecretStore`
 interface (`get`, `set`, `delete`, `exists`) with backends chosen by
 `credentials.store` (`auto` default):
 
@@ -452,8 +459,8 @@ Rules for every backend:
 - The `file` backend refuses to read a secrets file that is a symlink, not
   owned by the user, or group/world-accessible (like `ssh` does with keys),
   and writes it atomically with 0600.
-- `auth set pve|unifi|cloudflare|tailscale` reads a hidden TTY prompt or `--stdin`
-  (`tailscale` must be an OAuth client secret, `tskey-client-…`; a
+- `auth set pve|unifi|cloudflare|tailscale|tailscale-policy` reads a hidden TTY prompt or `--stdin`
+  (`tailscale` and `tailscale-policy` must be OAuth client secrets, `tskey-client-…`; a
   personal `tskey-api-…` token is refused); `auth status`
   shows backend + presence without reading the secret; `auth rm` confirms.
 - Secrets are fetched only when a request is about to be sent; never
@@ -479,7 +486,9 @@ the store" (§6). Guest passwords join it on request since 2026-11-13
 
 - **Contents:** the config file as it is, the CA bundles it names
   (`pve.ca_bundle`, `unifi.ca_bundle`, once each) and the stored `pve`,
-  `unifi`, `cloudflare` and `tailscale` credentials. With `--guest-passwords`, also
+  `unifi`, `cloudflare` and `tailscale` credentials — never
+  `tailscale-policy`, which is created for one policy change and revoked
+  afterwards (§19). With `--guest-passwords`, also
   the stored `guest/<name>` password of every VM on Proxmox (templates
   skipped): the store cannot be listed on every backend, so the VMs are
   read from the API, and a password left from a destroyed VM stays
