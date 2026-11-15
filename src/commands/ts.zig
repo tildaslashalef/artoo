@@ -960,6 +960,7 @@ pub fn checkPolicyLocally(ctx: *Context, word: []const u8, text: []const u8) !vo
     const json = tn.hujsonToJson(a, text) catch return ctx.fail(error.Refused, "{s} is not valid HuJSON (an unterminated string or comment, or a stray '/')", .{word});
     const v = std.json.parseFromSliceLeaky(Value, a, json, .{}) catch return ctx.fail(error.Refused, "{s} is not valid HuJSON", .{word});
     if (v != .object) return ctx.fail(error.Refused, "{s} is not a policy (expected an object)", .{word});
+    if (tn.nonAsciiKey(v)) |key| return ctx.fail(error.Refused, "{s} has the non-ASCII key \"{s}\"; Tailscale folds key case (Unicode included), so artoo refuses keys it cannot check (SPEC §19)", .{ word, try clean(ctx, key) });
     const funnel = try tn.funnelAttrs(a, v);
     if (funnel.len > 0) return ctx.fail(error.Refused, "{s} grants Funnel in nodeAttrs ({s}); artoo never applies a policy that opens tailnet devices to the internet (SPEC §9.6)", .{ word, try joinClean(ctx, funnel) });
 }
@@ -1552,6 +1553,22 @@ test "ts policy apply: a policy granting Funnel is refused before any request, w
     try testing.expectEqual(Exit.refused, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm example.ts.net", .{p})));
     try testing.expectEqual(@as(usize, 0), f.sent());
     try testing.expect(std.mem.find(u8, f.h.stderr(), "grants Funnel in nodeAttrs (funnel)") != null);
+}
+
+test "ts policy apply: Funnel under folded keys, and non-ASCII keys, are refused before any request" {
+    for ([_][]const u8{
+        "{\"NodeAttrs\": [{\"target\": [\"*\"], \"Attr\": [\"funnel\"]}]}",
+        "{\"nodeattrs\": [{\"target\": [\"*\"], \"attr\": [\"funnel\"]}]}",
+        "{\"nodeAttr\u{17F}\": [{\"target\": [\"*\"], \"attr\": [\"funnel\"]}]}",
+        "{\"grants\": [], \"nodeAttrs\": [{\"target\": [\"*\"], \"\\u212Attr\": [\"x\"]}]}",
+    }) |body| {
+        var f: Fixture = undefined;
+        try policyFixture(&f, &.{});
+        defer f.deinit();
+        const p = try f.file("p.hujson", body);
+        try testing.expectEqual(Exit.refused, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm example.ts.net", .{p})));
+        try testing.expectEqual(@as(usize, 0), f.sent());
+    }
 }
 
 test "ts policy apply -n: validates and shows the diff, sends no write" {

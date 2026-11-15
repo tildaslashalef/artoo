@@ -434,21 +434,51 @@ fn skipString(s: []const u8, start: usize) !usize {
     return error.InvalidHuJson;
 }
 
+/// The first object key anywhere in `v` that is not plain ASCII, or null.
+/// Tailscale folds policy keys like Go's JSON decoder, Unicode folds
+/// included (`ſ`, U+017F, matches `s`), so a key artoo cannot compare
+/// byte-wise is refused rather than guessed (SPEC §19).
+pub fn nonAsciiKey(v: Value) ?[]const u8 {
+    switch (v) {
+        .object => |o| {
+            var it = o.iterator();
+            while (it.next()) |e| {
+                for (e.key_ptr.*) |ch| if (ch >= 0x80 or ch < 0x20) return e.key_ptr.*;
+                if (nonAsciiKey(e.value_ptr.*)) |k| return k;
+            }
+        },
+        .array => |arr| for (arr.items) |x| if (nonAsciiKey(x)) |k| return k,
+        else => {},
+    }
+    return null;
+}
+
 /// The `nodeAttrs` entries that grant Funnel (an `attr` naming `funnel`):
 /// artoo never applies a policy that opens the lab to the internet
-/// (SPEC §9.6, §19).
+/// (SPEC §9.6, §19). Keys match ASCII-case-insensitively at every level,
+/// as Tailscale reads them; every matching key is inspected.
 pub fn funnelAttrs(a: std.mem.Allocator, policy_json: Value) ![]const []const u8 {
     var hits: std.ArrayList([]const u8) = .empty;
-    const attrs = ts.field(policy_json, "nodeAttrs");
-    if (attrs != .array) return hits.items;
-    for (attrs.array.items) |item| {
-        const list = ts.field(item, "attr");
-        const words: []const Value = switch (list) {
-            .array => |arr| arr.items,
-            .string => &.{list},
-            else => &.{},
-        };
-        for (words) |w| if (w == .string and std.ascii.findIgnoreCase(w.string, "funnel") != null) try hits.append(a, w.string);
+    if (policy_json != .object) return hits.items;
+    var top = policy_json.object.iterator();
+    while (top.next()) |te| {
+        if (!std.ascii.eqlIgnoreCase(te.key_ptr.*, "nodeAttrs")) continue;
+        const attrs = te.value_ptr.*;
+        if (attrs != .array) continue;
+        for (attrs.array.items) |item| {
+            if (item != .object) continue;
+            var fields = item.object.iterator();
+            while (fields.next()) |fe| {
+                if (!std.ascii.eqlIgnoreCase(fe.key_ptr.*, "attr")) continue;
+                const list = fe.value_ptr.*;
+                const words: []const Value = switch (list) {
+                    .array => |arr| arr.items,
+                    .string => &.{list},
+                    else => &.{},
+                };
+                for (words) |w| if (w == .string and std.ascii.findIgnoreCase(w.string, "funnel") != null) try hits.append(a, w.string);
+            }
+        }
     }
     return hits.items;
 }
@@ -528,6 +558,21 @@ test "hujsonToJson: comments and trailing commas go, strings stay; funnel attrib
     try testing.expectEqual(@as(usize, 1), (try funnelAttrs(a, v)).len);
     const quiet = try std.json.parseFromSliceLeaky(Value, a, "{\"nodeAttrs\":[{\"target\":[\"*\"],\"attr\":[\"mullvad\"]}]}", .{});
     try testing.expectEqual(@as(usize, 0), (try funnelAttrs(a, quiet)).len);
+    // Keys fold as Tailscale reads them.
+    for ([_][]const u8{
+        "{\"NodeAttrs\":[{\"target\":[\"*\"],\"Attr\":[\"funnel\"]}]}",
+        "{\"nodeattrs\":[{\"target\":[\"*\"],\"ATTR\":\"Funnel\"}]}",
+        "{\"nodeAttrs\":[{\"attr\":[\"mullvad\"],\"aTtr\":[\"funnel\"]}]}",
+    }) |src| {
+        const fv = try std.json.parseFromSliceLeaky(Value, a, src, .{});
+        try testing.expectEqual(@as(usize, 1), (try funnelAttrs(a, fv)).len);
+    }
+    // `nodeAttr\u017Fs`-style keys cannot be compared byte-wise: refused.
+    const folded = try std.json.parseFromSliceLeaky(Value, a, "{\"grants\":[],\"nodeAttr\u{17F}\":[{\"attr\":[\"funnel\"]}]}", .{});
+    try testing.expect(nonAsciiKey(folded) != null);
+    const escaped = try std.json.parseFromSliceLeaky(Value, a, "{\"x\":[{\"\\u212Aey\":1}]}", .{});
+    try testing.expect(nonAsciiKey(escaped) != null);
+    try testing.expect(nonAsciiKey(quiet) == null);
     try testing.expectError(error.InvalidHuJson, hujsonToJson(a, "{\"a\": \"open"));
     try testing.expectError(error.InvalidHuJson, hujsonToJson(a, "{} /* open"));
     try testing.expect(try samePolicy(a, "{\"a\": 1, // x\n}", "{\"a\":1}"));
