@@ -132,7 +132,7 @@ artoo config show | get KEY | set KEY VALUE | unset KEY | edit | init
 artoo config export FILE [--guest-passwords] | import FILE   artoo's setup to another machine (§6.1)
 artoo completion fish|bash|zsh        print the shell completion script (§3.5)
 artoo update [VERSION] [--check]      replace this binary with a verified GitHub release (§18)
-artoo auth set pve|unifi|cloudflare | status | rm pve|unifi|cloudflare
+artoo auth set pve|unifi|cloudflare|tailscale | status | rm pve|unifi|cloudflare|tailscale
 ```
 
 Command availability follows delivery: a command is absent from the table
@@ -355,6 +355,11 @@ is printed, so the output is the same as without it.
     "tunnel": "lab",
     "timeout_seconds": 10
   },
+  "tailscale": {
+    "client_id": "",
+    "tailnet": "-",
+    "timeout_seconds": 10
+  },
   "guests": {
     "domain": "lab.example.com",
     "template": "ubuntu-2604",
@@ -398,6 +403,11 @@ The values shown are the defaults. Six `guests` keys need a word:
   snapshot older than this is a warning in `status`, `vm verify` and
   `vm snap ls`, and `vm snap prune` selects it (§9.16).
 
+`tailscale.client_id` (default empty) is the OAuth client's ID (§19);
+while it is empty the Tailscale integrations are off, whatever the
+store holds. `tailscale.tailnet` is `-` (the client's own tailnet) or a
+tailnet ID — one URL path segment: letters, digits, `.`, `_`, `-`, `@`.
+
 `config show` prints an empty value as `--`.
 
 No profiles: the lab has one Proxmox host and one gateway. `config set`
@@ -411,10 +421,10 @@ to overwrite an existing one.
 
 Simple and secure on macOS **and** Linux.
 
-Four secret kinds: `pve` (Proxmox API token secret), `unifi` (UniFi API
-key), `cloudflare` (Cloudflare API token: `example.com` DNS + the account's tunnels, §15), `guest/<name>`
-(per-guest password of the guest user); a fifth, `tailscale` (an OAuth
-client secret), is designed in §19. One small `SecretStore`
+Five secret kinds: `pve` (Proxmox API token secret), `unifi` (UniFi API
+key), `cloudflare` (Cloudflare API token: `example.com` DNS + the account's tunnels, §15),
+`tailscale` (the tailnet's OAuth client secret, `tskey-client-…`, §19),
+`guest/<name>` (per-guest password of the guest user). One small `SecretStore`
 interface (`get`, `set`, `delete`, `exists`) with backends chosen by
 `credentials.store` (`auto` default):
 
@@ -436,7 +446,9 @@ Rules for every backend:
 - The `file` backend refuses to read a secrets file that is a symlink, not
   owned by the user, or group/world-accessible (like `ssh` does with keys),
   and writes it atomically with 0600.
-- `auth set pve|unifi|cloudflare` reads a hidden TTY prompt or `--stdin`; `auth status`
+- `auth set pve|unifi|cloudflare|tailscale` reads a hidden TTY prompt or `--stdin`
+  (`tailscale` must be an OAuth client secret, `tskey-client-…`; a
+  personal `tskey-api-…` token is refused); `auth status`
   shows backend + presence without reading the secret; `auth rm` confirms.
 - Secrets are fetched only when a request is about to be sent; never
   printed, logged, cached elsewhere, put in error text, flags or env vars.
@@ -461,7 +473,7 @@ the store" (§6). Guest passwords join it on request since 2026-11-13
 
 - **Contents:** the config file as it is, the CA bundles it names
   (`pve.ca_bundle`, `unifi.ca_bundle`, once each) and the stored `pve`,
-  `unifi` and `cloudflare` credentials. With `--guest-passwords`, also
+  `unifi`, `cloudflare` and `tailscale` credentials. With `--guest-passwords`, also
   the stored `guest/<name>` password of every VM on Proxmox (templates
   skipped): the store cannot be listed on every backend, so the VMs are
   read from the API, and a password left from a destroyed VM stays

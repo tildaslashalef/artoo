@@ -50,6 +50,7 @@ pub const Context = struct {
         unifi_base: ?[]const u8 = null,
         pve_base: ?[]const u8 = null,
         cloudflare_base: ?[]const u8 = null,
+        tailscale_base: ?[]const u8 = null,
         /// Task polling interval override (ms).
         poll_ms: ?u64 = null,
         /// Stands in for helper processes (ssh).

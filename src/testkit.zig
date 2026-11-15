@@ -99,12 +99,14 @@ pub const Gateway = struct {
         try g.mem.map.put(ar, "unifi", "test-key");
         try g.mem.map.put(ar, "pve", "test-secret");
         try g.mem.map.put(ar, "cloudflare", "test-token");
+        try g.mem.map.put(ar, "tailscale", "tskey-client-test-secret");
         g.h.store = .{ .memory = &g.mem };
         g.h.input = .{ .script = &g.script };
         try g.srv.start(testing.io, behaviors);
         g.h.hooks.unifi_base = try g.srv.url(ar, "");
         g.h.hooks.pve_base = g.h.hooks.unifi_base;
         g.h.hooks.cloudflare_base = g.h.hooks.unifi_base;
+        g.h.hooks.tailscale_base = g.h.hooks.unifi_base;
         g.h.hooks.poll_ms = 5;
     }
 
@@ -117,6 +119,7 @@ pub const Gateway = struct {
         g.h.hooks.unifi_base = try g.srv.url(ar, "");
         g.h.hooks.pve_base = g.h.hooks.unifi_base;
         g.h.hooks.cloudflare_base = g.h.hooks.unifi_base;
+        g.h.hooks.tailscale_base = g.h.hooks.unifi_base;
     }
 
     pub fn deinit(g: *Gateway) void {
@@ -135,6 +138,14 @@ pub const Gateway = struct {
     pub fn body(g: *Gateway, i: usize) []const u8 {
         const req = g.srv.received[i] orelse return "";
         return req[(std.mem.find(u8, req, "\r\n\r\n") orelse return "") + 4 ..];
+    }
+
+    /// Set `tailscale.client_id` (and more sections, as JSON members) in
+    /// the config file, which turns the Tailscale integrations on (§19).
+    pub fn tailscaleConfig(g: *Gateway, extra: []const u8) !void {
+        try g.tmp.dir.createDirPath(testing.io, ".artoo");
+        const data = try std.fmt.allocPrint(g.h.arena.allocator(), "{{\"schema_version\":1,\"tailscale\":{{\"client_id\":\"kTEST1CNTRL\"}}{s}}}\n", .{extra});
+        try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = data });
     }
 
     /// Connections accepted so far.

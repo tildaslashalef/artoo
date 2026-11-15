@@ -21,6 +21,7 @@ pub const Config = struct {
     pve: Pve = .{},
     unifi: Unifi = .{},
     cloudflare: Cloudflare = .{},
+    tailscale: Tailscale = .{},
     guests: Guests = .{},
 
     pub const Output = struct {
@@ -55,6 +56,15 @@ pub const Config = struct {
         /// The lab's remotely managed tunnel (run by the edge VM).
         tunnel: []const u8 = "lab",
     };
+    /// SPEC §19: the tailnet's API through an OAuth client (its secret
+    /// is the `tailscale` credential), verified against the system roots.
+    pub const Tailscale = struct {
+        /// The OAuth client's ID (not secret); empty = not set up.
+        client_id: []const u8 = "",
+        /// `-` = the client's own tailnet.
+        tailnet: []const u8 = "-",
+        timeout_seconds: u32 = 10,
+    };
     pub const Guests = struct {
         domain: []const u8 = "lab.example.com",
         template: []const u8 = "ubuntu-2604",
@@ -84,7 +94,7 @@ pub const Config = struct {
     };
 };
 
-pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, snapshot_keep, days, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list };
+pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, client_id, tailnet, snapshot_keep, days, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list };
 
 pub const Key = struct {
     name: []const u8,
@@ -111,6 +121,9 @@ pub const keys = [_]Key{
     .{ .name = "cloudflare.zone", .help = "Cloudflare zone artoo manages", .check = .hostname },
     .{ .name = "cloudflare.timeout_seconds", .help = "Per-request deadline", .check = .seconds },
     .{ .name = "cloudflare.tunnel", .help = "Name of the lab's Cloudflare Tunnel", .check = .ident },
+    .{ .name = "tailscale.client_id", .help = "Tailscale OAuth client ID (its secret: 'artoo auth set tailscale')", .check = .client_id },
+    .{ .name = "tailscale.tailnet", .help = "Tailnet ID ('-' = the OAuth client's own tailnet)", .check = .tailnet },
+    .{ .name = "tailscale.timeout_seconds", .help = "Per-request deadline", .check = .seconds },
     .{ .name = "guests.domain", .help = "DNS domain for guest names", .check = .hostname },
     .{ .name = "guests.template", .help = "Default template name", .check = .ident },
     .{ .name = "guests.ssh_public_key", .help = "Public key installed for the guest user", .check = .path },
@@ -126,6 +139,7 @@ pub const keys = [_]Key{
 
 comptime {
     // Every Config field has exactly one key entry.
+    @setEvalBranchQuota(10_000);
     var count = 0;
     for (@typeInfo(Config).@"struct".field_names, @typeInfo(Config).@"struct".field_types) |sec, T| {
         for (@typeInfo(T).@"struct".field_names) |f| {
@@ -284,6 +298,8 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .path => s.len > 0 and std.mem.findScalar(u8, s, 0) == null,
         .ident => s.len > 0 and allChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"),
         .token_id => validTokenId(s),
+        .client_id => allChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"),
+        .tailnet => validTailnet(s),
         .hostname => validHostname(s),
         .ipv4_range => parseRange(s) != null,
         .ipv4_cidr => parseCidr(s) != null,
@@ -298,6 +314,8 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .path => "a file path",
         .ident => "letters, digits, '.', '_' or '-'",
         .token_id => "user@realm!tokenname",
+        .client_id => "letters, digits, '_' or '-' (empty: not set up)",
+        .tailnet => "'-' or a tailnet ID (letters, digits, '.', '_', '-' or '@')",
         .hostname => "a DNS name like home.arpa",
         .ipv4_range => "an IPv4 range A-B with A <= B",
         .ipv4_cidr => "an IPv4 address with prefix length, like 192.168.1.1/24",
@@ -332,6 +350,13 @@ fn validTokenId(s: []const u8) bool {
     const bang = std.mem.findScalar(u8, s, '!') orelse return false;
     if (at == 0 or bang <= at + 1 or bang + 1 >= s.len) return false;
     return allChars(s[bang + 1 ..], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-");
+}
+
+/// `-`, or a tailnet ID/legacy name: one URL path segment, no escaping.
+fn validTailnet(s: []const u8) bool {
+    if (s.len == 0 or s.len > 253) return false;
+    if (std.mem.eql(u8, s, "-")) return true;
+    return std.ascii.isAlphanumeric(s[0]) and allChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-@");
 }
 
 fn validUsername(s: []const u8) bool {
@@ -699,6 +724,8 @@ test "validators" {
     try testing.expect(validPathList("~/.artoo/keys/a.pub, /etc/b.pub"));
     try testing.expect(!validPathList("a.pub,,b.pub"));
     try testing.expect(!validPathList("a.pub,"));
+    try testing.expect(validTailnet("-") and validTailnet("T1234CNTRL") and validTailnet("example.com"));
+    try testing.expect(!validTailnet("") and !validTailnet("a/b") and !validTailnet("../x") and !validTailnet("a?b"));
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const paths = try pathList(arena.allocator(), " a.pub , b.pub ");
