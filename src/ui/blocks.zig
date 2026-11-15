@@ -57,19 +57,42 @@ pub fn detail(w: *Io.Writer, ui: *const Ui, sections: []const Section) Io.Writer
             try w.writeAll(p.off(.muted));
             try w.writeAll("  ");
             const role: style.Role = if (std.mem.eql(u8, f.value, "--")) .muted else f.role;
+            // Lines longer than the terminal wrap at spaces, under the
+            // value column.
+            const col = indent + key_w + 2;
+            const room: ?usize = if (ui.width) |cols| (if (cols > col + 20) cols - col else null) else null;
             var lines = std.mem.splitScalar(u8, f.value, '\n');
             var first = true;
-            while (lines.next()) |line| {
-                if (!first) {
-                    try w.writeByte('\n');
-                    try w.splatByteAll(' ', indent + key_w + 2);
+            while (lines.next()) |whole| {
+                var line = whole;
+                while (true) {
+                    if (!first) {
+                        try w.writeByte('\n');
+                        try w.splatByteAll(' ', col);
+                    }
+                    first = false;
+                    const cut = if (room) |r| wrapAt(line, r) else line.len;
+                    try w.print("{s}{s}{s}", .{ p.on(role), line[0..cut], p.off(role) });
+                    if (cut >= line.len) break;
+                    line = std.mem.trimStart(u8, line[cut..], " ");
                 }
-                first = false;
-                try w.print("{s}{s}{s}", .{ p.on(role), line, p.off(role) });
             }
             try w.writeByte('\n');
         }
     }
+}
+
+/// Where to break `line` to fit `room` cells: the last space that fits,
+/// else the whole line (a long word overflows rather than being cut).
+fn wrapAt(line: []const u8, room: usize) usize {
+    if (text.width(line) <= room) return line.len;
+    var best: ?usize = null;
+    var i: usize = 0;
+    while (std.mem.findScalarPos(u8, line, i, ' ')) |sp| : (i = sp + 1) {
+        if (text.width(line[0..sp]) > room) break;
+        best = sp;
+    }
+    return best orelse line.len;
 }
 
 pub const Risk = enum { normal, destructive };
@@ -205,6 +228,20 @@ test "plan: destructive block with changes, impact, recovery, notes" {
         \\            Cached answers expire within the TTL
         \\  Recovery  artoo dns add web-01 192.168.1.201
         \\  Note      The UniFi API has no ETags; concurrent edits cannot be detected.
+        \\
+    , buf.written());
+}
+
+test "detail: long values wrap under the value column" {
+    var buf: Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+    const ui: Ui = .{ .width = 40 };
+    try detail(&buf.writer, &ui, &.{.{ .fields = &.{
+        .{ .key = "Note", .value = "one two three four five six seven eight nine ten" },
+    } }});
+    try testing.expectEqualStrings(
+        \\Note  one two three four five six seven
+        \\      eight nine ten
         \\
     , buf.written());
 }
