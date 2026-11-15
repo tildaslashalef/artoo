@@ -763,6 +763,8 @@ pub const GuestState = struct {
     hostname: []const u8 = "",
     dns_name: []const u8 = "",
     tags: []const []const u8 = &.{},
+    /// `Self.ID`, the stable node ID the API calls `nodeId`.
+    node_id: []const u8 = "",
     raw: []const u8 = "",
 
     pub fn running(s: GuestState) bool {
@@ -778,6 +780,7 @@ pub fn parseGuestState(a: std.mem.Allocator, out: []const u8) !GuestState {
         .hostname = ts.str(self, "HostName") orelse "",
         .dns_name = std.mem.trimEnd(u8, ts.str(self, "DNSName") orelse "", "."),
         .tags = try ts.strings(a, self, "Tags"),
+        .node_id = ts.str(self, "ID") orelse "",
         .raw = out,
     };
 }
