@@ -63,7 +63,18 @@ pub fn outages(c: *unifi.Client, wans: []const wan.Wan, since_s: i64, only: ?[]c
         try kept.append(a, e);
     }
     const f = try wan.fold(a, kept.items);
-    for (f.outages) |*o| {
+    // A WAN offline now with no failure in the window to explain it went
+    // down before the window: an ongoing outage from the window's start.
+    var list: std.ArrayList(wan.Outage) = .fromOwnedSlice(f.outages);
+    for (wans) |w| {
+        const g = w.group orelse continue;
+        if (w.status != .offline) continue;
+        if (only) |o| if (!std.mem.eql(u8, o, g)) continue;
+        for (list.items) |x| {
+            if (x.ongoing and std.mem.eql(u8, x.group, g)) break;
+        } else try list.append(a, .{ .group = g, .start = from_ms, .ongoing = true, .before_window = true });
+    }
+    for (list.items) |*o| {
         const w = byGroup(wans, o.group);
         o.wan = if (w) |x| x.name else null;
         wan.judgeOngoing(o, w);
@@ -76,14 +87,14 @@ pub fn outages(c: *unifi.Client, wans: []const wan.Wan, since_s: i64, only: ?[]c
         const g = w.group orelse continue;
         if (w.status != .no_port) try groups.append(a, g);
     }
-    for (f.outages) |o| {
+    for (list.items) |o| {
         for (groups.items) |g| {
             if (std.mem.eql(u8, g, o.group)) break;
         } else try groups.append(a, o.group);
     }
-    const sum = try wan.summarize(a, f.outages, groups.items, from_ms, now_ms);
+    const sum = try wan.summarize(a, list.items, groups.items, from_ms, now_ms);
     for (sum) |*s| s.wan = if (byGroup(wans, s.group)) |x| x.name else null;
-    return .{ .from_ms = from_ms, .to_ms = now_ms, .outages = f.outages, .others = f.others, .summary = sum };
+    return .{ .from_ms = from_ms, .to_ms = now_ms, .outages = list.items, .others = f.others, .summary = sum };
 }
 
 fn byGroup(wans: []const wan.Wan, g: []const u8) ?*const wan.Wan {
@@ -471,7 +482,7 @@ fn renderOutages(ctx: *Context, o: Outages, indent: bool) !void {
             cells[0] = .{ .text = try std.fmt.allocPrint(a, "{s}{f}", .{ pad, ui.values.absolute(@divFloor(x.start, 1000), &u.zone) }) };
             cells[1] = .{ .text = try clean(ctx, x.wan orelse x.group) };
             if (x.ongoing) {
-                cells[2] = .{ .text = try std.fmt.allocPrint(a, "{s} down, ongoing", .{u.glyphs.fail}), .role = .fail };
+                cells[2] = .{ .text = try std.fmt.allocPrint(a, "{s} down, ongoing{s}", .{ u.glyphs.fail, if (x.before_window) " since before the window" else "" }), .role = .fail };
                 cells[3] = .{ .text = try std.fmt.allocPrint(a, "{f}+", .{ui.values.duration(@intCast(@max(@divTrunc(o.to_ms - x.start, 1000), 0)))}), .role = .fail };
             } else {
                 cells[2] = .{ .text = try std.fmt.allocPrint(a, "{s} down{s}", .{ u.glyphs.warn, if (x.temporary) ", brief" else "" }), .role = .warn };
@@ -770,6 +781,21 @@ test "gw wans log --since 7d: every page, window and category in the search, fol
         "Summary, last 7d\n  Fiber-Main  1 outage, 2m 30s down (longest 2m 30s), availability 100.0%\n",
     });
     try testing.expect(std.mem.find(u8, out, "Fiber-Backup") == null);
+}
+
+test "gw wans log: a WAN offline since before the window is an ongoing outage, counted" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const device = try std.mem.replaceOwned(u8, a, wan.fixture_device, "\"last_wan_status\":{\"WAN\":\"online\"}", "\"last_wan_status\":{\"WAN\":\"offline\"}");
+    var f: testkit.Gateway = undefined;
+    try f.initRoutes(&.{
+        state_routes[0],             state_routes[1], state_routes[2],
+        ok("/stat/device ", device), state_routes[4], ok("/system-log/all ", try logPage(a, "", 0, 1)),
+    });
+    defer f.deinit();
+    try testing.expectEqual(testkit.Exit.ok, f.h.run(&root, "gw wans log"));
+    try expectLines(f.h.stdout(), &.{ "down, ongoing since before the window", "Fiber-Main  1 outage, 1d down (longest 1d), availability 0.0%\n" });
 }
 
 test "gw wans log: a state source that fails (not the firmware) is named and exits 8; events still shown" {
