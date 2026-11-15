@@ -79,6 +79,8 @@ pub const Glyphs = struct {
     bar_full: []const u8,
     bar_empty: []const u8,
     arrow: []const u8,
+    /// A link going down (WAN outages).
+    down: []const u8,
     dot: []const u8,
     rule: []const u8,
 };
@@ -96,6 +98,7 @@ pub const unicode: Glyphs = .{
     .bar_full = "█",
     .bar_empty = "░",
     .arrow = "→",
+    .down = "▼",
     .dot = "·",
     .rule = "─",
 };
@@ -113,6 +116,7 @@ pub const ascii: Glyphs = .{
     .bar_full = "#",
     .bar_empty = ".",
     .arrow = "->",
+    .down = "v",
     .dot = "-",
     .rule = "-",
 };

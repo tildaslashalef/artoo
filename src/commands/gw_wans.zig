@@ -496,6 +496,23 @@ fn renderOutages(ctx: *Context, o: Outages, indent: bool) !void {
     if (entries.items.len == 0) {
         return ctx.out.print("{s}{s}No outages or WAN events.{s}\n", .{ pad, u.palette.on(.muted), u.palette.off(.muted) });
     }
+    // A repeated alert (same WAN and title, e.g. "Multiple Internet
+    // Disconnections" between outages) is one row with its count; a
+    // gateway message is shown the first time only; a repeated "unknown"
+    // cause is a dash.
+    const Repeat = struct { first: *const wan.Event, n: usize, last: i64 };
+    var repeats: std.ArrayList(Repeat) = .empty;
+    for (o.others) |*e| {
+        for (repeats.items) |*r| {
+            if (std.mem.eql(u8, r.first.title, e.title) and std.mem.eql(u8, r.first.group orelse "", e.group orelse "")) {
+                r.n += 1;
+                r.last = e.timestamp;
+                break;
+            }
+        } else try repeats.append(a, .{ .first = e, .n = 1, .last = e.timestamp });
+    }
+    var seen = Seen{ .arena = a };
+    var unknown_shown = false;
     var rows: std.ArrayList([]const Cell) = .empty;
     for (entries.items) |en| {
         if (en.outage) |x| {
@@ -503,23 +520,32 @@ fn renderOutages(ctx: *Context, o: Outages, indent: bool) !void {
             cells[0] = .{ .text = try std.fmt.allocPrint(a, "{s}{f}", .{ pad, ui.values.absolute(@divFloor(x.start, 1000), &u.zone) }) };
             cells[1] = .{ .text = try clean(ctx, x.wan orelse x.group) };
             if (x.ongoing) {
-                cells[2] = .{ .text = try std.fmt.allocPrint(a, "{s} down, ongoing{s}", .{ u.glyphs.fail, if (x.before_window) " since before the window" else "" }), .role = .fail };
+                cells[2] = .{ .text = try std.fmt.allocPrint(a, "{s} down, ongoing{s}", .{ u.glyphs.down, if (x.before_window) " since before the window" else "" }), .role = .fail };
                 cells[3] = .{ .text = try std.fmt.allocPrint(a, "{f}+", .{ui.values.duration(@intCast(@max(@divTrunc(o.to_ms - x.start, 1000), 0)))}), .role = .fail };
             } else {
-                cells[2] = .{ .text = try std.fmt.allocPrint(a, "{s} down{s}", .{ u.glyphs.warn, if (x.temporary) ", brief" else "" }), .role = .warn };
+                cells[2] = .{ .text = try std.fmt.allocPrint(a, "{s} down{s}", .{ u.glyphs.down, if (x.temporary) ", brief" else "" }), .role = .warn };
                 cells[3] = .{ .text = if (x.duration_seconds) |d| try ui.values.alloc(a, ui.values.duration(@intCast(@max(d, 0)))) else "--" };
             }
-            cells[4] = .{ .text = if (x.degraded_before) try std.fmt.allocPrint(a, "{s}; degraded before", .{x.cause.text()}) else x.cause.text(), .role = if (x.cause == .unknown) .muted else .text };
+            const cause = if (x.cause == .unknown and unknown_shown) "–" else x.cause.text();
+            if (x.cause == .unknown) unknown_shown = true;
+            cells[4] = .{ .text = if (x.degraded_before) try std.fmt.allocPrint(a, "{s}; degraded before", .{cause}) else cause, .role = if (x.cause == .unknown) .muted else .text };
             try rows.append(a, cells);
-            for (x.lead_up) |e| try rows.append(a, try subRow(ctx, pad, "lead-up", e));
-            for (x.during) |e| try rows.append(a, try subRow(ctx, pad, "during", e));
+            for (x.lead_up) |e| try rows.append(a, try subRow(ctx, pad, "lead-up", e, &seen));
+            for (x.during) |e| try rows.append(a, try subRow(ctx, pad, "during", e, &seen));
         } else if (en.event) |e| {
+            const rep = for (repeats.items) |r| {
+                if (r.first == e) break r;
+            } else continue; // a repeat, counted on its first row
             const cells = try a.alloc(Cell, 5);
             cells[0] = .{ .text = try std.fmt.allocPrint(a, "{s}{f}", .{ pad, ui.values.absolute(@divFloor(e.timestamp, 1000), &u.zone) }) };
             cells[1] = .{ .text = if (e.group) |g| try clean(ctx, groupName(o, g)) else "--" };
-            cells[2] = .{ .text = try clean(ctx, e.title), .role = .muted };
+            cells[2] = .{ .text = if (rep.n > 1)
+                try std.fmt.allocPrint(a, "{s} ×{d}", .{ try clean(ctx, e.title), rep.n })
+            else
+                try clean(ctx, e.title), .role = .muted };
             cells[3] = .{ .text = "" };
-            cells[4] = .{ .text = try clean(ctx, e.message), .role = .muted };
+            cells[4] = .{ .text = if (rep.n > 1) try std.fmt.allocPrint(a, "last {f}", .{ui.values.clock(@divFloor(rep.last, 1000), &u.zone)}) else "", .role = .muted };
+            try seen.add(try clean(ctx, e.title), try clean(ctx, e.message));
             try rows.append(a, cells);
         }
     }
@@ -530,6 +556,11 @@ fn renderOutages(ctx: *Context, o: Outages, indent: bool) !void {
         .{ .title = "DOWN", .alignment = .right },
         .{ .title = "CAUSE / DETAIL" },
     }, rows.items);
+    // The gateway's own words, once per kind of event: too long for a cell.
+    if (seen.list.items.len > 0) {
+        try ctx.out.print("\n{s}{s}Gateway messages{s}\n", .{ pad, u.palette.on(.title), u.palette.off(.title) });
+        for (seen.list.items) |m| try ctx.out.print("{s}  {s}: {s}{s}{s}\n", .{ pad, m.title, u.palette.on(.muted), m.message, u.palette.off(.muted) });
+    }
 }
 
 fn pagingWarning(ctx: *Context, o: Outages, pad: []const u8) !void {
@@ -543,14 +574,27 @@ fn groupName(o: Outages, g: []const u8) []const u8 {
     return g;
 }
 
-fn subRow(ctx: *Context, pad: []const u8, what: []const u8, e: wan.Event) ![]const Cell {
+/// The gateway messages of the events in the table, one per title.
+const Seen = struct {
+    arena: std.mem.Allocator,
+    list: std.ArrayList(struct { title: []const u8, message: []const u8 }) = .empty,
+
+    fn add(s: *Seen, title: []const u8, message: []const u8) !void {
+        if (message.len == 0) return;
+        for (s.list.items) |m| if (std.mem.eql(u8, m.title, title)) return;
+        try s.list.append(s.arena, .{ .title = title, .message = message });
+    }
+};
+
+fn subRow(ctx: *Context, pad: []const u8, what: []const u8, e: wan.Event, seen: *Seen) ![]const Cell {
     const a = ctx.arena;
     const cells = try a.alloc(Cell, 5);
     cells[0] = .{ .text = "" };
     cells[1] = .{ .text = "" };
     cells[2] = .{ .text = try std.fmt.allocPrint(a, "{s}{s} {s} {f} {s}", .{ pad, ctx.ui.glyphs.arrow, what, ui.values.clock(@divFloor(e.timestamp, 1000), &ctx.ui.zone), try clean(ctx, e.title) }), .role = .muted };
     cells[3] = .{ .text = "" };
-    cells[4] = .{ .text = try clean(ctx, e.message), .role = .muted };
+    cells[4] = .{ .text = "" };
+    try seen.add(try clean(ctx, e.title), try clean(ctx, e.message));
     return cells;
 }
 
@@ -734,8 +778,8 @@ test "gw wans show: in depth, outages of the last 24 hours, ongoing cause from t
         "  Last downtime  1m 35s\n",
         "  monitor.example.com  icmp  good",
         "Outages, last 24h\n",
-        "▲ down            1m 35s  unknown\n",
-        "✗ down, ongoing  1m ",
+        "▼ down            1m 35s  unknown\n",
+        "▼ down, ongoing  1m ",
         "s+  ISP access: modem or the ISP's first hop\n",
     });
 }
@@ -798,12 +842,12 @@ test "gw wans log --since 7d: every page, window and category in the search, fol
     try testing.expectEqual(@as(usize, 2), pages);
     const out = f.h.stdout();
     try expectLines(out, &.{
-        "Fiber-Main  ▲ down",
+        "Fiber-Main  ▼ down",
         "2m 30s  unknown; degraded before\n",
         "→ lead-up ",
         "WAN1 ISP_PACKET_LOSS",
         "Fiber-Main  WAN1 SOMETHING_NEW",
-        "Internet connection WAN1 Example ISP on port 5.",
+        "Gateway messages\n  WAN1 ISP_PACKET_LOSS: Internet connection WAN1 Example ISP on port 5.",
         "Summary, last 7d\n  Fiber-Main  1 outage, 2m 30s down (longest 2m 30s), availability 100.0%\n",
     });
     try testing.expect(std.mem.find(u8, out, "Fiber-Backup") == null);
