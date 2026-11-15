@@ -29,9 +29,9 @@ config and behavior; only the credential store backend differs (§6).
 
 Out of scope for v1: host package management, clustering/Ceph, LXC
 management (reported, not managed), consoles/VNC, a TUI, backups, tailnet
-administration (policy, DNS, keys — the operator's console; the subnet
-router's own enrollment is in scope, §9.8), gateway firmware/OS
-administration.
+administration beyond the lab's side (the policy, users and settings stay
+the operator's console; the subnet router, lab devices and split DNS are
+in scope, §9.8, §19), gateway firmware/OS administration.
 
 ## 2. Principles
 
@@ -411,7 +411,8 @@ Simple and secure on macOS **and** Linux.
 
 Four secret kinds: `pve` (Proxmox API token secret), `unifi` (UniFi API
 key), `cloudflare` (Cloudflare API token: `example.com` DNS + the account's tunnels, §15), `guest/<name>`
-(per-guest password of the guest user). One small `SecretStore`
+(per-guest password of the guest user); a fifth, `tailscale` (an OAuth
+client secret), is designed in §19. One small `SecretStore`
 interface (`get`, `set`, `delete`, `exists`) with backends chosen by
 `credentials.store` (`auto` default):
 
@@ -1138,7 +1139,9 @@ Tailscale runs on Proxmox; the edge VM stays without Tailscale.
   `tcp:443` and DNS `53`, the guest pool (all ports); nothing else on the
   LAN; the router reaches no tailnet device. **Split DNS:**
   `lab.example.com` and `home.arpa` → the gateway (`192.168.1.1`). Tagged
-  devices' keys do not expire.
+  devices' keys do not expire. With a Tailscale credential (§19), artoo
+  creates the join key, approves the route and sets split DNS itself;
+  the policy stays the operator's.
 - **Acceptance:** away from home (another network), `pve.home.arpa:8006`,
   `ssh` to a guest by machine name and a service name resolve and answer;
   other LAN clients do not. At home, the workstation must still reach the
@@ -2023,7 +2026,8 @@ before the write: `cores × sockets` within the host's CPUs
 (`/nodes/{node}/status` `cpuinfo.cpus`), `vcpus` within `cores ×
 sockets`, `balloon` within `memory`, memory hotplug only with `numa=1`.
 Network, cloud-init, disk-option and hardware keys stay out (`net0`,
-`ipconfig0`, `bios`, `machine`, …). `vm show` lists "Boot" (onboot and
+`ipconfig0`, `bios`, `machine`, …). `name` on an artoo guest is refused
+in favour of `vm rename` (§9.18). `vm show` lists "Boot" (onboot and
 startup), "Protection", "Hot vCPUs", "CPU limit", "CPU weight",
 "Balloon", "NUMA" and "Hotplug" when set, pending values marked.
 
@@ -2159,6 +2163,64 @@ risk:
 The last machine to reset a guest holds its valid password. To give
 every machine the same passwords instead, `config export
 --guest-passwords` carries them (§6.1).
+
+### 9.18 Renaming a guest (`vm rename`)
+
+Decided 2026-11-15; not implemented yet. A guest's name is not only
+Proxmox's label: the guest's hostname, its UniFi client record and DNS
+record, the pinned host key and `ssh_config`, the stored `guest/<name>`
+password, service upstreams, fence exceptions, its tailnet name and the
+watchdog's series all carry it. Changing Proxmox's `name` alone leaves a
+half-renamed guest, so `vm set name=` refuses on artoo guests (tag
+`artoo`) and points to `vm rename`; it stays for foreign VMs. Guests
+that are cheap to rebuild may still be rebuilt instead (§9.8); `vm
+rename` is for guests whose disk holds state.
+
+**`artoo vm rename OLD NEW`** — on the mutation pipeline (§8.2), high
+impact: typed confirmation of OLD (or `--confirm OLD`).
+
+- **Read and refuse** (exit 5, before any write): OLD an artoo guest,
+  running, its agent answering (the hostname is changed inside);
+  NEW checked as `vm new` checks a name (§9.3): a valid label, not
+  protected (§9.6, `guests.reserved_names`), no VM, UniFi client record,
+  DNS record or pinned host key of that name. Refused for `role-edge`
+  and `role-watch`: their names sit in firewall rules and in every
+  guest's Alloy configuration (§9.7, §9.9) — rebuild those. Templates
+  and foreign VMs refuse.
+- **Plan**, one line per place, `OLD → NEW` or "not present":
+
+  | Step | Change |
+  | --- | --- |
+  | Proxmox | `name` (digest-guarded, as `vm set`) |
+  | Guest | hostname (`hostnamectl set-hostname`) and the `/etc/hosts` line, through the agent |
+  | UniFi | the client record's `name` (§9.5), matched by MAC |
+  | DNS | the machine-name A record: NEW added before OLD is removed |
+  | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
+  | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config` rewritten (§9.10) |
+  | Services | each `svc` whose upstream is OLD moved to `NEW:PORT`, as `svc set` does, fence steps included (§9.6, §9.11) |
+  | Fence | `guests.fence_allow_out` entries naming OLD, and the fences that render them |
+  | Tailnet | for a guest on the tailnet (tag `tailnet`, `role-router`): `tailscale set --hostname=NEW` through the agent, the name read back from `tailscale status --json`; with a Tailscale credential the device is checked, and renamed if a hand-set name kept the old one (§19) |
+  | Watchdog | `watch enroll NEW`, then OLD's series deleted as `watch forget` does (§9.9) |
+
+  Impact: other machines keep OLD in their `known_hosts`, `ssh_config`
+  and password copies until they run `vm ssh-config` and receive the
+  password again (§6.1, §9.17) — the plan names this; metrics history
+  stays under OLD in Loki and is not carried over.
+- **Send** in the table's order, each step its own ledger entry. Every
+  step checks observed state first, so running `vm rename OLD NEW` again
+  after a failure finds the VM under either name and continues; a
+  failure stops with exit 8 naming what is done and what is left.
+  Rollback is `vm rename NEW OLD`.
+- **Verify:** `vm verify NEW` (§9.4) passes; OLD resolves nowhere, has
+  no UniFi record, store entry or pinned key; `ssh NEW` logs in with
+  the pinned key.
+
+**Open questions, settled before implementation:** the classic call
+that renames a client record (`PUT rest/user/{_id}` is expected, §17.1)
+— checked with a disposable record; whether cloud-init's per-boot
+hostname modules keep NEW across a reboot (Proxmox derives the
+cloud-init hostname from `name`, so they should) — checked by a reboot
+of a disposable guest.
 
 ## 10. UniFi
 
@@ -2354,6 +2416,11 @@ configuration early informs the Proxmox, addressing and DNS work.
    approval: the edge VM (Caddy, `*.apps.lab.example.com`, firewall) and
    service names; Cloudflare Tunnel and public guests; Tailscale subnet
    router + split DNS.
+9. **Tailscale client** (§19) — `auth set tailscale`, `doctor --connect`,
+   the read-only `ts` commands and `router status`'s tailnet view first;
+   then `router setup`'s own join key and route approval, device cleanup
+   on `vm rm`, `ts device rename|rm` and split DNS — writes under
+   approved plans. `vm rename` (§9.18) follows, using it.
 
 ## 15. Cloudflare
 
@@ -2486,6 +2553,9 @@ unquoted.
 - Proxmox VE API schema: `/usr/share/pve-docs/api-viewer/apidoc.js` on
   any PVE host (pve-docs 9.2.13), a copy in the private checkout next to
   artoo (`../homelab/api/pve/`).
+- Tailscale API: <https://tailscale.com/api>; the OpenAPI schema and its
+  copy in `../homelab/api/tailscale/` (§17.4); trust credentials and
+  scopes: <https://tailscale.com/docs/reference/trust-credentials>.
 
 ## 17. API facts (implementation reference)
 
@@ -2689,6 +2759,44 @@ a token:
   that `scripts/release-binaries.sh` makes on the macOS runner (a
   directory, `LICENSE`, `artoo` mode 755, `README.md`; no PAX entries).
 
+### 17.4 Tailscale API
+
+Read from the official OpenAPI document (2026-11-15; §19), not yet
+verified live:
+
+- **Reference document:** `https://api.tailscale.com/api/v2?outputOpenapiSchema=true`
+  (OpenAPI 3.1, `version: v2`), copied to `../homelab/api/tailscale/openapi.yaml`.
+  It states the endpoints are stable but the schema "may change or break
+  without notice".
+- **Auth:** `Authorization: Bearer <token>` (or the token as a Basic
+  username). OAuth client secrets start `tskey-client-`, API access
+  tokens `tskey-api-`. Token exchange: `POST /api/v2/oauth/token` with
+  `client_id`, `client_secret` (and optional `scope`, `tags`), answering
+  `access_token`, `token_type`, `expires_in` (3600) and `scope`.
+- **Tailnet path:** `/tailnet/{tailnet}/…`; `-` means the credential's
+  own tailnet.
+- **Devices:** `GET /tailnet/{tailnet}/devices`, `GET|DELETE
+  /device/{deviceId}`, `POST /device/{deviceId}/name` (`{"name"}`),
+  `/tags` (`{"tags"}`), `/key` (key expiry), `/authorized`, `GET|POST
+  /device/{deviceId}/routes` (`advertisedRoutes`, `enabledRoutes`; a
+  POST sets `{"routes": […]}`, the enabled list).
+- **Keys:** `GET|POST /tailnet/{tailnet}/keys`, `GET|DELETE
+  /tailnet/{tailnet}/keys/{keyId}`. Creating an auth key sends
+  `capabilities.devices.create` (`reusable`, `ephemeral`,
+  `preauthorized`, `tags`), `expirySeconds` and `description`; the
+  answer carries the key once. A list made with an OAuth-derived token
+  covers the tailnet's keys.
+- **DNS:** `GET|PATCH|PUT /tailnet/{tailnet}/dns/split-dns` — a map of
+  domain → nameserver list; PATCH changes only the domains sent, `null`
+  clears one, PUT replaces the whole map. Also `dns/nameservers`,
+  `dns/preferences`, `dns/searchpaths`.
+- **Policy:** `GET /tailnet/{tailnet}/acl` (HuJSON, or JSON on request)
+  answers an `ETag`; a `POST` honours `If-Match` (the ETag, or
+  `"ts-default"`) and refuses a mismatch; `POST …/acl/validate`; `POST
+  …/acl/preview?type=user|ipport&previewFor=…`.
+- **Errors and lists:** HTTP status plus `{"message": …}`; some
+  endpoints document `429`; "does not currently support pagination".
+
 ## 18. Self-update (`artoo update`)
 
 Decided 2026-10-23. `artoo update` replaces the running binary with a
@@ -2781,3 +2889,114 @@ archive `artoo-<ver>-<target>.tar.gz` holding
   targets, dry run, declined and non-interactive runs, `--check` and
   JSON. Live: `artoo update --check` and `-n` against the published
   release on a workstation; an actual update is the operator's.
+
+## 19. Tailscale
+
+Decided 2026-11-15; not implemented yet. Designed from Tailscale's
+official OpenAPI document (API v2, OpenAPI 3.1, fetched 2026-11-15 from
+`https://api.tailscale.com/api/v2?outputOpenapiSchema=true`; kept in the
+private API checkout, §17.4) — Tailscale calls the endpoints stable and
+the schema itself unstable, so re-fetch it before changing behaviour.
+
+**Scope.** The lab's side of the tailnet, so the operator no longer
+opens the admin console for routine work: the subnet router's join key
+and route (§9.8), the lab's devices (guests on the tailnet), split DNS
+for `guests.domain` and `home.arpa`, and read access to the policy.
+Not in scope: changing the policy file, users and roles, invites,
+webhooks, log streaming, posture, services, settings — those stay in
+the console.
+
+**Credential.** One **OAuth client** (Settings → Trust credentials →
+OAuth), owned by the tailnet, not a user — never a personal API access
+token (`tskey-api-…`, all of the operator's admin rights, 1–90 days).
+Its client ID is not secret: config `tailscale.client_id`, with
+`tailscale.tailnet` (default `-`, the client's own tailnet) and
+`tailscale.timeout_seconds` (10). Its secret (`tskey-client-…`) is the
+secret `tailscale` (§6), entered with `auth set tailscale` and carried
+by `config export` like the other API credentials (§6.1). Each
+invocation that needs the API exchanges it once
+(`POST /api/v2/oauth/token`, client-credentials grant, form-encoded) for
+an access token valid one hour, held in memory for that invocation only.
+
+| Scope | Needed for |
+| --- | --- |
+| `devices:core` (write), tag `tag:lab-router` | read, rename and remove devices, set tags; auth keys it creates are limited to its tags |
+| `devices:routes` (write) | read and approve the router's advertised route |
+| `auth_keys` (write) | create and delete the router's single-use join key |
+| `dns` (write) | read and set split DNS |
+| `policy_file:read` (+ `devices:core:read`, `devices:posture_attributes:read`, which it requires) | show, validate and preview the policy |
+
+Protection model: a leaked secret can add tagged devices, approve routes
+and rename or remove devices, but cannot change who may reach what (no
+`policy_file` write). Revoking the client revokes its access tokens, not
+the auth keys it made — artoo's keys are single-use and expire in
+minutes, so none outlives a run.
+
+**Transport.** `https://api.tailscale.com/api/v2`, `Authorization:
+Bearer <access token>` injected at request time; TLS verified against
+the operating system's root store, as Cloudflare (§15); same deadlines,
+no pooling, no write retries (§8.1). Errors are an HTTP status with
+`{"message": …}` (sanitized into the error); `429` is reported as rate
+limited, never retried by a write. No pagination: lists arrive whole.
+
+**Ownership.** Writes touch **lab devices only**: a device tagged
+`tag:lab-router`, or one whose name is a VM on Proxmox tagged `artoo`.
+The operator's own devices (workstation, phone) are listed, never
+renamed, retagged or removed. The router's routes may be set only to
+the LAN (`guests.gateway`'s subnet): never an exit node, never another
+subnet. Split DNS writes touch only `guests.domain` and `home.arpa`,
+both pointing at the gateway.
+
+**Commands.**
+
+- `auth set tailscale`; `doctor --connect` exchanges the token and
+  reports the granted scopes (the token response's `scope`) against the
+  table above.
+- `ts devices ls` — name, tags, addresses, OS, last seen, key expiry,
+  advertised and approved routes, and whether artoo counts it as a lab
+  device. `ts device show NAME`.
+- `ts dns show` — nameservers, MagicDNS, search paths, split DNS.
+- `ts keys ls` — the key metadata the client may see (ID, type,
+  description, tags, created, expires); a key's value is never shown.
+- `ts policy show [--json]` — the policy as stored (HuJSON) or as JSON;
+  `ts policy validate FILE`; `ts policy preview USER|IP:PORT` — which
+  rules match. Read-only.
+- `ts device rename NAME NEW` — `POST /device/{id}/name`, verified by a
+  fresh read.
+- `ts device rm NAME` — typed confirmation; `DELETE /device/{id}`,
+  verified by a read answering 404.
+- `ts routes approve ROUTER` — `POST /device/{id}/routes` with exactly
+  the LAN, after reading what the device advertises; refused when it
+  does not advertise it.
+- `ts dns split set DOMAIN NAMESERVER…` — `PATCH …/dns/split-dns` with
+  that one domain (others untouched), verified by a fresh read.
+
+**Into existing commands** (each only when the `tailscale` credential is
+stored; without it they behave as today):
+
+- `router setup` (§9.8) creates the join key itself — `POST
+  …/keys` with single use, preauthorized, not ephemeral, tag
+  `tag:lab-router`, an expiry of 10 minutes and the description
+  `artoo: router <vm>` — and passes it to the guest exactly as an
+  entered key (0600 file under `/run`, removed whatever happens). It is
+  never displayed. A run that fails before the key is used deletes the
+  key. Then it approves the route as `ts routes approve` does and checks
+  that the device's key expiry is off.
+- `router status` adds the tailnet's view: the device's tags, approved
+  and primary routes, key expiry and last seen.
+- `vm rm` of a guest that is a lab device plans removing that device
+  from the tailnet after the VM is destroyed.
+- `vm rename` (§9.18) checks the device's name and renames it when the
+  guest's own `tailscale set --hostname` did not change it.
+
+**Open questions, settled before phase 1 is merged:** OAuth clients on
+the Free plan (the console offers Trust credentials there); whether a
+tag-limited `devices:core` client may delete untagged devices (artoo's
+ownership rule protects them either way); the rate limits behind `429`.
+
+**Testing.** Offline: a fake server for the token exchange, every
+endpoint used, `{"message"}` errors, `429`, and every refusal
+(non-lab device, a route other than the LAN, a key value reaching
+output). Live, each under an approved plan: read-only first (`doctor
+--connect`, `ts devices ls`); then a disposable guest on the tailnet,
+renamed and removed; the router flow on the next router rebuild.
