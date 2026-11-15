@@ -2,6 +2,9 @@
 //! updates through the guest agent, on the one pipeline — the plan lists
 //! every package from a simulated upgrade on the guest's current lists,
 //! apt runs once, and a fresh simulation verifies. Never a reboot.
+//! `--all` does the same for every ordinary artoo guest in one plan, one
+//! guest after another; the edge, the router and the watchdog are left
+//! to their own runs.
 
 const std = @import("std");
 const app = @import("../app.zig");
@@ -16,6 +19,10 @@ const template = @import("template.zig");
 const vm_new = @import("vm_new.zig");
 const k = @import("node.zig");
 const snapguard = @import("snapguard.zig");
+const vm_cmd = @import("vm.zig");
+const edge = @import("edge.zig");
+const router = @import("router.zig");
+const watch = @import("watch.zig");
 
 const Context = app.Context;
 
@@ -170,6 +177,248 @@ const UpgradeOp = struct {
     }
 };
 
+/// Roles `vm upgrade --all` leaves out (SPEC §9.12): the guests needed to
+/// reach, serve and watch the rest — the same set `vm fence` refuses.
+const own_run_roles = [_][]const u8{ edge.role, router.role, watch.role };
+
+fn ownRunRole(tags: []const u8) ?[]const u8 {
+    const r = vm_cmd.roleOf(tags) orelse return null;
+    for (own_run_roles) |o| if (std.mem.eql(u8, r, o)) return o;
+    return null;
+}
+
+/// One guest of `vm upgrade --all`.
+const Guest = struct {
+    vm: vms.Vm,
+    name: []const u8,
+    pending: apt.Pending,
+    /// Ledger step; set by `send`.
+    step: usize = 0,
+    /// apt finished with exit 0 (`send`).
+    upgraded: bool = false,
+    /// Planned packages a fresh simulation still shows (`verify`).
+    left: []const []const u8 = &.{},
+    reboot: bool = false,
+};
+
+const UpgradeAllOp = struct {
+    c: *pve.Client,
+    risk: ui.blocks.Risk = .normal,
+    api: ui.json.Target = .pve,
+    target: []const u8 = "every guest",
+    todo: []Guest = &.{},
+    current: []const []const u8 = &.{},
+    skipped: []const []const u8 = &.{},
+    fp: []const u8 = "",
+    ledger: exec.Ledger = .{},
+
+    pub fn read(op: *UpgradeAllOp, ctx: *Context) !void {
+        const a = ctx.arena;
+        var todo: std.ArrayList(Guest) = .empty;
+        var current: std.ArrayList([]const u8) = .empty;
+        var skipped: std.ArrayList([]const u8) = .empty;
+        var fp: std.ArrayList(u8) = .empty;
+        for (try vms.list(op.c)) |v| {
+            if (v.template or !template.taggedWith(v.tags, vm_new.tag)) continue;
+            const name = try k.clean(ctx, v.name);
+            if (ownRunRole(v.tags)) |r| {
+                try skipped.append(a, try std.fmt.allocPrint(a, "{s} (role {s}: 'artoo vm upgrade {s}')", .{ name, r, name }));
+                continue;
+            }
+            if (!v.running()) {
+                try skipped.append(a, try std.fmt.allocPrint(a, "{s} ({s})", .{ name, try k.clean(ctx, v.status) }));
+                continue;
+            }
+            if (!try agent.ping(op.c, v.vmid)) {
+                try skipped.append(a, try std.fmt.allocPrint(a, "{s} (guest agent not answering)", .{name}));
+                continue;
+            }
+            const p = simulate(ctx, op.c, v.vmid, name) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    const why = ctx.diag orelse @errorName(err);
+                    ctx.diag = null;
+                    try skipped.append(a, try std.fmt.allocPrint(a, "{s} ({s})", .{ name, why }));
+                    continue;
+                },
+            };
+            try fp.print(a, "{s}:{?d}", .{ name, p.lists });
+            for (p.packages) |pk| try fp.print(a, " {s}={s}", .{ pk.name, pk.to });
+            try fp.append(a, ';');
+            if (p.packages.len == 0) {
+                try current.append(a, name);
+            } else try todo.append(a, .{ .vm = v, .name = name, .pending = p });
+        }
+        op.todo = todo.items;
+        op.current = current.items;
+        op.skipped = skipped.items;
+        op.fp = fp.items;
+    }
+
+    fn packages(op: *const UpgradeAllOp) usize {
+        var n: usize = 0;
+        for (op.todo) |g| n += g.pending.packages.len;
+        return n;
+    }
+
+    pub fn plan(op: *UpgradeAllOp, ctx: *Context) !?exec.Plan {
+        const a = ctx.arena;
+        if (op.todo.len == 0) return null;
+        var name_w: usize = 0;
+        for (op.todo) |g| name_w = @max(name_w, ui.text.width(g.name));
+        var changes: std.ArrayList(ui.blocks.Change) = .empty;
+        var sec: usize = 0;
+        var deferred: usize = 0;
+        var kept_back: usize = 0;
+        var oldest: ?u64 = null;
+        var unknown_age = false;
+        for (op.todo) |g| {
+            sec += g.pending.security();
+            deferred += g.pending.deferred;
+            kept_back += g.pending.kept_back;
+            if (g.pending.listsAge()) |age| oldest = @max(oldest orelse 0, age) else unknown_age = true;
+            for (g.pending.packages, 0..) |pk, i| {
+                const who = if (i == 0) g.name else "";
+                try changes.append(a, .{
+                    .field = try std.fmt.allocPrint(a, "{s}{s}  {s}", .{ who, try pad(a, name_w - ui.text.width(who)), try k.clean(ctx, pk.name) }),
+                    .from = if (pk.from) |f| try k.clean(ctx, f) else null,
+                    .to = try std.fmt.allocPrint(a, "{s}{s}", .{ try k.clean(ctx, pk.to), if (pk.security) " (security)" else "" }),
+                });
+            }
+        }
+        var notes: std.ArrayList([]const u8) = .empty;
+        if (oldest) |age| try notes.append(a, try std.fmt.allocPrint(a, "Package lists up to {f} old (apt's daily refresh){s}; artoo does not refresh them.", .{ ui.values.duration(age), if (unknown_age) ", some of unknown age" else "" })) else try notes.append(a, "Package lists of unknown age (no update-success stamp); artoo does not refresh them.");
+        if (deferred > 0) try notes.append(a, try std.fmt.allocPrint(a, "{f} deferred by Ubuntu's phased rollout stay for now.", .{ui.values.count(deferred, "update")}));
+        if (kept_back > 0) try notes.append(a, try std.fmt.allocPrint(a, "{f} kept back (they would need a removal) are not touched.", .{ui.values.count(kept_back, "package")}));
+        try notes.append(a, "Pinned packages (Alloy) stay at their pins.");
+        if (op.current.len > 0) try notes.append(a, try std.fmt.allocPrint(a, "Up to date: {s}.", .{try std.mem.join(a, ", ", op.current)}));
+        for (op.skipped) |sk| try notes.append(a, try std.fmt.allocPrint(a, "Skipped: {s}.", .{sk}));
+        return .{
+            .action = try std.fmt.allocPrint(a, "Upgrade {f} on {f}{s}", .{
+                ui.values.count(op.packages(), "package"),                                ui.values.count(op.todo.len, "guest"),
+                if (sec > 0) try std.fmt.allocPrint(a, ", {d} security", .{sec}) else "",
+            }),
+            .target = try std.fmt.allocPrint(a, "the guest agents on {s}", .{try k.nodeTarget(ctx, op.c)}),
+            .changes = changes.items,
+            .impact = try a.dupe([]const u8, &.{
+                "One guest after another; a guest whose upgrade fails does not stop the others",
+                "Installed with apt as listed, new dependencies too (a new kernel); nothing is removed",
+                "Services that use an upgraded library are restarted (needrestart); configuration files keep local changes",
+                "No reboot: the result names the guests that want one ('artoo vm reboot VM')",
+                "No undo: for a way back, upgrade a guest on its own with --snapshot",
+            }),
+            .notes = notes.items,
+        };
+    }
+
+    pub fn fingerprint(op: *UpgradeAllOp) []const u8 {
+        return op.fp;
+    }
+
+    pub fn send(op: *UpgradeAllOp, ctx: *Context) !void {
+        const a = ctx.arena;
+        const l = &op.ledger;
+        for (op.todo) |*g| g.step = try l.add(a, try std.fmt.allocPrint(a, "upgrade {s}", .{g.name}));
+        for (op.todo) |*g| {
+            const vmid = g.vm.vmid;
+            const argv: []const []const u8 = &.{ "sh", "-c", apt.upgrade_script };
+            const pid = agent.start(op.c, vmid, argv, null) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    l.set(g.step, if (err == error.OutcomeUnknown) .unknown else .failed, try k.clean(ctx, ctx.diag orelse @errorName(err)));
+                    ctx.diag = null;
+                    continue;
+                },
+            };
+            if (ctx.globals.no_wait) {
+                l.set(g.step, .unknown, try std.fmt.allocPrint(a, "started (pid {d})", .{pid}));
+                continue;
+            }
+            const r = agent.wait(op.c, vmid, pid, "apt-get upgrade", deadline_ms, .{ .file = apt.stage_file, .note = l.noter(g.step) }) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    const why = ctx.diag orelse @errorName(err);
+                    ctx.diag = null;
+                    l.set(g.step, .unknown, try std.fmt.allocPrint(a, "outcome unknown ({s}); apt may still be running, log {s}", .{ try k.clean(ctx, why), log_file }));
+                    continue;
+                },
+            };
+            if (!r.ok()) {
+                l.set(g.step, .failed, try std.fmt.allocPrint(a, "exit {?d}: {s} (log {s})", .{ r.code, try k.clean(ctx, lastLine(r.err)), log_file }));
+                continue;
+            }
+            g.upgraded = true;
+            l.set(g.step, .done, try std.fmt.allocPrint(a, "{f}", .{ui.values.count(g.pending.packages.len, "package")}));
+        }
+    }
+
+    pub fn verify(op: *UpgradeAllOp, ctx: *Context) !bool {
+        const a = ctx.arena;
+        const l = &op.ledger;
+        for (op.todo) |*g| {
+            if (!g.upgraded) continue;
+            const now = simulate(ctx, op.c, g.vm.vmid, g.name) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    const why = ctx.diag orelse @errorName(err);
+                    ctx.diag = null;
+                    g.upgraded = false;
+                    l.set(g.step, .unknown, try std.fmt.allocPrint(a, "upgraded, not verified: {s}", .{why}));
+                    continue;
+                },
+            };
+            var left: std.ArrayList([]const u8) = .empty;
+            for (g.pending.packages) |pk| if (now.has(pk)) try left.append(a, try k.clean(ctx, pk.name));
+            if (left.items.len > 0) {
+                g.left = left.items;
+                l.set(g.step, .failed, try std.fmt.allocPrint(a, "{f} still pending: {s} (log {s})", .{ ui.values.count(left.items.len, "planned package"), try std.mem.join(a, ", ", left.items), log_file }));
+                continue;
+            }
+            const r = agent.sh(op.c, g.vm.vmid, vm_new.scripts.reboot, 60_000) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    ctx.diag = null;
+                    continue;
+                },
+            };
+            var lines = std.mem.tokenizeAny(u8, r.out, "\r\n");
+            g.reboot = std.mem.eql(u8, lines.next() orelse "no", "yes");
+            if (g.reboot) l.set(g.step, .done, try std.fmt.allocPrint(a, "{s}; reboot pending", .{l.steps.items[g.step].detail}));
+        }
+        try ctx.out.writeAll("\n");
+        try l.render(ctx.out, &ctx.ui);
+        var unknown: usize = 0;
+        var failed: usize = 0;
+        for (l.steps.items) |st| switch (st.state) {
+            .unknown => unknown += 1,
+            .failed => failed += 1,
+            else => {},
+        };
+        if (unknown > 0) return ctx.fail(error.OutcomeUnknown, "the outcome on {f} is unknown{s}; 'artoo vm verify --all' shows what is pending", .{
+            ui.values.count(unknown, "guest"), if (failed > 0) try std.fmt.allocPrint(a, " and {d} failed", .{failed}) else "",
+        });
+        if (failed > 0) return ctx.fail(error.Partial, "{d} of {f} not upgraded (see above); the others are", .{ failed, ui.values.count(op.todo.len, "guest") });
+        return true;
+    }
+
+    pub fn done(op: *UpgradeAllOp) []const u8 {
+        const a = op.c.ctx.arena;
+        var want: std.ArrayList([]const u8) = .empty;
+        for (op.todo) |g| if (g.reboot) want.append(a, g.name) catch {};
+        const rest = if (want.items.len > 0)
+            std.fmt.allocPrint(a, "; reboot pending on {s} — 'artoo vm reboot VM' when convenient", .{std.mem.join(a, ", ", want.items) catch ""}) catch "; reboot pending"
+        else
+            "; no reboot needed";
+        return std.fmt.allocPrint(a, "{f} upgraded on {f}{s}", .{ ui.values.count(op.packages(), "package"), ui.values.count(op.todo.len, "guest"), rest }) catch "upgraded";
+    }
+};
+
+fn pad(a: std.mem.Allocator, n: usize) ![]const u8 {
+    const b = try a.alloc(u8, n);
+    @memset(b, ' ');
+    return b;
+}
+
 /// The simulated upgrade (SPEC §9.12); a failing `apt-get -s` refuses.
 fn simulate(ctx: *Context, c: *pve.Client, vmid: u32, target: []const u8) !apt.Pending {
     const r = try agent.sh(c, vmid, apt.simulate_script, 120_000);
@@ -200,17 +449,36 @@ pub const upgrade = struct {
         \\'artoo vm reboot VM' does it when convenient. apt has no undo, so
         \\--snapshot takes a snapshot first as the way back.
         \\
+        \\--all upgrades every running artoo guest in one plan, one guest
+        \\after another; a guest that fails does not stop the others. The
+        \\edge, the router and the watchdog (roles edge, router, watch) are
+        \\left out: they are what reaches, serves and watches the rest, so
+        \\each gets its own run. Guests that are stopped, whose agent does
+        \\not answer or with nothing pending are named in the plan.
+        \\
         \\Refused: templates, VMs artoo did not create, stopped VMs, and
         \\guests whose agent does not answer.
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name" }};
-    pub const flags = [_]cli.Flag{snapguard.flag};
-    pub const examples = [_][]const u8{ "artoo vm upgrade naboo -n", "artoo vm upgrade naboo --snapshot", "artoo vm upgrade naboo -y" };
+    pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name", .required = false }};
+    pub const flags = [_]cli.Flag{
+        .{ .long = "all", .short = 'a', .help = "Every running artoo guest except the edge, router and watchdog" },
+        snapguard.flag,
+    };
+    pub const examples = [_][]const u8{ "artoo vm upgrade naboo -n", "artoo vm upgrade naboo --snapshot", "artoo vm upgrade naboo -y", "artoo vm upgrade --all -n" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+        if (args.has("all")) {
+            if (args.optPos("VM") != null) return ctx.fail(error.Usage, "give a VM or --all, not both", .{});
+            if (args.has("snapshot")) return ctx.fail(error.Usage, "--snapshot goes with one VM: upgrade a guest on its own for a way back", .{});
+            var c = try pve.Client.open(ctx);
+            defer c.deinit();
+            var op: UpgradeAllOp = .{ .c = &c };
+            return exec.run(ctx, &op, .{});
+        }
+        const word = args.optPos("VM") orelse return ctx.fail(error.Usage, "missing VM (or --all)", .{});
         var c = try pve.Client.open(ctx);
         defer c.deinit();
-        var op: UpgradeOp = .{ .c = &c, .word = args.pos("VM") };
+        var op: UpgradeOp = .{ .c = &c, .word = word };
         if (args.has("snapshot")) op.guard = .{ .action = "upgrade", .command = "vm upgrade" };
         try exec.run(ctx, &op, .{});
     }
@@ -391,4 +659,84 @@ test "vm upgrade --snapshot: a failing apt names the rollback" {
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
     try testing.expectEqual(Exit.task_failed, g.h.run(&root, "vm upgrade naboo --snapshot -y"));
     try expectAll(g.h.stderr(), &.{ "apt-get upgrade failed on naboo (exit 100): E: dpkg was interrupted", " — the snapshot taken first is the way back: artoo vm snap rollback naboo artoo-upgrade-20" });
+}
+
+const all_list = "{\"data\":[{\"vmid\":200,\"name\":\"bespin\",\"status\":\"running\",\"tags\":\"artoo;role-edge\"},{\"vmid\":201,\"name\":\"dagobah\",\"status\":\"running\",\"tags\":\"artoo;role-router\"},{\"vmid\":202,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"},{\"vmid\":204,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo;role-search\"},{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;role-dev\"},{\"vmid\":206,\"name\":\"endor\",\"status\":\"stopped\",\"tags\":\"artoo;role-app\"},{\"vmid\":207,\"name\":\"tatooine\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":150,\"name\":\"other\",\"status\":\"running\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"status\":\"stopped\",\"template\":1,\"tags\":\"artoo-template\"}]}";
+
+test "vm upgrade --all: one plan without the edge, router and watchdog; a failing guest does not stop the next" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const hoth_sim = try execStatus(a, 0, "lists 1000\nnow 4600\nInst tmux [1] (2 Ubuntu:26.04/resolute-updates [amd64])\nInst libssl3t64 [3.5.3-1ubuntu1] (3.5.3-1ubuntu1.1 Ubuntu:26.04/resolute-security [amd64])\n", "");
+    const naboo_sim = try execStatus(a, 0, "lists 1000\nnow 8200\nInst curl [8.1] (8.2 Ubuntu:26.04/resolute-updates [amd64])\n", "");
+    const none = try execStatus(a, 0, "lists 1000\nnow 1100\n", "");
+    const read = [_]B{
+        ans(all_list),
+        ans(ping_body), ans(pid_body), ans(hoth_sim), // hoth: role search is upgraded
+        ans(ping_body), ans(pid_body), ans(naboo_sim), // naboo
+        ans(ping_body), ans(pid_body), ans(none), // tatooine: up to date
+    };
+    var g: testkit.Gateway = undefined;
+    try g.init(&(read ++ read ++ [_]B{
+        ans(pid_body), ans(try execStatus(a, 100, "", "Reading package lists...\nE: dpkg was interrupted\n")), // hoth fails
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), // naboo upgraded
+        ans(pid_body), ans(try execStatus(a, 0, "lists 1000\nnow 8300\n", "")), // naboo verified
+        ans(pid_body), ans(try execStatus(a, 0, "yes\nlinux-base\n", "")), // reboot wanted
+    }));
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm upgrade --all -n"));
+    const plan = g.h.stdout();
+    try expectAll(plan, &.{
+        "Plan · Upgrade 3 packages on 2 guests, 1 security\n",
+        "Change    hoth   tmux        1 → 2\n",
+        "          ",
+        "       libssl3t64  3.5.3-1ubuntu1 → 3.5.3-1ubuntu1.1 (security)\n",
+        "          naboo  curl        8.1 → 8.2\n",
+        "One guest after another; a guest whose upgrade fails does not stop the others",
+        "Package lists up to 2h old",
+        "Up to date: tatooine.",
+        "Skipped: bespin (role edge: 'artoo vm upgrade bespin').",
+        "Skipped: dagobah (role router: 'artoo vm upgrade dagobah').",
+        "Skipped: scarif (role watch: 'artoo vm upgrade scarif').",
+        "Skipped: endor (stopped).",
+        "Dry run: nothing was sent.\n",
+    });
+    for ([_][]const u8{ "other (", "other.", "ubuntu-2604" }) |gone| try testing.expect(std.mem.find(u8, plan, gone) == null);
+
+    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm upgrade --all -y"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try expectAll(g.h.stdout(), &.{
+        "✗ upgrade hoth   failed  exit 100: E: dpkg was interrupted (log /var/log/artoo-upgrade.log)\n",
+        "✓ upgrade naboo  done  1 package; reboot pending\n",
+    });
+    try expectAll(g.h.stderr(), &.{ "✗ upgrade hoth  failed", "✓ upgrade naboo  done", "artoo: 1 of 2 guests not upgraded (see above); the others are\n" });
+}
+
+test "vm upgrade --all: nothing pending is a no-op; usage" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const none = try execStatus(a, 0, "lists 1000\nnow 1100\n", "");
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(all_list),
+        ans(ping_body),
+        ans(pid_body),
+        ans(none),
+        ans(ping_body),
+        ans(pid_body),
+        ans(none),
+        ans(ping_body),
+        ans(pid_body),
+        ans(none),
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm upgrade --all -y"));
+    try testing.expectEqualStrings("artoo: nothing to change: every guest already has the requested state\n", g.h.stderr());
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm upgrade naboo --all"));
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm upgrade --all --snapshot"));
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm upgrade"));
 }

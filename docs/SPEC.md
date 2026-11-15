@@ -114,6 +114,7 @@ artoo vm new NAME [--size S] [--cores N] [--memory SIZE] [--disk SIZE] [--ip ADD
                  [--id N] [--template T] [--no-dns] [--no-watch]
 artoo vm verify VM|--all [--no-dns]   read-only readiness checks (§9.4)
 artoo vm upgrade VM [--snapshot]      install the guest's pending package updates (§9.12, §9.16)
+artoo vm upgrade --all                every ordinary guest in one plan; not edge, router, watchdog (§9.12)
 artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
 artoo vm ssh-config [--repin VM]      write ~/.artoo/ssh_config: strict plain ssh/scp/rsync; re-pin a changed host key (§9.10)
 artoo vm cp SRC DST [-r] [--force]    copy as <user> to, from or between guests, SHA-256 checked (§9.10)
@@ -1911,7 +1912,8 @@ Decided 2026-10-25. Unattended upgrades install only the release and
 `-security` pockets (§9.1); bug fixes from `-updates` wait for the
 operator. `vm upgrade VM` installs everything pending through the guest
 agent, on the one pipeline (§8.2), one VM per run — the edge, the router
-and the watchdog included.
+and the watchdog included — or every ordinary guest at once with `--all`
+(below).
 
 - **Read** (nothing changes in the guest): an artoo guest (tag `artoo`,
   not a template), running, its agent answering. `LC_ALL=C apt-get -s
@@ -1957,6 +1959,39 @@ upgrade -y` installed them in 18 s. apt's stage lines showed while it ran
 result said no reboot was needed, `vm verify` then showed "pending updates
 ok none" and every other check unchanged, no unit had failed, and the
 stage and exit-code files were gone.
+
+**`vm upgrade --all`** (decided 2026-11-15) is the same upgrade for
+every running artoo guest in one plan, one confirmation:
+
+- **Left out by role:** guests tagged `role-edge`, `role-router` or
+  `role-watch` — the same set `vm fence` refuses (§9.8). They reach,
+  serve and watch the rest: a `tailscaled` restart on the router can cut
+  a remote operator's path to Proxmox mid-run, a Caddy restart takes
+  every service name down at once, and the watchdog is what reports a
+  failure elsewhere. Each is upgraded on its own (`vm upgrade NAME`).
+  Every other role (`search`, `app`, …) is included; there is no opt-out
+  tag.
+- **Read:** per guest as above. A guest that is stopped, whose agent
+  does not answer or whose `apt-get -s` fails is named in the plan as
+  skipped with the reason; one with nothing pending as up to date.
+  Nothing pending anywhere is a no-op (exit 5).
+- **Plan:** one change row per package, the guest named on its first
+  row; the action counts packages, guests and security updates; notes
+  give the oldest lists' age, the deferred and kept-back totals, the
+  up-to-date guests and every skipped guest with its reason.
+  `--snapshot` is refused with `--all` (usage): a way back is a
+  per-guest decision, made with a single-guest run. The fingerprint is
+  every guest's planned set and lists' stamp.
+- **Send:** one ledger step per guest (`upgrade NAME`), one guest after
+  another — never in parallel, so the host is not loaded with every
+  guest's apt at once and the output stays readable. A guest whose apt
+  fails (failed step) or whose wait ends without an answer (unknown
+  step, apt may still run) does not stop the next. Never a retry,
+  never a reboot.
+- **Verify:** a fresh simulation per upgraded guest, as above; a planned
+  package still pending fails that guest's step. The result names the
+  guests that want a reboot. Any unknown step → exit 7; else any failed
+  step → exit 8, naming how many of the guests were not upgraded.
 
 ### 9.13 Pending configuration
 
