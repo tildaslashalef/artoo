@@ -81,7 +81,22 @@ pub const Client = struct {
         return data.?.array.items;
     }
 
+    /// One request to the v2 API of this site (SPEC §17.1): `sub` like
+    /// `wan/load-balancing/status`; the parsed JSON body. A `POST` through
+    /// here is a read (a search that changes nothing): sent once, never
+    /// retried, and a failure is a failed read, not an unknown write.
+    pub fn v2(c: *Client, method: http.Method, sub: []const u8, body: ?[]const u8) !Value {
+        const path = try std.fmt.allocPrint(c.ctx.arena, "{s}{s}/{s}", .{ v2_prefix, c.site, sub });
+        const r = try c.sendAs(method, try std.fmt.allocPrint(c.ctx.arena, "{s}{s}", .{ origin(c.base), path }), path, body, .read);
+        return std.json.parseFromSliceLeaky(Value, c.ctx.arena, r.body, .{}) catch
+            c.ctx.fail(error.Protocol, "UniFi sent invalid JSON for {s}", .{path});
+    }
+
     fn send(c: *Client, method: http.Method, url: []const u8, path: []const u8, body: ?[]const u8) !http.Response {
+        return c.sendAs(method, url, path, body, if (method == .GET) .read else .write);
+    }
+
+    fn sendAs(c: *Client, method: http.Method, url: []const u8, path: []const u8, body: ?[]const u8, kind: enum { read, write }) !http.Response {
         const ctx = c.ctx;
         var diag: http.Diag = .{};
         const r = c.http.send(ctx.arena, .{
@@ -89,13 +104,17 @@ pub const Client = struct {
             .url = url,
             .headers = &.{ .{ .name = "X-API-KEY", .value = c.key }, .{ .name = "Accept", .value = "application/json" } },
             .body = body,
-        }, &diag) catch |err| return api.transportError(ctx, err, diag, "UniFi");
+        }, &diag) catch |err| {
+            // A read sent with POST: no answer is a failed read, not an unknown write.
+            if (err == error.OutcomeUnknown and kind == .read) return ctx.fail(error.Network, "UniFi: {s}; no answer to {s} {s} (a read: nothing was written)", .{ if (diag.message.len > 0) diag.message else "no response", @tagName(method), path });
+            return api.transportError(ctx, err, diag, "UniFi");
+        };
         if (r.status >= 200 and r.status < 300) return r;
         const msg = errorMessage(ctx.arena, r.body);
         if (r.status == 400 and std.mem.eql(u8, errorCode(ctx.arena, r.body), "api.request.invalid-filter")) {
             return ctx.fail(error.Usage, "invalid --filter: {s}", .{msg});
         }
-        if (method != .GET and r.status >= 500) {
+        if (kind == .write and r.status >= 500) {
             return ctx.fail(error.OutcomeUnknown, "UniFi answered {d} to {s} {s}{s}{s}; the write may or may not have applied — check before retrying", .{ r.status, @tagName(method), path, sep(msg), msg });
         }
         return switch (r.status) {
@@ -110,6 +129,8 @@ pub const Client = struct {
 pub const spec_path = "/proxy/network/api-docs/integration.json";
 /// The classic (undocumented) API beside the Integration API.
 pub const classic_prefix = "/proxy/network/api/s/";
+/// The v2 (undocumented) API beside it (SPEC §17.1).
+pub const v2_prefix = "/proxy/network/v2/api/site/";
 
 /// `https://host[:port]/a/b` → `https://host[:port]`.
 fn origin(url: []const u8) []const u8 {
