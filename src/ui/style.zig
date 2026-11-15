@@ -81,6 +81,8 @@ pub const Glyphs = struct {
     arrow: []const u8,
     /// A link going down (WAN outages).
     down: []const u8,
+    /// artoo's mark, leading the header line.
+    mark: []const u8,
     dot: []const u8,
     rule: []const u8,
 };
@@ -99,6 +101,7 @@ pub const unicode: Glyphs = .{
     .bar_empty = "░",
     .arrow = "→",
     .down = "▼",
+    .mark = "◓",
     .dot = "·",
     .rule = "─",
 };
@@ -117,6 +120,7 @@ pub const ascii: Glyphs = .{
     .bar_empty = ".",
     .arrow = "->",
     .down = "v",
+    .mark = "artoo",
     .dot = "-",
     .rule = "-",
 };
