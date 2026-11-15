@@ -111,7 +111,7 @@ test "__complete: commands offline, VM names from Proxmox, nothing on failure" {
     defer g.deinit();
     const root = &@import("registry.zig").root;
     try testing.expectEqual(testkit.Exit.ok, g.h.run(root, "__complete -- sv"));
-    try testing.expectEqualStrings("svc\tService names <name>.apps.<guests.domain> on the edge VM (SPEC §9.6)\n", g.h.stdout());
+    try testing.expectEqualStrings("svc\tService names <name>.apps.<guests.domain> on the edge VM\n", g.h.stdout());
     try testing.expectEqual(@as(usize, 0), g.sent());
     try testing.expectEqual(testkit.Exit.ok, g.h.runArgs(root, &.{ "__complete", "--", "vm", "rm", "" }));
     try testing.expectEqualStrings("bespin\t200 running\n", g.h.stdout());

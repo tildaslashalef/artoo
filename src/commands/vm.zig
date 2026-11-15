@@ -380,7 +380,7 @@ pub const urls = struct {
     pub const summary = "A VM's web addresses: its services and their public hosts";
     pub const details =
         \\Read-only. Lists the services whose route on the edge VM points at the
-        \\VM (SPEC §9.6) and the public hosts of the lab tunnel that reach each
+        \\VM and the public hosts of the lab tunnel that reach each
         \\one (§15). If the edge VM or Cloudflare cannot be read, the command says
         \\so and exits 8.
     ;

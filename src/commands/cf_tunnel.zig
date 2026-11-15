@@ -297,9 +297,9 @@ const AddOp = struct {
 fn publicHost(ctx: *Context, word: []const u8) ![]const u8 {
     const cfg = try ctx.config();
     const host = try cf_cmd.recordName(ctx, word);
-    if (exposure.protected(try ctx.config(), host, null)) |why| return ctx.fail(error.Refused, "refused: {s}; Proxmox and UniFi are never public (SPEC §9.6)", .{why});
+    if (exposure.protected(try ctx.config(), host, null)) |why| return ctx.fail(error.Refused, "refused: {s}; Proxmox and UniFi are never public", .{why});
     if (exposure.isPrivate(host) or cf_cmd.under(host, cfg.guests.domain))
-        return ctx.fail(error.Refused, "refused: {s} is a private name (SPEC §9.6)", .{host});
+        return ctx.fail(error.Refused, "refused: {s} is a private name", .{host});
     if (std.ascii.eqlIgnoreCase(host, cfg.cloudflare.zone)) return ctx.fail(error.Refused, "refused: the zone apex {s} is not a tunnel route", .{host});
     if (std.mem.startsWith(u8, host, "_")) return ctx.fail(error.Usage, "'{s}' is not a host name", .{host});
     return host;
@@ -536,9 +536,9 @@ fn refuseNeverPublic(ctx: *Context, c: *pve.Client, service: []const u8, vm: []c
         if (v.template or !std.ascii.eqlIgnoreCase(vm, v.name)) continue;
         const r = vm_cmd.roleOf(v.tags) orelse continue;
         if (std.mem.eql(u8, r, watch.role))
-            return ctx.fail(error.Refused, "refused: service {s} runs on the watchdog {s}; Grafana and ntfy are never public (SPEC §9.9)", .{ service, v.name });
+            return ctx.fail(error.Refused, "refused: service {s} runs on the watchdog {s}; Grafana and ntfy are never public", .{ service, v.name });
         if (std.mem.eql(u8, r, search_role))
-            return ctx.fail(error.Refused, "refused: service {s} runs on the search gateway {s}; an unauthenticated search and fetch proxy is never public (SPEC §9.9)", .{ service, v.name });
+            return ctx.fail(error.Refused, "refused: service {s} runs on the search gateway {s}; an unauthenticated search and fetch proxy is never public", .{ service, v.name });
     }
 }
 

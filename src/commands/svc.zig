@@ -343,7 +343,7 @@ fn upstreamVm(ctx: *Context, c: *pve.Client, word: []const u8) !vms.Vm {
     if (!template.taggedWith(v.tags, vm_new.tag)) return ctx.fail(error.Refused, "{s} was not created by artoo (no '{s}' tag)", .{ try k.clean(ctx, v.name), vm_new.tag });
     if (vm_cmd.roleOf(v.tags)) |r| if (std.mem.eql(u8, r, edge.role)) return ctx.fail(error.Refused, "{s} is the edge VM itself", .{v.name});
     const addr = life.staticAddress(try vms.config(c, v.vmid)) orelse return ctx.fail(error.Refused, "{s} has no static address (ipconfig0)", .{v.name});
-    if (exposure.protected(try ctx.config(), v.name, addr)) |why| return ctx.fail(error.Refused, "refused: {s} (SPEC §9.6)", .{why});
+    if (exposure.protected(try ctx.config(), v.name, addr)) |why| return ctx.fail(error.Refused, "refused: {s}", .{why});
     const cfg = try ctx.config();
     const pool = config.parseRange(cfg.guests.address_pool) orelse return ctx.fail(error.ConfigInvalid, "guests.address_pool is not A-B", .{});
     const ip = vm_new.ip4(addr) orelse return ctx.fail(error.Refused, "{s} has no IPv4 address ({s})", .{ v.name, addr });
@@ -602,7 +602,7 @@ const PutOp = struct {
         if (op.add_record) try changes.append(a, .{ .field = "DNS record", .from = null, .to = try std.fmt.allocPrint(a, "{s} {s} {s} (UniFi)", .{ op.target, ctx.ui.glyphs.arrow, op.edge_addr }) });
         for (op.fences) |f| try vm_fence.followChanges(a, f, &changes);
         var notes: std.ArrayList([]const u8) = .empty;
-        if (op.fences.len > 0) try notes.append(a, "A fenced guest's fence opens before the route is written and closes after it is gone (SPEC §9.11).");
+        if (op.fences.len > 0) try notes.append(a, "A fenced guest's fence opens before the route is written and closes after it is gone.");
         if (op.write_route) try notes.append(a, "Caddy validates the whole configuration first and reloads gracefully; a rejected route is put back.");
         if (op.mode == .set and op.record == null) try notes.append(a, try std.fmt.allocPrint(a, "{s} has no DNS record; 'artoo svc add {s} {s}' adds it.", .{ op.target, op.name, up }));
         if (op.add_record) try notes.append(a, no_etags);
@@ -721,7 +721,7 @@ fn wantHealth(ctx: *Context, path: ?[]const u8, down: ?[]const u8) !?Health {
 
 fn put(ctx: *Context, mode: Mode, name_word: []const u8, up_word: []const u8, health: ?[]const u8, health_down: ?[]const u8) !void {
     if (!validName(name_word)) return ctx.fail(error.Usage, "invalid service name '{s}': one DNS label of lowercase letters, digits and '-', starting with a letter", .{name_word});
-    if (exposure.protected(try ctx.config(), name_word, null)) |why| return ctx.fail(error.Refused, "refused: {s} (SPEC §9.6)", .{why});
+    if (exposure.protected(try ctx.config(), name_word, null)) |why| return ctx.fail(error.Refused, "refused: {s}", .{why});
     const up = parseUpstream(up_word) orelse return ctx.fail(error.Usage, "expected VM:PORT (port 1-65535, not 22), got '{s}'", .{up_word});
     const want = try wantHealth(ctx, health, health_down);
     var c = try pve.Client.open(ctx);
@@ -987,7 +987,7 @@ pub const rm = struct {
     }
 };
 
-pub const group = cli.group("svc", "Service names <name>.apps.<guests.domain> on the edge VM (SPEC §9.6)", &.{
+pub const group = cli.group("svc", "Service names <name>.apps.<guests.domain> on the edge VM", &.{
     cli.leaf(ls),
     cli.leaf(add),
     cli.leaf(set),

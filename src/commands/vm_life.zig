@@ -816,7 +816,7 @@ const RmOp = struct {
         op.ts_dev = null;
         for (list) |d| if (std.ascii.eqlIgnoreCase(d.machine, v.name)) {
             if (own.reason(d) == null) {
-                op.ts_note = try std.fmt.allocPrint(ctx.arena, "Tailnet device {s} kept: it is not a lab device (SPEC §19)", .{try k.clean(ctx, d.name)});
+                op.ts_note = try std.fmt.allocPrint(ctx.arena, "Tailnet device {s} kept: it is not a lab device", .{try k.clean(ctx, d.name)});
                 continue;
             }
             op.ts_dev = d;
@@ -1473,7 +1473,7 @@ fn SnapCmd(comptime kind: Snap) type {
         pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
             const snap = args.pos("NAME");
             if (!validSnapName(snap)) return ctx.fail(error.Usage, "invalid snapshot name '{s}' (2-40 letters, digits, '-' or '_', starting with a letter)", .{snap});
-            if (comptime kind == .add) if (snapguard.owned(snap)) return ctx.fail(error.Usage, "names starting with '{s}' are reserved for the snapshots artoo takes (--snapshot, SPEC §9.16)", .{snapguard.prefix});
+            if (comptime kind == .add) if (snapguard.owned(snap)) return ctx.fail(error.Usage, "names starting with '{s}' are reserved for the snapshots artoo takes (--snapshot)", .{snapguard.prefix});
             var c = try pve.Client.open(ctx);
             defer c.deinit();
             var op: SnapOp = .{ .c = &c, .kind = kind, .word = args.pos("VM"), .snap = snap, .risk = if (destructive) .destructive else .normal };

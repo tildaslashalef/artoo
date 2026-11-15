@@ -333,7 +333,7 @@ const policy_limit = 1 << 20;
 pub const policy_show = struct {
     pub const name = "show";
     pub const summary = "The tailnet policy as stored (HuJSON), or as JSON";
-    pub const details = "Read-only; artoo never changes the policy with this client (SPEC §19).";
+    pub const details = "Read-only; artoo never changes the policy with this client.";
     pub const flags = [_]cli.Flag{.{ .long = "json", .help = "The policy as JSON instead of HuJSON" }};
     pub const examples = [_][]const u8{ "artoo ts policy show", "artoo ts policy show --json" };
 
@@ -515,7 +515,7 @@ pub const policy_preview = struct {
 fn labDevice(ctx: *Context, c: *ts.Client, word: []const u8) !struct { tn.Device, []const u8, tn.Ownership } {
     const d = try resolveDevice(ctx, try tn.devices(c), word);
     const own = try ownership(ctx, true);
-    const why = own.reason(d) orelse return ctx.fail(error.Refused, "{s} is not a lab device (no tag {s}, no VM tagged artoo of that name); artoo changes lab devices only (SPEC §19)", .{ try clean(ctx, d.machine), tn.router_tag });
+    const why = own.reason(d) orelse return ctx.fail(error.Refused, "{s} is not a lab device (no tag {s}, no VM tagged artoo of that name); artoo changes lab devices only", .{ try clean(ctx, d.machine), tn.router_tag });
     return .{ d, why, own };
 }
 
@@ -583,7 +583,7 @@ const RenameOp = struct {
 pub const device_rename = struct {
     pub const name = "rename";
     pub const summary = "Rename a lab device on the tailnet (its MagicDNS name)";
-    pub const details = "Lab devices only. For a guest, 'artoo vm rename' renames everything at once (SPEC §9.18).";
+    pub const details = "Lab devices only. For a guest, 'artoo vm rename' renames everything at once.";
     pub const positionals = [_]cli.Positional{
         device_arg[0],
         .{ .name = "NEW", .help = "New machine name (one DNS label)" },
@@ -673,7 +673,7 @@ pub const device_tag = struct {
         \\tailscale.guest_tags, so to move a device to a new tag: name the tag
         \\in the policy's tagOwners ('ts policy apply'), give it to the OAuth
         \\client, add it to tailscale.guest_tags, then run this. The subnet
-        \\router is refused: its tag belongs to 'router setup' (SPEC §19).
+        \\router is refused: its tag belongs to 'router setup'.
     ;
     pub const positionals = [_]cli.Positional{
         device_arg[0],
@@ -905,7 +905,7 @@ const SplitOp = struct {
 pub const dns_split_set = struct {
     pub const name = "set";
     pub const summary = "Point a lab domain (guests.domain or home.arpa) at the gateway on the tailnet";
-    pub const details = "Split DNS for guests.domain and home.arpa only, and only to the gateway (guests.gateway's address); other domains are untouched (SPEC §19).";
+    pub const details = "Split DNS for guests.domain and home.arpa only, and only to the gateway (guests.gateway's address); other domains are untouched.";
     pub const positionals = [_]cli.Positional{
         .{ .name = "DOMAIN", .help = "guests.domain or home.arpa" },
         .{ .name = "NAMESERVER", .help = "The gateway's address", .variadic = true },
@@ -916,12 +916,12 @@ pub const dns_split_set = struct {
         const cfg = try ctx.config();
         const domain = std.mem.trimEnd(u8, args.pos("DOMAIN"), ".");
         if (!std.ascii.eqlIgnoreCase(domain, cfg.guests.domain) and !std.ascii.eqlIgnoreCase(domain, "home.arpa"))
-            return ctx.fail(error.Refused, "artoo sets split DNS only for {s} and home.arpa, not '{s}' (SPEC §19)", .{ cfg.guests.domain, domain });
+            return ctx.fail(error.Refused, "artoo sets split DNS only for {s} and home.arpa, not '{s}'", .{ cfg.guests.domain, domain });
         const gw = try gatewayAddress(ctx);
         const servers = args.rest("NAMESERVER");
         if (servers.len == 0) return ctx.fail(error.Usage, "name the nameserver: {s}", .{gw});
         for (servers) |s| if (!std.mem.eql(u8, s, gw))
-            return ctx.fail(error.Refused, "split DNS for the lab points at the gateway {s} only, not '{s}' (SPEC §19)", .{ gw, s });
+            return ctx.fail(error.Refused, "split DNS for the lab points at the gateway {s} only, not '{s}'", .{ gw, s });
         var c = try ts.Client.open(ctx, .main);
         defer c.deinit();
         var op: SplitOp = .{ .c = &c, .domain = try std.ascii.allocLowerString(ctx.arena, domain), .servers = &.{gw}, .target = domain };
@@ -1011,8 +1011,8 @@ const JoinOp = struct {
         if (v.template) return ctx.fail(error.Refused, "{s} is a template", .{v.name});
         if (!template.taggedWith(v.tags, "artoo")) return ctx.fail(error.Refused, "{s} is not an artoo guest (no tag artoo)", .{v.name});
         if (vm_cmd.roleOf(v.tags)) |r| if (std.mem.eql(u8, r, "edge") or std.mem.eql(u8, r, "watch") or std.mem.eql(u8, r, "router"))
-            return ctx.fail(error.Refused, "{s} carries role-{s}: {s}", .{ v.name, r, if (std.mem.eql(u8, r, "router")) "it joins with 'artoo router setup'" else "it never joins the tailnet (SPEC §9.6, §9.7, §9.9)" });
-        if (!template.taggedWith(v.tags, "tailnet")) return ctx.fail(error.Refused, "{s} is not tagged tailnet; guests join the tailnet only when tagged (SPEC §9.6): 'artoo vm set {s} tags=…;tailnet' first", .{ v.name, v.name });
+            return ctx.fail(error.Refused, "{s} carries role-{s}: {s}", .{ v.name, r, if (std.mem.eql(u8, r, "router")) "it joins with 'artoo router setup'" else "it never joins the tailnet" });
+        if (!template.taggedWith(v.tags, "tailnet")) return ctx.fail(error.Refused, "{s} is not tagged tailnet; guests join the tailnet only when tagged: 'artoo vm set {s} tags=…;tailnet' first", .{ v.name, v.name });
         if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; start it first", .{ v.name, v.status });
         if (!try agent.ping(op.c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{v.name});
         op.state = try guestState(op.c, v.vmid);
@@ -1144,8 +1144,8 @@ pub const join = struct {
     pub const details =
         \\The guest becomes a tagged node with --tag, one of
         \\tailscale.guest_tags (default: the first): it accepts no
-        \\routes, advertises none, runs no Tailscale SSH and keeps its own DNS
-        \\(SPEC §9.6). artoo creates a single-use, preauthorized key (10 min),
+        \\routes, advertises none, runs no Tailscale SSH and keeps its own DNS.
+        \\artoo creates a single-use, preauthorized key (10 min),
         \\hands it to the guest over the agent's stdin and never shows it; a key
         \\left unused by a failed run is deleted. Refused for guests without the
         \\tailnet tag, role-edge, role-watch and role-router. A guest already
@@ -1183,9 +1183,9 @@ pub fn checkPolicyLocally(ctx: *Context, word: []const u8, text: []const u8) !vo
     const json = tn.hujsonToJson(a, text) catch return ctx.fail(error.Refused, "{s} is not valid HuJSON (an unterminated string or comment, or a stray '/')", .{word});
     const v = std.json.parseFromSliceLeaky(Value, a, json, .{}) catch return ctx.fail(error.Refused, "{s} is not valid HuJSON", .{word});
     if (v != .object) return ctx.fail(error.Refused, "{s} is not a policy (expected an object)", .{word});
-    if (tn.nonAsciiKey(v)) |key| return ctx.fail(error.Refused, "{s} has the non-ASCII key \"{s}\"; Tailscale folds key case (Unicode included), so artoo refuses keys it cannot check (SPEC §19)", .{ word, try clean(ctx, key) });
+    if (tn.nonAsciiKey(v)) |key| return ctx.fail(error.Refused, "{s} has the non-ASCII key \"{s}\"; Tailscale folds key case (Unicode included), so artoo refuses keys it cannot check", .{ word, try clean(ctx, key) });
     const funnel = try tn.funnelAttrs(a, v);
-    if (funnel.len > 0) return ctx.fail(error.Refused, "{s} grants Funnel in nodeAttrs ({s}); artoo never applies a policy that opens tailnet devices to the internet (SPEC §9.6)", .{ word, try joinClean(ctx, funnel) });
+    if (funnel.len > 0) return ctx.fail(error.Refused, "{s} grants Funnel in nodeAttrs ({s}); artoo never applies a policy that opens tailnet devices to the internet", .{ word, try joinClean(ctx, funnel) });
 }
 
 /// The tailnet's DNS name for the typed confirmation: `tailscale.tailnet`
@@ -1312,7 +1312,7 @@ pub const policy_apply = struct {
     }
 };
 
-pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, split DNS and keys on the tailnet (SPEC §19)", &.{
+pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, split DNS and keys on the tailnet", &.{
     cli.leaf(join),
     cli.group("devices", "Devices on the tailnet", &.{cli.leaf(devices_ls)}),
     cli.group("device", "One device", &.{ cli.leaf(device_show), cli.leaf(device_rename), cli.leaf(device_tag), cli.leaf(device_rm) }),

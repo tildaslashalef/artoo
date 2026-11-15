@@ -188,7 +188,7 @@ pub const add = struct {
     pub const details =
         \\Types A, AAAA, CNAME and TXT; a short NAME gets cloudflare.zone. The
         \\record is marked with the comment 'artoo: NOTE' so artoo may remove it
-        \\later. Refused before planning (SPEC §9.6, §15): Proxmox or UniFi by
+        \\later. Refused before planning: Proxmox or UniFi by
         \\name or address, LAN/loopback/link-local/Tailscale addresses, and names
         \\under guests.domain (private guest names never go public).
     ;
@@ -234,11 +234,11 @@ pub const add = struct {
         const target_name: ?[]const u8 = if (rtype == .CNAME) content else null;
         if (exposure.protected(try ctx.config(), fqdn, if (rtype == .A or rtype == .AAAA) content else null) orelse
             (if (target_name) |t| exposure.protected(try ctx.config(), t, null) else null)) |why|
-            return ctx.fail(error.Refused, "refused: {s}; Proxmox and UniFi are never public (SPEC §9.6)", .{why});
+            return ctx.fail(error.Refused, "refused: {s}; Proxmox and UniFi are never public", .{why});
         if ((rtype == .A or rtype == .AAAA) and records.nonPublic(content))
-            return ctx.fail(error.Refused, "refused: {s} is not a public address; LAN addresses stay out of public DNS (SPEC §15)", .{content});
+            return ctx.fail(error.Refused, "refused: {s} is not a public address; LAN addresses stay out of public DNS", .{content});
         if (target_name) |t| if (exposure.isPrivate(t) or under(std.mem.trimEnd(u8, t, "."), cfg.guests.domain))
-            return ctx.fail(error.Refused, "refused: {s} is a private name (SPEC §9.6)", .{t});
+            return ctx.fail(error.Refused, "refused: {s} is a private name", .{t});
         if (under(fqdn, cfg.guests.domain))
             return ctx.fail(error.Refused, "refused: {s} is under {s}; private guest names never go public (public names: 'artoo cf tunnel route add HOST SERVICE')", .{ fqdn, cfg.guests.domain });
 
@@ -282,7 +282,7 @@ const RmOp = struct {
 
     pub fn plan(op: *RmOp, ctx: *Context) !?exec.Plan {
         const r = op.found orelse return null;
-        if (!r.owned()) return ctx.fail(error.Refused, "{s} was not created by artoo (no 'artoo' comment); artoo leaves it alone (SPEC §15)", .{try recordText(ctx, r)});
+        if (!r.owned()) return ctx.fail(error.Refused, "{s} was not created by artoo (no 'artoo' comment); artoo leaves it alone", .{try recordText(ctx, r)});
         const a = ctx.arena;
         const changes = try a.dupe(ui.blocks.Change, &.{
             .{ .field = "record", .from = try recordText(ctx, r), .to = null },
@@ -346,7 +346,7 @@ pub const rm = struct {
     }
 };
 
-pub const group = cli.group("cf", "Cloudflare: public DNS of the zone and the lab's tunnel (SPEC §15)", &.{
+pub const group = cli.group("cf", "Cloudflare: public DNS of the zone and the lab's tunnel", &.{
     cli.group("dns", "Records of cloudflare.zone", &.{
         cli.leaf(ls),
         cli.leaf(add),
@@ -503,7 +503,7 @@ test "cf: Cloudflare's error messages reach the user; 403 names the permission" 
     defer f.deinit();
     try testing.expectEqual(Exit.auth, f.h.run(&root, "cf dns ls"));
     try testing.expect(std.mem.find(u8, f.h.stderr(), "Authentication error") != null);
-    try testing.expect(std.mem.find(u8, f.h.stderr(), "SPEC §15") != null);
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "check its permissions") != null);
     try testing.expectEqual(Exit.usage, f.h.run(&root, "cf dns ls"));
     try testing.expect(std.mem.find(u8, f.h.stderr(), "Zone → Zone → Read") != null);
 }

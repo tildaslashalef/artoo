@@ -62,7 +62,7 @@ pub const doctor = struct {
                 have_unifi = try secretCheck(&r, store, "unifi", "unifi key", .failed, "needed for every gateway command");
                 have_pve = try secretCheck(&r, store, "pve", "pve token", .warning, "needed for Proxmox commands");
                 have_cf = try secretCheck(&r, store, "cloudflare", "cloudflare token", .warning, "needed for 'cf' commands");
-                have_ts = try secretCheck(&r, store, "tailscale", "tailscale client", .not_checked, "optional, for 'ts' commands and the tailnet steps (SPEC §19)");
+                have_ts = try secretCheck(&r, store, "tailscale", "tailscale client", .not_checked, "optional, for 'ts' commands and the tailnet steps");
                 if (have_ts and cfg.tailscale.client_id.len == 0) {
                     try r.add("tailscale client", .warning, "secret stored, but tailscale.client_id is not set ('artoo config set tailscale.client_id ID')", .{});
                     have_ts = false;
@@ -71,7 +71,7 @@ pub const doctor = struct {
                 // absence is the normal state, no warning (SPEC §19).
                 have_ts_policy = store.exists(ctx.io, ctx.arena, "tailscale-policy") catch false;
                 if (!have_ts_policy) {
-                    try r.add("tailscale policy client", .not_checked, "not stored (created only to change the policy, SPEC §19)", .{});
+                    try r.add("tailscale policy client", .not_checked, "not stored (created only to change the policy)", .{});
                 } else if (cfg.tailscale.policy_client_id.len == 0) {
                     try r.add("tailscale policy client", .warning, "secret stored, but tailscale.policy_client_id is not set", .{});
                     have_ts_policy = false;
@@ -80,7 +80,7 @@ pub const doctor = struct {
             // The policy writer is a separate, short-lived client: the same
             // ID would make the everyday client a policy writer (SPEC §19).
             if (cfg.tailscale.client_id.len > 0 and std.mem.eql(u8, cfg.tailscale.client_id, cfg.tailscale.policy_client_id))
-                try r.add("tailscale clients", .failed, "tailscale.client_id and tailscale.policy_client_id name the same OAuth client; the policy client must be a separate one (SPEC §19)", .{});
+                try r.add("tailscale clients", .failed, "tailscale.client_id and tailscale.policy_client_id name the same OAuth client; the policy client must be a separate one", .{});
             try caCheck(&r, "unifi CA", cfg.unifi.ca_bundle);
             try caCheck(&r, "pve CA", cfg.pve.ca_bundle);
             try fileCheck(&r, "ssh key", cfg.guests.ssh_public_key);
@@ -283,7 +283,7 @@ fn probeTailscale(r: *Report) !void {
     // The everyday client only reads the policy; writing it is the
     // separate policy client's (SPEC §19).
     for (have) |h| if (std.mem.eql(u8, h, "policy_file") or std.mem.eql(u8, h, "all"))
-        return r.add("tailscale", .failed, "token granted: {s}; the main client may write the policy ({s}) — give it policy_file:read only and keep policy writes to the policy client (SPEC §19)", .{ granted, h });
+        return r.add("tailscale", .failed, "token granted: {s}; the main client may write the policy ({s}) — give it policy_file:read only and keep policy writes to the policy client", .{ granted, h });
     const cfg = try ctx.config();
     // The router's tag and every guest tag `ts join` may use.
     var want: std.ArrayList([]const u8) = .empty;
@@ -305,7 +305,7 @@ fn probeTailscale(r: *Report) !void {
         else
             try std.fmt.allocPrint(ctx.arena, "tags granted: {s}", .{want_text});
     } else try std.fmt.allocPrint(ctx.arena, "tags not reported by Tailscale; the client needs {s}", .{want_text});
-    if (missing.items.len > 0 or tags_missing.items.len > 0) return r.add("tailscale", .warning, "token granted: {s}{s}{s} (SPEC §19); {s}", .{ granted, if (missing.items.len > 0) "; missing: " else "", missing.items, tags });
+    if (missing.items.len > 0 or tags_missing.items.len > 0) return r.add("tailscale", .warning, "token granted: {s}{s}{s}; {s}", .{ granted, if (missing.items.len > 0) "; missing: " else "", missing.items, tags });
     try r.add("tailscale", .ok, "token granted: {s}; tailnet {s}; {s}", .{ granted, c.shownName(), tags });
 }
 
@@ -318,7 +318,7 @@ fn probeTailscalePolicy(r: *Report) !void {
     var missing: std.ArrayList(u8) = .empty;
     for ([_][]const u8{ "policy_file", "devices:core:read", "devices:posture_attributes:read" }) |s| if (!ts.grants(have, s)) try missing.print(ctx.arena, "{s}{s}", .{ if (missing.items.len > 0) ", " else "", s });
     const granted = if (c.scopes.len > 0) c.scopes else "none reported";
-    if (missing.items.len > 0) return r.add("tailscale policy", .warning, "token granted: {s}; missing: {s} (SPEC §19)", .{ granted, missing.items });
+    if (missing.items.len > 0) return r.add("tailscale policy", .warning, "token granted: {s}; missing: {s}", .{ granted, missing.items });
     try r.add("tailscale policy", .ok, "token granted: {s}; revoke the client once the change is done", .{granted});
 }
 
@@ -418,8 +418,8 @@ test "doctor --connect: the Tailscale token exchange reports granted and missing
     try f.tailscaleConfig("");
     _ = f.h.run(&root, "doctor --connect");
     const out = f.h.stdout();
-    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns; missing: policy_file:read (policy) (SPEC §19); tags not reported by Tailscale; the client needs tag:lab-router, tag:lab-guest") == null or
-        std.mem.find(u8, out, "not stored (created only to change the policy, SPEC §19)") == null)
+    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns; missing: policy_file:read (policy); tags not reported by Tailscale; the client needs tag:lab-router, tag:lab-guest") == null or
+        std.mem.find(u8, out, "not stored (created only to change the policy)") == null)
     {
         std.debug.print("--- output:\n{s}\n", .{out});
         return error.TestUnexpectedResult;
@@ -449,7 +449,7 @@ test "doctor --connect: tags the token response names are compared with tag:lab-
     try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kMAIN\",\"guest_tags\":\"tag:lab-guest,tag:lab-app\"}}\n" });
     _ = f.h.run(&root, "doctor --connect");
     const out = f.h.stdout();
-    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns policy_file:read (SPEC §19); tags missing: tag:lab-app") == null) {
+    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns policy_file:read; tags missing: tag:lab-app") == null) {
         std.debug.print("--- output:\n{s}\n", .{out});
         return error.TestUnexpectedResult;
     }

@@ -45,7 +45,7 @@ pub fn edgeVmFrom(ctx: *Context, c: *pve.Client, list: []const vms.Vm) !vms.Vm {
         if (found != null) return ctx.fail(error.Refused, "several VMs carry role-edge ({s}, {s}); keep one", .{ found.?.name, v.name });
         found = v;
     }
-    const v = found orelse return ctx.fail(error.NotFound, "no VM tagged role-edge; create it with 'artoo vm new bespin --role edge --ssh-jump' (SPEC §9.7)", .{});
+    const v = found orelse return ctx.fail(error.NotFound, "no VM tagged role-edge; create it with 'artoo vm new bespin --role edge --ssh-jump'", .{});
     if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; start it first", .{ v.name, v.status });
     if (!try agent.ping(c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{v.name});
     return v;
@@ -608,7 +608,7 @@ pub const setup = struct {
     pub const name = "setup";
     pub const summary = "Harden and configure the edge VM (idempotent)";
     pub const details =
-        \\Brings the VM tagged role-edge to SPEC §9.7: kernel hardening, the
+        \\Brings the VM tagged role-edge to its hardened layout: kernel hardening, the
         \\nftables policy (SSH only from Proxmox; no route to Proxmox or UniFi's
         \\other ports or the LAN beyond the guest pool), Tailscale removed,
         \\cloudflared from Cloudflare's signed repository, Caddy built from
@@ -692,14 +692,14 @@ pub const secret = struct {
         \\dns: the edge's own Cloudflare account token (Specified Domains →
         \\example.com; DNS Edit + Zone Read) for the *.apps wildcard via DNS-01.
         \\The value goes over the guest agent's stdin into a root-only file;
-        \\artoo never stores, prints or logs it (SPEC §9.7).
+        \\artoo never stores, prints or logs it.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "KIND", .help = "dns" }};
     pub const flags = [_]cli.Flag{.{ .long = "stdin", .help = "Read the token from standard input" }};
     pub const examples = [_][]const u8{"artoo edge secret dns"};
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
-        if (!std.mem.eql(u8, args.pos("KIND"), "dns")) return ctx.fail(error.Usage, "KIND must be dns (the tunnel token arrives with the tunnel, SPEC §15)", .{});
+        if (!std.mem.eql(u8, args.pos("KIND"), "dns")) return ctx.fail(error.Usage, "KIND must be dns (the tunnel token arrives with the tunnel)", .{});
         const value = if (args.has("stdin"))
             try prompt.readAll(ctx.input, ctx.io, ctx.arena, 4096)
         else blk: {
@@ -830,7 +830,7 @@ pub const tunnel = struct {
         \\exist, fetches its token from Cloudflare and writes it through the guest
         \\agent into a root-only file on the edge VM, then starts cloudflared
         \\under artoo's sandboxed unit. The token is never displayed, logged or
-        \\stored on this Mac (SPEC §9.7). Needs 'artoo edge setup' first.
+        \\stored on this Mac. Needs 'artoo edge setup' first.
     ;
     pub const examples = [_][]const u8{ "artoo edge tunnel -n", "artoo edge tunnel -y" };
 
@@ -923,19 +923,19 @@ pub fn healthOf(ctx: *Context, c: *pve.Client, v: vms.Vm) !Health {
     }
     const hs = try readHost(c, v);
     const hsteps = hostSteps(&hostRules(try addresses(ctx)), hs);
-    try checks.append(a, .{ .name = "host firewall", .status = if (hsteps.any()) .failed else .ok, .detail = if (hsteps.any()) "differs from SPEC §9.7 — run 'artoo edge setup'" else "Proxmox VM firewall as designed (on Proxmox)" });
+    try checks.append(a, .{ .name = "host firewall", .status = if (hsteps.any()) .failed else .ok, .detail = if (hsteps.any()) "differs from the hardened layout — run 'artoo edge setup'" else "Proxmox VM firewall as designed (on Proxmox)" });
     try checks.append(a, .{ .name = "firewall", .status = if (st.nft_loaded and st.nft_enabled) .ok else .failed, .detail = if (st.nft_loaded) (if (st.nft_enabled) "loaded, enabled" else "loaded, not enabled at boot") else "not loaded" });
     const pinned = std.mem.eql(u8, st.caddy, files.caddy_version);
     try checks.append(a, .{ .name = "caddy", .status = if (pinned and st.caddy_module) .ok else .failed, .detail = try std.fmt.allocPrint(a, "{s}{s}, {s}", .{ st.caddy, if (st.caddy_module) " + cloudflare" else " (no cloudflare module)", if (st.caddy_active) "running" else "not running" }) });
     try checks.append(a, .{ .name = "certificate", .status = if (std.mem.eql(u8, cert, "nocert")) .failed else .ok, .detail = if (std.mem.eql(u8, cert, "nocert")) (if (st.dns_secret) "not issued yet" else "needs 'artoo edge secret dns'") else try k.clean(ctx, try std.mem.replaceOwned(u8, a, cert, "\n", "; ")) });
-    try checks.append(a, .{ .name = "cloudflared", .status = if (st.cloudflared) .ok else .failed, .detail = if (!st.cloudflared) "not installed" else if (std.mem.eql(u8, cfd, "active")) "connected (service active)" else "installed; tunnel not configured yet (SPEC §15)" });
+    try checks.append(a, .{ .name = "cloudflared", .status = if (st.cloudflared) .ok else .failed, .detail = if (!st.cloudflared) "not installed" else if (std.mem.eql(u8, cfd, "active")) "connected (service active)" else "installed; tunnel not configured yet" });
     try checks.append(a, .{ .name = "tailscale removed", .status = if (st.tailscale) .failed else .ok, .detail = if (st.tailscale) "still installed" else "" });
     try checks.append(a, .{ .name = "failed SSH (24 h)", .status = if (ssh_fail.len == 0 or std.mem.eql(u8, ssh_fail, "0")) .ok else .warning, .detail = if (ssh_fail.len == 0) "0" else try k.clean(ctx, ssh_fail) });
     try checks.append(a, .{ .name = "reboot pending", .status = if (st.reboot) .warning else .ok, .detail = if (st.reboot) "yes — reboot when convenient" else "no" });
     return .{ .vm = v.name, .checks = checks.items };
 }
 
-pub const group = cli.group("edge", "The edge VM: hardened HTTPS and tunnel endpoint (SPEC §9.7)", &.{
+pub const group = cli.group("edge", "The edge VM: hardened HTTPS and tunnel endpoint", &.{
     cli.leaf(setup),
     cli.leaf(secret),
     cli.leaf(tunnel),
