@@ -493,12 +493,12 @@ fn renderSpec(ctx: *Context, r: spec.Report, source: []const u8, saved: ?[]const
     });
     try fields.append(a, .{
         .key = "Request bodies",
-        .value = try std.fmt.allocPrint(a, "{d} writes match{s}", .{ r.bodies_matched, if (r.bodies.len > 0) try std.fmt.allocPrint(a, "; {d} field difference(s)", .{r.bodies.len}) else "" }),
+        .value = try std.fmt.allocPrint(a, "{d} writes match{s}", .{ r.bodies_matched, if (r.bodies.len > 0) try std.fmt.allocPrint(a, "; {f}", .{ui.values.count(r.bodies.len, "field difference")}) else "" }),
         .role = if (r.bodies.len == 0) .ok else .warn,
     });
     try fields.append(a, .{
         .key = "Filterable",
-        .value = try std.fmt.allocPrint(a, "{d} lists match{s}", .{ r.lists_matched, if (r.filterable.len > 0) try std.fmt.allocPrint(a, "; {d} property difference(s)", .{r.filterable.len}) else "" }),
+        .value = try std.fmt.allocPrint(a, "{d} lists match{s}", .{ r.lists_matched, if (r.filterable.len > 0) try std.fmt.allocPrint(a, "; {f}", .{ui.values.count(r.filterable.len, "property difference")}) else "" }),
         .role = if (r.filterable.len == 0) .ok else .warn,
     });
     try ui.blocks.detail(ctx.out, u, &.{.{ .title = "OpenAPI document", .fields = fields.items }});

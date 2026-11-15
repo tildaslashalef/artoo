@@ -95,7 +95,7 @@ fn render(ctx: *Context, h: Host) !void {
         if (std.mem.eql(u8, m, "efi")) "UEFI" else try k.clean(ctx, m),
         if (h.secure_boot) |sb| (if (sb) ", Secure Boot on" else ", Secure Boot off") else "",
     }) else na;
-    const topo = if (h.threads) |t| try std.fmt.allocPrint(a, "{d} socket(s), {d} cores, {d} threads", .{ h.sockets orelse 0, h.cores orelse 0, t }) else na;
+    const topo = if (h.threads) |t| try std.fmt.allocPrint(a, "{f}, {d} cores, {d} threads", .{ ui.values.count(h.sockets orelse 0, "socket"), h.cores orelse 0, t }) else na;
     const swap = if (h.swap_total) |t| (if (t == 0) "none" else try k.usage(ctx, h.swap_used, h.swap_total)) else na;
     try ui.blocks.detail(ctx.out, &ctx.ui, &.{
         .{ .title = "Proxmox", .fields = &.{
@@ -326,7 +326,7 @@ test "host show: sections and string-typed load" {
         "  Proxmox VE  9.2.21\n",
         "  Boot        UEFI, Secure Boot on\n",
         "  Uptime      1d 11h\n",
-        "  Topology    1 socket(s), 8 cores, 16 threads\n",
+        "  Topology    1 socket, 8 cores, 16 threads\n",
         "  Usage       5.3% of host threads\n",
         "  Load        0.16  0.10  0.03  (1, 5, 15 min)\n",
         "  Swap        none\n",

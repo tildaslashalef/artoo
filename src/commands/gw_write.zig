@@ -355,7 +355,7 @@ const WriteOp = struct {
                     try changes.append(a, .{ .field = try gw.sanitized(ctx, code), .from = try gw.sanitized(ctx, n), .to = null });
                 }
                 if (op.matches.len > purge_listed) try notes.append(a, try std.fmt.allocPrint(a, "… and {d} more", .{op.matches.len - purge_listed}));
-                try impact.append(a, try std.fmt.allocPrint(a, "{d} voucher(s) matching {s} stop working", .{ op.matches.len, try gw.sanitized(ctx, op.filter.?) }));
+                try impact.append(a, try std.fmt.allocPrint(a, "{f} matching {s} stop working", .{ ui.values.count(op.matches.len, "voucher"), try gw.sanitized(ctx, op.filter.?) }));
             },
             .adopt => {
                 try changes.append(a, .{ .field = "device", .from = "pending", .to = try std.fmt.allocPrint(a, "adopted ({s})", .{op.mac.?}) });

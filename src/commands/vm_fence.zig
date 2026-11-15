@@ -423,10 +423,10 @@ const FenceOp = struct {
         if (s.steps.rules) {
             const d = try diff(a, s.host.rules, op.want);
             try changes.appendSlice(a, d.changes);
-            if (d.same > 0) try notes.append(a, try std.fmt.allocPrint(a, "{d} rule(s) unchanged; the whole list is rewritten.", .{d.same}));
+            if (d.same > 0) try notes.append(a, try std.fmt.allocPrint(a, "{f} unchanged; the whole list is rewritten.", .{ui.values.count(d.same, "rule")}));
             var foreign: usize = 0;
             for (s.host.rules) |r| foreign += @intFromBool(!std.mem.startsWith(u8, r.comment, "artoo:"));
-            if (foreign > 0) try notes.append(a, try std.fmt.allocPrint(a, "{d} existing rule(s) were not written by artoo; they are replaced.", .{foreign}));
+            if (foreign > 0) try notes.append(a, try std.fmt.allocPrint(a, "{f} were not written by artoo; they are replaced.", .{ui.values.count(foreign, "existing rule")}));
             if (op.enabled) try notes.append(a, "The guest's traffic drops for the moment between deleting and re-adding the rules.");
         }
         if (s.steps.ipset) try changes.append(a, .{ .field = "IP set", .from = if (s.host.ipset_exists) "differs" else null, .to = try std.fmt.allocPrint(a, "ipfilter-net0 = {s} (the only source address)", .{s.host.address}) });

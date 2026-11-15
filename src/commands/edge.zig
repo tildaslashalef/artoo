@@ -528,7 +528,7 @@ const SetupOp = struct {
         if (s_write) |i| {
             l.set(i, .unknown, "");
             for (s.write) |f| try writeFile(c, id, f);
-            l.set(i, .done, try std.fmt.allocPrint(a, "{d} file(s)", .{s.write.len}));
+            l.set(i, .done, try std.fmt.allocPrint(a, "{f}", .{ui.values.count(s.write.len, "file")}));
         }
         if (s_sysctl) |i| {
             try run(c, id, "sysctl", "sysctl --system >/dev/null", step_timeout_ms);
@@ -818,7 +818,7 @@ const TunnelOp = struct {
     }
 
     pub fn done(op: *TunnelOp) []const u8 {
-        return std.fmt.allocPrint(op.c.ctx.arena, "{s} runs tunnel {s} ({d} connection(s)) — public names: 'artoo cf tunnel route add HOST SERVICE'", .{ op.vm.name, op.target, op.connections }) catch "done";
+        return std.fmt.allocPrint(op.c.ctx.arena, "{s} runs tunnel {s} ({f}) — public names: 'artoo cf tunnel route add HOST SERVICE'", .{ op.vm.name, op.target, ui.values.count(op.connections, "connection") }) catch "done";
     }
 };
 
@@ -891,7 +891,7 @@ pub const status = struct {
         try k.header(ctx, &c);
         try vm_new.renderChecks(ctx, h.checks);
         const failed = vm_new.failures(h.checks);
-        if (failed > 0) return ctx.fail(error.Partial, "{d} check(s) failed on {s}", .{ failed, h.vm });
+        if (failed > 0) return ctx.fail(error.Partial, "{f} failed on {s}", .{ ui.values.count(failed, "check"), h.vm });
     }
 };
 
@@ -918,7 +918,7 @@ pub fn healthOf(ctx: *Context, c: *pve.Client, v: vms.Vm) !Health {
         try checks.append(a, if (n) |hits| .{
             .name = try std.fmt.allocPrint(a, "drops {s}", .{p[0]}),
             .status = if (hits == 0) .ok else .failed,
-            .detail = if (hits == 0) "none" else try std.fmt.allocPrint(a, "{d} packet(s) blocked — investigate", .{hits}),
+            .detail = if (hits == 0) "none" else try std.fmt.allocPrint(a, "{f} blocked — investigate", .{ui.values.count(hits, "packet")}),
         } else .{ .name = try std.fmt.allocPrint(a, "drops {s}", .{p[0]}), .status = .failed, .detail = "counter missing (firewall not loaded?)" });
     }
     const hs = try readHost(c, v);
@@ -1080,5 +1080,5 @@ test "edge tunnel -y: creates the tunnel, token straight to the VM, never in the
     try testing.expect(std.mem.find(u8, g.body(8), form) != null);
     try testing.expect(std.mem.find(u8, g.h.stdout(), "SECRETTOKEN") == null);
     try testing.expect(std.mem.find(u8, g.h.stderr(), "SECRETTOKEN") == null);
-    try testing.expect(std.mem.find(u8, g.h.stdout(), "bespin runs tunnel lab (1 connection(s))") != null);
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "bespin runs tunnel lab (1 connection)") != null);
 }

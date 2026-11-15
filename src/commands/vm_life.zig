@@ -834,7 +834,7 @@ const RmOp = struct {
         if (pve.flag(op.config, "protection")) return ctx.fail(error.Refused, "{s} is protected; 'artoo vm set {s} protection=no' first", .{ op.target, op.target });
         if (v.name.len > 0) {
             const used = try svc.pointingAt(ctx, op.c, v.name);
-            if (used.names.len > 0) return ctx.fail(error.Refused, "service(s) {s} point at {s}; move them ('artoo svc set NAME VM:PORT') or remove them ('artoo svc rm NAME') first", .{ try std.mem.join(ctx.arena, ", ", used.names), op.target });
+            if (used.names.len > 0) return ctx.fail(error.Refused, "{s} {s} {s} at {s}; move {s} ('artoo svc set NAME VM:PORT') or remove {s} ('artoo svc rm NAME') first", .{ if (used.names.len == 1) "service" else "services", try std.mem.join(ctx.arena, ", ", used.names), if (used.names.len == 1) "points" else "point", op.target, if (used.names.len == 1) "it" else "them", if (used.names.len == 1) "it" else "them" });
             op.svc_note = used.note;
         }
         try op.readUnifi(ctx);
@@ -1173,7 +1173,7 @@ const SnapOp = struct {
                 if (op.blockers.len > 0) {
                     var names: std.ArrayList([]const u8) = .empty;
                     for (op.blockers) |b| try names.append(a, try k.clean(ctx, b.name));
-                    return ctx.fail(error.Refused, "{s} has newer snapshot(s): {s} — on ZFS Proxmox rolls back only to the newest. Remove them first ('artoo vm snap rm {s} NAME'); they are lost by this rollback anyway", .{ label, try std.mem.join(a, ", ", names.items), label });
+                    return ctx.fail(error.Refused, "{s} has {s}: {s} — on ZFS Proxmox rolls back only to the newest. Remove {s} first ('artoo vm snap rm {s} NAME'); {s} lost by this rollback anyway", .{ label, if (names.items.len == 1) "a newer snapshot" else "newer snapshots", try std.mem.join(a, ", ", names.items), if (names.items.len == 1) "it" else "them", label, if (names.items.len == 1) "it is" else "they are" });
                 }
             },
         }
@@ -1347,7 +1347,7 @@ const PruneOp = struct {
             .to = null,
         });
         return .{
-            .action = try std.fmt.allocPrint(a, "Prune {d} artoo snapshot(s) of {s}", .{ op.picks.len, op.target }),
+            .action = try std.fmt.allocPrint(a, "Prune {f} of {s}", .{ ui.values.count(op.picks.len, "artoo snapshot"), op.target }),
             .risk = .destructive,
             .target = try nodeTarget(ctx, op.c),
             .changes = changes.items,
@@ -1386,7 +1386,7 @@ const PruneOp = struct {
     fn stopped(op: *PruneOp, ctx: *Context, i: usize, err: anyerror) anyerror {
         op.ledger.set(i, if (err == error.TaskFailed) .failed else .unknown, "");
         if (op.removed == 0) return err;
-        return ctx.fail(error.Partial, "{d} of {d} snapshot(s) removed; stopped at {s}: {s}", .{ op.removed, op.picks.len, op.ledger.steps.items[i].name, ctx.diag orelse @errorName(err) });
+        return ctx.fail(error.Partial, "{d} of {f} removed; stopped at {s}: {s}", .{ op.removed, ui.values.count(op.picks.len, "snapshot"), op.ledger.steps.items[i].name, ctx.diag orelse @errorName(err) });
     }
 
     pub fn verify(op: *PruneOp, ctx: *Context) !bool {
@@ -1406,7 +1406,7 @@ const PruneOp = struct {
     }
 
     pub fn done(op: *PruneOp) []const u8 {
-        return std.fmt.allocPrint(op.c.ctx.arena, "{d} artoo snapshot(s) removed from {s}", .{ op.removed, op.target }) catch "done";
+        return std.fmt.allocPrint(op.c.ctx.arena, "{f} removed from {s}", .{ ui.values.count(op.removed, "artoo snapshot"), op.target }) catch "done";
     }
 };
 
@@ -1959,7 +1959,7 @@ test "vm snap rollback: newer snapshots on ZFS refuse before any write" {
     });
     defer g.deinit();
     try testing.expectEqual(Exit.refused, g.h.run(&root, "vm snap rollback web-01 pre-upgrade --yes --confirm web-01@pre-upgrade"));
-    try testing.expect(std.mem.find(u8, g.h.stderr(), "web-01 has newer snapshot(s): later — on ZFS Proxmox rolls back only to the newest") != null);
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "web-01 has a newer snapshot: later — on ZFS Proxmox rolls back only to the newest") != null);
     try testing.expectEqual(@as(usize, 4), g.sent());
 }
 
@@ -2002,7 +2002,7 @@ test "vm snap prune: artoo-owned only, beyond --keep, oldest first, one DELETE e
     defer g.deinit();
     try testing.expectEqual(Exit.ok, g.h.run(&root, "vm snap prune web-01 --keep 1 -n"));
     const plan = g.h.stdout();
-    try testing.expect(std.mem.startsWith(u8, plan, "Plan · Prune 2 artoo snapshot(s) of web-01  ▲ destructive\n"));
+    try testing.expect(std.mem.startsWith(u8, plan, "Plan · Prune 2 artoo snapshots of web-01  ▲ destructive\n"));
     try testing.expect(std.mem.find(u8, plan, "mine") == null);
     try testing.expect(std.mem.find(u8, plan, "Dry run: nothing was sent.") != null);
     try testing.expectEqual(Exit.refused, g.h.run(&root, "vm snap prune web-01 --keep 1 -y"));
@@ -2010,7 +2010,7 @@ test "vm snap prune: artoo-owned only, beyond --keep, oldest first, one DELETE e
     try testing.expectEqual(Exit.ok, g.h.run(&root, "vm snap prune web-01 --keep 1 --yes --confirm web-01"));
     try testing.expectEqualStrings("DELETE /api2/json/nodes/pve/qemu/100/snapshot/artoo-upgrade-20261101T0100Z HTTP/1.1", g.request(6));
     try testing.expectEqualStrings("DELETE /api2/json/nodes/pve/qemu/100/snapshot/artoo-edge-20261102T0100Z HTTP/1.1", g.request(8));
-    try testing.expect(std.mem.find(u8, g.h.stdout(), "2 artoo snapshot(s) removed from web-01") != null);
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "2 artoo snapshots removed from web-01") != null);
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
 
