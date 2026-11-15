@@ -515,7 +515,7 @@ const RenameOp = struct {
         if (o.ts_note) |n| try notes.append(a, n);
         try notes.append(a, "Steps run in this order, each checking observed state first; after a failure run the same command again to continue.");
         try notes.append(a, "The UniFi rename uses PUT rest/user/{_id} with the name alone: expected from the classic API, not yet verified live.");
-        try notes.append(a, try std.fmt.allocPrint(a, "Cloud-init's instance ID may follow the new name: a cold start of {s} may then regenerate its SSH host keys. If 'ssh {s}' then refuses the key, re-pin it with 'artoo vm ssh-config' (not yet verified live).", .{ op.new, op.new }));
+        try notes.append(a, try std.fmt.allocPrint(a, "Cloud-init's instance ID follows the name: at {s}'s next boot (a reboot too) cloud-init starts over as a new instance, regenerates the SSH host keys and runs its first-boot commands again. 'ssh {s}' then refuses the new key: compare the fingerprint it shows with the one 'artoo vm ssh-config --repin {s} -n' reads through the guest agent, then re-pin without -n.", .{ op.new, op.new, op.new }));
         return .{
             .action = try std.fmt.allocPrint(a, "Rename guest {s} ({d}) {s} {s}", .{ op.old, o.vm.vmid, arrow, op.new }),
             .risk = .destructive,
@@ -1008,8 +1008,8 @@ test "vm rename: every place moves to NEW, one ledger step each, verified by a f
         "remove old DNS record",
         "move the password",
         "move the pinned key",
-        "a cold start of hoth may then regenerate its SSH host keys",
-        "re-pin it with 'artoo vm ssh-config'",
+        "at hoth's next boot (a reboot too) cloud-init starts over as a new instance",
+        "'artoo vm ssh-config --repin hoth -n'",
         "naboo is now hoth everywhere artoo keeps it",
     }) |line| if (std.mem.find(u8, out, line) == null) {
         std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
