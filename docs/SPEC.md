@@ -2359,7 +2359,9 @@ changes nothing and is never retried.
   WAN in that span are "during" it; `ISP_PACKET_LOSS`, high-latency and
   link-state events in the 10 minutes before it are listed as its
   lead-up. At equal timestamps a failure folds before a restore. An
-  outage still open is "ongoing". A summary ends the list:
+  outage still open is "ongoing"; a WAN offline now with no failure in
+  the window is an ongoing outage "since before the window", from the
+  window's start. A summary ends the list:
   outages, total and longest downtime, availability over the window.
   Events artoo does not know are shown as they are (title and message
   with parameters filled in), never dropped.
