@@ -2228,7 +2228,7 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
   | Proxmox | `name` (digest-guarded, as `vm set`) |
   | DNS (add) | NEW's machine-name A record at the guest's address, before anything points at NEW |
   | Services | each `svc` whose upstream is OLD moved to `NEW:PORT`, as `svc set` does, fence steps included (§9.6, §9.11) |
-  | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config` rewritten (§9.10) |
+  | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config`: NEW's block written as `vm ssh-config` writes it (the static address, else the agent's IPv4), then OLD's removed — never OLD's alone (§9.10); verify checks NEW's block |
   | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
   | Fence | `guests.fence_allow_out` entries naming OLD, and the fences that render them |
   | Tailnet | for a guest on the tailnet (tag `tailnet`, `role-router`): `tailscale set --hostname=NEW` through the agent, the name read back from `tailscale status --json`; with a Tailscale credential the device is checked, and renamed if a hand-set name kept the old one (§19) |

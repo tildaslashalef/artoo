@@ -502,7 +502,13 @@ const RenameOp = struct {
                 try known_hosts.record(ctx, op.old, null);
             }
             if (o.ssh_old) {
-                if (vm_ssh.blockOf(op.new, o.cfg)) |b| try vm_ssh.put(ctx, op.new, b);
+                // NEW's block as 'vm ssh-config' writes it; OLD's goes only
+                // once NEW's is there.
+                const b = try vm_ssh.blockFor(op.c, op.new, o.vm, o.cfg) orelse {
+                    l.set(i, .failed, "no address for the ssh_config block");
+                    return ctx.fail(error.Partial, "no usable address of {s} for its ssh_config block; {s}'s block is kept — run 'artoo vm ssh-config' once it has one", .{ op.new, op.old });
+                };
+                try vm_ssh.put(ctx, op.new, b);
                 try vm_ssh.put(ctx, op.old, null);
             }
             l.set(i, .done, if (o.ssh_old) "known_hosts, ssh_config" else "known_hosts");
@@ -600,6 +606,7 @@ const RenameOp = struct {
         if (op.o.dns_old != null and o.dns_new == null) return false;
         if ((op.o.secret_old or op.o.secret_new) and !o.secret_new) return false;
         if (op.o.key_old != null and o.key_new == null) return false;
+        if (op.o.ssh_old and (o.ssh_old or !o.ssh_new)) return false;
         return true;
     }
 
@@ -874,6 +881,57 @@ test "vm rename: a service whose upstream is OLD moves to NEW:PORT on the edge, 
         try testing.expect(std.mem.find(u8, q, esc.items) != null);
     };
     try testing.expect(sent);
+}
+
+test "vm rename: a guest without a static address gets NEW's ssh_config block from the agent's address" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dhcp_cfg = "{\"data\":{\"name\":\"naboo\",\"net0\":\"virtio=BC:24:11:00:00:01,bridge=vmbr0\",\"tags\":\"artoo\",\"digest\":\"d1\"}}";
+    const ifaces = "{\"data\":{\"result\":[{\"name\":\"lo\",\"ip-addresses\":[{\"ip-address\":\"127.0.0.1\",\"ip-address-type\":\"ipv4\",\"prefix\":8}]},{\"name\":\"eth0\",\"ip-addresses\":[{\"ip-address\":\"192.168.1.231\",\"ip-address-type\":\"ipv4\",\"prefix\":24}]}]}}";
+    const none = "{\"meta\":{\"rc\":\"ok\"},\"data\":[]}";
+    const no_dns = "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}";
+    const reads = struct {
+        fn f(al: std.mem.Allocator, list: []const u8, cfg: []const u8, host: []const u8, site: bool) ![]const R {
+            var out: std.ArrayList(R) = .empty;
+            try out.appendSlice(al, &.{
+                rt("GET /api2/json/nodes/pve/qemu HTTP", list),
+                rt("agent/ping", "{\"data\":{\"result\":{}}}"),
+                rt("GET /api2/json/nodes/pve/qemu/201/config", cfg),
+                rt("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+                rt("exec-status", try agentOut(al, 0, try std.fmt.allocPrint(al, "{s}\n---\n127.0.0.1 localhost\n", .{host}))),
+                rt("rest/user HTTP", none),
+            });
+            if (site) try out.append(al, rt("GET /v1/sites?", sites));
+            try out.appendSlice(al, &.{
+                rt("GET /v1/sites/S1/dns/policies", no_dns),
+                rt("GET /api2/json/nodes/pve/qemu HTTP", list),
+            });
+            return out.items;
+        }
+    }.f;
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try reads(a, list_old, dhcp_cfg, "naboo", true));
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("agent/ping", "{\"data\":{\"result\":{}}}"),
+        rt("agent/network-get-interfaces", ifaces),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+    });
+    try routes.appendSlice(a, try reads(a, list_new, dhcp_cfg, "hoth", false));
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try g.tmp.dir.createDirPath(testing.io, ".artoo");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/ssh_config", .data = "Host naboo naboo.lab.example.com\n  HostName 192.168.1.231\n  HostKeyAlias naboo\n" });
+    const code = g.h.run(&root, "vm rename naboo hoth -y --confirm naboo");
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    const text = try g.tmp.dir.readFileAlloc(testing.io, ".artoo/ssh_config", a, .limited(1 << 16));
+    try testing.expect(std.mem.find(u8, text, "Host hoth hoth.lab.example.com\n  HostName 192.168.1.231\n") != null);
+    try testing.expect(std.mem.find(u8, text, "Host naboo") == null);
 }
 
 test "vm rename: the /etc/hosts rewrite keeps a line's CR out of the comparison and puts it back" {
