@@ -3217,7 +3217,10 @@ both pointing at the gateway.
   tag, an expiry of 10 minutes and the description `artoo join <vm>`,
   hands it over the guest agent's stdin into a 0600 file under `/run`
   (passed as `file:`, removed whatever happens), never displays it, and
-  deletes it when a failed run left it unused. Refused (exit 5) for a
+  deletes it when a failed run left it unused (`router setup` alike);
+  when that delete fails, the key step is marked failed with the key's
+  ID and its expiry (the creation response's `expires`, else about ten
+  minutes on) so the operator can delete it sooner. Refused (exit 5) for a
   template, a guest not tagged `artoo` or not tagged `tailnet`,
   `role-edge`, `role-watch` and `role-router` (which joins with `router
   setup`), a stopped guest or a silent agent; a guest whose

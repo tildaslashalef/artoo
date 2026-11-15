@@ -829,6 +829,7 @@ const JoinOp = struct {
     ledger: exec.Ledger = .{},
     key: ?tn.NewKey = null,
     key_used: bool = false,
+    key_step: usize = 0,
     device: ?tn.Device = null,
 
     pub fn read(op: *JoinOp, ctx: *Context) !void {
@@ -869,6 +870,7 @@ const JoinOp = struct {
         const a = ctx.arena;
         const l = &op.ledger;
         const s_key = try l.add(a, "create the join key");
+        op.key_step = s_key;
         const s_join = try l.add(a, "join the tailnet");
         errdefer {
             op.dropKey(ctx);
@@ -897,7 +899,13 @@ const JoinOp = struct {
         if (op.key_used) return;
         const diag = ctx.diag;
         defer ctx.diag = diag;
-        tn.deleteKey(op.tsc, k.id) catch return;
+        tn.deleteKey(op.tsc, k.id) catch |err| {
+            // The stray key goes on the ledger with its ID and expiry.
+            const why = ctx.diag orelse @errorName(err);
+            const detail = tn.strayKey(ctx, k.id, k.expires, why) catch return;
+            op.ledger.set(op.key_step, .failed, detail);
+            return;
+        };
         op.key = null;
     }
 
@@ -1516,6 +1524,32 @@ test "ts join: a failed join deletes the unused key and never shows it" {
     try testing.expect(std.mem.find(u8, f.h.stderr(), "invalid key [auth key]") != null);
     try testing.expect(std.mem.find(u8, f.h.stdout(), "JOINSECRET") == null);
     try testing.expect(std.mem.find(u8, f.h.stderr(), "JOINSECRET") == null);
+}
+
+test "ts join: an unused key that cannot be deleted is on the ledger with its ID and expiry" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /api2/json/nodes/pve/qemu HTTP", join_vms),
+        route("agent/ping", agent_up),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        route("exec-status", try agentOut(a, 0, "{}", "")),
+        route("POST /tailnet/-/keys", "{\"id\":\"kJoin\",\"key\":\"tskey-auth-JOINSECRET\",\"keyType\":\"auth\",\"expires\":\"2026-11-15T10:10:00Z\"}"),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        route("exec-status", try agentOut(a, 1, "", "backend error: invalid key")),
+        .{ .match = "DELETE /tailnet/-/keys/kJoin", .behavior = .{ .respond = .{ .status = 500, .body = "{\"message\":\"internal error\"}" } } },
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(Exit.partial, f.h.run(&root, "ts join naboo -y"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    try expectHas(f.h.stdout(), &.{ "create the join key", "kJoin unused but not deleted", "it expires 2026-11-15", "Settings → Keys" });
+    // The reported error is still the join's.
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "tailscale up failed") != null);
+    try testing.expect(std.mem.find(u8, f.h.stdout(), "JOINSECRET") == null);
 }
 
 test "ts join --tag: a tag outside tailscale.guest_tags is refused before any request; a listed one is used" {

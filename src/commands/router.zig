@@ -212,6 +212,8 @@ const SetupOp = struct {
     approve: bool = false,
     /// The join key artoo created (its value is `key`), until used.
     key_id: ?[]const u8 = null,
+    key_expires: ?i64 = null,
+    key_step: ?usize = null,
     key_used: bool = false,
 
     pub fn read(op: *SetupOp, ctx: *Context) !void {
@@ -289,8 +291,6 @@ const SetupOp = struct {
             op.key = try askKey(ctx, op.from_stdin);
         }
         errdefer if (op.guard) |*g| g.annotate(ctx);
-        // A key artoo made and the guest did not use is deleted.
-        errdefer op.dropKey(ctx);
         if (op.guard) |*g| try g.take(ctx, c, l);
         const s_sysctl = if (op.steps.sysctl) try l.add(a, "IP forwarding") else null;
         const s_key = if (op.steps.enroll and op.tsc != null) try l.add(a, "create the join key") else null;
@@ -298,7 +298,11 @@ const SetupOp = struct {
         const s_routes = if (op.steps.routes) try l.add(a, "advertise the LAN") else null;
         const s_approve = if (op.approve) try l.add(a, "approve the LAN") else null;
         const s_expiry = if (op.tsc != null) try l.add(a, "key expiry") else null;
+        op.key_step = s_key;
         errdefer {
+            // A key artoo made and the guest did not use is deleted (or,
+            // when that fails, listed on the ledger) before it is shown.
+            op.dropKey(ctx);
             ctx.out.writeAll("\n") catch {};
             l.render(ctx.out, &ctx.ui) catch {};
         }
@@ -313,6 +317,7 @@ const SetupOp = struct {
             const nk = try tn.createJoinKey(op.tsc.?, &.{tag}, try tn.keyDescription(a, &.{ "artoo", "router", op.vm.name }));
             op.key = nk.key;
             op.key_id = nk.id;
+            op.key_expires = nk.expires;
             l.set(i, .done, try std.fmt.allocPrint(a, "{s}, single-use, 10 min", .{try k.clean(ctx, nk.id)}));
         }
         if (s_enroll) |i| {
@@ -370,7 +375,12 @@ const SetupOp = struct {
         if (op.key_used) return;
         const diag = ctx.diag;
         defer ctx.diag = diag;
-        tn.deleteKey(op.tsc.?, id) catch return;
+        tn.deleteKey(op.tsc.?, id) catch |err| {
+            const why = ctx.diag orelse @errorName(err);
+            const detail = tn.strayKey(ctx, id, op.key_expires, why) catch return;
+            if (op.key_step) |i| op.ledger.set(i, .failed, detail);
+            return;
+        };
         op.key_id = null;
     }
 
@@ -756,6 +766,37 @@ test "router setup with the Tailscale credential: a failed join deletes the unus
     try testing.expect(std.mem.find(u8, g.h.stderr(), "SECRETVALUE") == null);
     // An entered key has no place when artoo makes it.
     try testing.expectEqual(F.testkit.Exit.usage, g.h.run(&root, "router setup -y --stdin"));
+}
+
+test "router setup: an unused key that cannot be deleted is on the ledger with its ID and expiry" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const F = RouterFixture;
+    var g: F.testkit.Gateway = undefined;
+    try g.initRoutes(&.{
+        F.r("POST /oauth/token", ts_token),
+        F.r("GET /api2/json/nodes/pve/qemu HTTP", router_vms),
+        F.r("agent/ping", "{\"data\":{\"result\":{}}}"),
+        F.r("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        F.r("exec-status", try F.probeOut(a, "NeedsLogin", "")),
+        F.r("POST /tailnet/-/keys", "{\"id\":\"kNew\",\"key\":\"tskey-auth-SECRETVALUE\",\"keyType\":\"auth\"}"),
+        F.r("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        F.r("exec-status", try F.agentOut(a, 1, "", "not valid")),
+        .{ .match = "DELETE /tailnet/-/keys/kNew", .behavior = .{ .respond = .{ .status = 500, .body = "{\"message\":\"internal error\"}" } } },
+    });
+    defer g.deinit();
+    try g.tailscaleConfig("");
+    const root = cli.group("artoo", "t", &.{group});
+    try testing.expectEqual(F.testkit.Exit.partial, g.h.run(&root, "router setup -y"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    const out = g.h.stdout();
+    // No expiry in the response: about ten minutes from now.
+    for ([_][]const u8{ "kNew unused but not deleted", "it expires about ", "Settings → Keys" }) |line| if (std.mem.find(u8, out, line) == null) {
+        std.debug.print("--- missing {s} in:\n{s}\n", .{ line, out });
+        return error.TestUnexpectedResult;
+    };
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "tailscale up failed") != null);
 }
 
 test "router status with the Tailscale credential adds the tailnet's view" {
