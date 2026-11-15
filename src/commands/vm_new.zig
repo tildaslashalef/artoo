@@ -1157,7 +1157,7 @@ fn judgeUpdates(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !C
     if (!std.mem.eql(u8, f.periodic, "1")) return fail("unattended upgrades off (APT::Periodic::Unattended-Upgrade)");
     if (std.mem.eql(u8, f.security, "0")) return fail("the -security pocket is not an allowed origin");
     if (!std.mem.eql(u8, f.timer, "enabled")) return fail(try std.fmt.allocPrint(a, "apt-daily-upgrade.timer {s}", .{if (f.timer.len > 0) try k.clean(ctx, f.timer) else "missing"}));
-    if (std.mem.eql(u8, f.reboot, "true")) return fail("automatic reboot is on (the operator reboots, SPEC §9.1)");
+    if (std.mem.eql(u8, f.reboot, "true")) return fail("automatic reboot is on (the operator reboots)");
     const last = std.fmt.parseInt(i64, f.last, 10) catch null;
     const now = std.fmt.parseInt(i64, f.now, 10) catch null;
     const when = if (last != null and now != null)
@@ -1300,7 +1300,7 @@ pub const verify = struct {
     pub const name = "verify";
     pub const summary = "Read-only readiness checks of a guest";
     pub const details =
-        \\From Proxmox: configuration waiting for a restart (warning, SPEC §9.13).
+        \\From Proxmox: configuration waiting for a restart (warning).
         \\Through the guest agent: cloud-init done, hostname and FQDN, the guest
         \\user's shell and home, payload files owned by it, sudo asking for a
         \\password, sshd without root or password login, Ghostty terminfo for
@@ -1308,7 +1308,7 @@ pub const verify = struct {
         \\baseline tools, Tailscale installed but not enrolled (a guest tagged
         \\tailnet: enrolled as a tagged node, no routes, no Tailscale SSH), unattended security
         \\updates without automatic reboot, a pending reboot (warning), Alloy enrolled when a
-        \\watchdog exists (SPEC §9.9; not checked for a guest tagged no-watch). From here: SSH key
+        \\watchdog exists (not checked for a guest tagged no-watch). From here: SSH key
         \\login with the pinned host key, the DNS record on UniFi and its
         \\answer (dig @gateway). Any failed check exits 8. --all checks every artoo
         \\guest concurrently, one block each, then a summary.

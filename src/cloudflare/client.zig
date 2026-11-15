@@ -74,7 +74,7 @@ pub const Client = struct {
         return switch (r.status) {
             400 => ctx.fail(error.Refused, "Cloudflare refused {s} {s}{s}{s}", .{ @tagName(method), path, s, msg }),
             401 => ctx.fail(error.AuthFailed, "Cloudflare rejected the token (401){s}{s}; replace it with 'artoo auth set cloudflare'", .{ s, msg }),
-            403 => ctx.fail(error.PermissionDenied, "the Cloudflare token may not {s} {s} (403){s}{s}; see SPEC §15 for its permissions", .{ @tagName(method), path, s, msg }),
+            403 => ctx.fail(error.PermissionDenied, "the Cloudflare token may not {s} {s} (403){s}{s}; check its permissions in the Cloudflare dashboard", .{ @tagName(method), path, s, msg }),
             404 => ctx.fail(error.NotFound, "not found on Cloudflare: {s}{s}{s}", .{ path, s, msg }),
             else => ctx.fail(error.HttpStatus, "Cloudflare answered {d} for {s} {s}{s}{s}", .{ r.status, @tagName(method), path, s, msg }),
         };

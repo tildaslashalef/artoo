@@ -50,7 +50,7 @@ fn routerVm(ctx: *Context, c: *pve.Client) !vms.Vm {
         if (found != null) return ctx.fail(error.Refused, "several VMs carry role-router ({s}, {s}); keep one", .{ found.?.name, v.name });
         found = v;
     }
-    const v = found orelse return ctx.fail(error.NotFound, "no VM tagged role-router; create it with 'artoo vm new NAME --role router --size small --cores 1' (SPEC §9.8)", .{});
+    const v = found orelse return ctx.fail(error.NotFound, "no VM tagged role-router; create it with 'artoo vm new NAME --role router --size small --cores 1'", .{});
     if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; start it first", .{ v.name, v.status });
     if (!try agent.ping(c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{v.name});
     return v;
@@ -445,7 +445,7 @@ pub const setup = struct {
         \\with a single-use auth key tagged tag:lab-router (Tailscale console →
         \\Keys → Generate auth key), read from a hidden prompt or --stdin and
         \\removed from the VM right after use. The router advertises the LAN of
-        \\guests.gateway; the tailnet policy approves the route (SPEC §9.8).
+        \\guests.gateway; the tailnet policy approves the route.
     ;
     pub const flags = [_]cli.Flag{ .{ .long = "stdin", .help = "Read the auth key from standard input" }, snapguard.flag };
     pub const examples = [_][]const u8{ "artoo router setup -n", "artoo router setup" };
@@ -457,7 +457,7 @@ pub const setup = struct {
         if (args.has("snapshot")) op.guard = .{ .action = "router", .command = "router setup" };
         var tsc: tsapi.Client = undefined;
         if (try tsapi.configured(ctx)) {
-            if (args.has("stdin")) return ctx.fail(error.Usage, "--stdin is for an entered key; with the Tailscale credential set up artoo creates the key itself (SPEC §19)", .{});
+            if (args.has("stdin")) return ctx.fail(error.Usage, "--stdin is for an entered key; with the Tailscale credential set up artoo creates the key itself", .{});
             tsc = try tsapi.Client.open(ctx, .main);
             op.tsc = &tsc;
         }
@@ -547,7 +547,7 @@ fn tailnetChecks(ctx: *Context, checks: *std.ArrayList(vm_new.Check), vm_name: [
     try checks.append(a, .{ .name = "last seen", .status = .ok, .detail = if (d.connected) "connected" else try std.fmt.allocPrint(a, "{f}", .{ui.values.relative(ctx.ui.now, d.last_seen)}) });
 }
 
-pub const group = cli.group("router", "The Tailscale subnet router for remote access (SPEC §9.8)", &.{
+pub const group = cli.group("router", "The Tailscale subnet router for remote access", &.{
     cli.leaf(setup),
     cli.leaf(status),
 });

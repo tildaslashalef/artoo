@@ -99,7 +99,7 @@ pub const Client = struct {
     pub fn open(ctx: *Context, cred: Credential) !Client {
         const cfg = try ctx.config();
         const id = try cred.clientId(ctx);
-        if (id.len == 0) return ctx.fail(error.ConfigInvalid, "{s} is not set; 'artoo config set {s} ID' (the OAuth client's ID, SPEC §19)", .{ cred.idKey(), cred.idKey() });
+        if (id.len == 0) return ctx.fail(error.ConfigInvalid, "{s} is not set; 'artoo config set {s} ID' (the OAuth client's ID)", .{ cred.idKey(), cred.idKey() });
         const store = try ctx.secretStore();
         const secret = (store.get(ctx.io, ctx.arena, cred.secretName()) catch |err| return switch (err) {
             error.OutOfMemory, error.Canceled => err,
@@ -226,7 +226,7 @@ pub const Client = struct {
         return switch (r.status) {
             400 => ctx.fail(error.Refused, "Tailscale refused {s} {s}{s}{s}", .{ verb, shown, s, msg }),
             401 => ctx.fail(error.AuthFailed, "Tailscale rejected the access token (401){s}{s}", .{ s, msg }),
-            403 => ctx.fail(error.PermissionDenied, "the Tailscale OAuth client may not {s} {s} (403){s}{s}; see SPEC §19 for its scopes", .{ verb, shown, s, msg }),
+            403 => ctx.fail(error.PermissionDenied, "the Tailscale OAuth client may not {s} {s} (403){s}{s}; check its scopes in the Tailscale admin console", .{ verb, shown, s, msg }),
             404 => ctx.fail(error.NotFound, "not found on Tailscale: {s}{s}{s}", .{ shown, s, msg }),
             501 => ctx.fail(error.Refused, "Tailscale refused {s} {s} (501){s}{s}; nothing was applied", .{ verb, shown, s, msg }),
             412 => ctx.fail(error.Changed, "Tailscale refused {s} {s}: it changed since it was read (412){s}{s}; nothing was applied — review and run again", .{ verb, shown, s, msg }),

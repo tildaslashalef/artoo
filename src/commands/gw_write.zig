@@ -187,7 +187,7 @@ fn guardDns(ctx: *Context, b: Value) !void {
     if (exposure.isPrivate(domain)) return;
     const why = exposure.protected(try ctx.config(), domain, view.string(b, "ipv4Address")) orelse
         exposure.protected(try ctx.config(), view.string(b, "targetDomain"), null);
-    if (why) |w| return ctx.fail(error.Refused, "refused: {s}; Proxmox and UniFi keep home.arpa names only (SPEC §9.6)", .{w});
+    if (why) |w| return ctx.fail(error.Refused, "refused: {s}; Proxmox and UniFi keep home.arpa names only", .{w});
 }
 
 fn method(m: catalog.Method) http.Method {

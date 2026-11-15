@@ -143,9 +143,9 @@ pub fn refusal(v: vms.Vm) ?[]const u8 {
     if (v.template) return "is a template";
     if (!template.taggedWith(v.tags, vm_new.tag)) return "was not created by artoo (no 'artoo' tag)";
     const r = vm_cmd.roleOf(v.tags) orelse return null;
-    if (std.mem.eql(u8, r, edge.role)) return "is the edge VM: 'artoo edge setup' owns its fence (SPEC §9.7)";
-    if (std.mem.eql(u8, r, watch.role)) return "is the watchdog: 'artoo watch setup' owns its fence (SPEC §9.9)";
-    if (std.mem.eql(u8, r, router.role)) return "is the subnet router: a fence would break its forwarding (SPEC §9.8)";
+    if (std.mem.eql(u8, r, edge.role)) return "is the edge VM: 'artoo edge setup' owns its fence";
+    if (std.mem.eql(u8, r, watch.role)) return "is the watchdog: 'artoo watch setup' owns its fence";
+    if (std.mem.eql(u8, r, router.role)) return "is the subnet router: a fence would break its forwarding";
     return null;
 }
 
@@ -227,7 +227,7 @@ pub fn inputsWith(ctx: *Context, c: *pve.Client, lab: Lab, v: vms.Vm, routes: []
         for (infra.addresses[0..infra.n_addresses]) |p| {
             const pa = config.parseIp4Net(p) orelse continue;
             if (config.netContains(net, pa.address))
-                return ctx.fail(error.Refused, "guests.fence_allow_out: {s} {s} reaches {s}, the Proxmox host or the gateway — never opened (SPEC §9.6)", .{ v.name, x.peer, p });
+                return ctx.fail(error.Refused, "guests.fence_allow_out: {s} {s} reaches {s}, the Proxmox host or the gateway — never opened", .{ v.name, x.peer, p });
         }
         try allow.append(a, .{ .peer = x.peer, .dest = dest, .proto = x.proto, .ports = x.ports });
     }
@@ -547,7 +547,7 @@ pub const fence = struct {
     pub const name = "fence";
     pub const summary = "Put the Proxmox NIC firewall around a guest (high-impact)";
     pub const details =
-        \\Writes the VM's own Proxmox VE firewall (SPEC §9.11), derived from the
+        \\Writes the VM's own Proxmox VE firewall, derived from the
         \\lab: in, each service routed to the guest from the edge VM, SSH (from
         \\Proxmox only for ssh-jump guests) and ping from the LAN; out, DNS on
         \\UniFi, the watchdog's 8428/3100, the exceptions in

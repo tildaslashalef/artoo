@@ -188,7 +188,7 @@ pub fn script(shell: Shell) []const u8 {
 }
 
 const fish_script =
-    \\# artoo completion for fish: every Tab asks the binary (SPEC 3.5).
+    \\# artoo completion for fish: every Tab asks the binary.
     \\function __artoo_complete
     \\    set -l tokens (commandline -xpc 2>/dev/null; or commandline -opc)
     \\    set -l current (commandline -ct)
@@ -205,7 +205,7 @@ const fish_script =
 ;
 
 const bash_script =
-    \\# artoo completion for bash (3.2 and later): every Tab asks the binary (SPEC 3.5).
+    \\# artoo completion for bash (3.2 and later): every Tab asks the binary.
     \\_artoo() {
     \\    local cur="${COMP_WORDS[COMP_CWORD]}" out line i
     \\    local -a args
@@ -227,7 +227,7 @@ const bash_script =
 
 const zsh_script =
     \\#compdef artoo
-    \\# artoo completion for zsh: every Tab asks the binary (SPEC 3.5).
+    \\# artoo completion for zsh: every Tab asks the binary.
     \\_artoo() {
     \\    local -a lines described keys plain
     \\    local line

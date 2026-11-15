@@ -66,7 +66,7 @@ pub const set = struct {
         }
         // SPEC §19: an OAuth client, never a personal API access token.
         if ((kind == .tailscale or kind == .@"tailscale-policy") and !std.mem.startsWith(u8, secret, "tskey-client-"))
-            return ctx.fail(error.Usage, "expected a Tailscale OAuth client secret (tskey-client-…); personal API access tokens (tskey-api-…) are not used (SPEC §19)", .{});
+            return ctx.fail(error.Usage, "expected a Tailscale OAuth client secret (tskey-client-…); personal API access tokens (tskey-api-…) are not used", .{});
         if (present) try ctx.confirm("Replace the existing {s} secret in {s}?", .{ @tagName(kind), where });
         if (ctx.globals.dry_run) {
             try ctx.out.print("Dry run: would store {s} in {s}.\n", .{ @tagName(kind), where });
