@@ -248,7 +248,7 @@ fn render(ctx: *Context, d: Detail) !void {
         .{ .key = "VMID", .value = try std.fmt.allocPrint(a, "{d}", .{v.vmid}) },
         .{ .key = "Status", .value = st.text, .role = st.role },
         .{ .key = "Uptime", .value = if (v.running()) try k.fmt(ctx, ui.values.duration(v.uptime)) else "--" },
-        .{ .key = "Tags", .value = if (v.tags.len > 0) try k.clean(ctx, v.tags) else "--" },
+        .{ .key = "Tags", .value = if (v.tags.len > 0) try k.clean(ctx, try std.mem.replaceOwned(u8, a, v.tags, ";", ", ")) else "--" },
     });
     if (v.lock) |l| try general.append(a, .{ .key = "Lock", .value = try k.clean(ctx, l), .role = .warn });
     if (try cfgText(ctx, d.config, "description")) |desc| try general.append(a, .{ .key = "Description", .value = desc });
@@ -256,7 +256,7 @@ fn render(ctx: *Context, d: Detail) !void {
         const onboot = pve.flag(d.config, "onboot");
         const startup = try cfgText(ctx, d.config, "startup");
         try general.append(a, .{
-            .key = "Boot",
+            .key = "Autostart",
             .value = if (!onboot) "no" else if (startup) |su| try std.fmt.allocPrint(a, "yes ({s})", .{su}) else "yes",
             .role = if (onboot) .text else .muted,
         });
@@ -589,7 +589,7 @@ test "vm show: sections; agent addresses; hidden password" {
         "  Memory      488.3 MiB / 1.9 GiB (25.0%)",
         "  Cache       976.6 MiB  reclaimable\n",
         "  Host        1.0 GiB  QEMU process on the host\n",
-        "  Boot        no\n",
+        "  Autostart   no\n",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
@@ -610,7 +610,7 @@ test "vm show: boot order, protection, CPU and memory options" {
     const root = cli.group("artoo", "t", &.{group});
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm show db-01"));
     try expectLines(g.h.stdout(), &.{
-        "  Boot              yes (order=2,up=30)\n",
+        "  Autostart         yes (order=2,up=30)\n",
         "  Protection        on: Proxmox refuses to destroy it\n",
         "  Hot vCPUs         1\n",
         "  CPU limit         1.5\n",
