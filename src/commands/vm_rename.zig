@@ -50,6 +50,7 @@ const guest_script =
     \\{ for (i = 2; i <= NF; i++) { if ($i == old) $i = new; else if (index($i, old ".") == 1) $i = new substr($i, length(old) + 1) } printf "%s%s\n", $0, cr }' /etc/hosts > /etc/hosts.artoo-new
     \\cat /etc/hosts.artoo-new > /etc/hosts
     \\rm -f /etc/hosts.artoo-new
+    \\if systemctl is-active --quiet alloy; then systemctl restart alloy; fi
     \\
 ;
 
