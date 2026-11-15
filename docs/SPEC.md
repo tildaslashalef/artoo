@@ -3222,7 +3222,11 @@ both pointing at the gateway.
   machines join from the console.
 - `ts policy apply FILE` (HuJSON, the policy credential) — refused
   before any request (exit 5, no override) when the file is not HuJSON
-  or a `nodeAttrs` entry's `attr` names `funnel` (§9.6). Then: read the
+  or a `nodeAttrs` entry's `attr` names `funnel` (§9.6). Tailscale reads
+  keys case-insensitively, as Go's JSON decoder does (Unicode folds such
+  as U+017F included): artoo compares keys ASCII-case-insensitively at
+  every level it inspects, checks every matching key, and refuses a file
+  with any non-ASCII object key. Then: read the
   live policy (HuJSON) and its `ETag` (none → refused); `POST
   …/acl/validate` with the file (errors → refused; Tailscale runs the
   file's `tests`); the plan prints a unified diff live → file and is
