@@ -600,6 +600,109 @@ pub const device_rename = struct {
     }
 };
 
+const TagOp = struct {
+    c: *ts.Client,
+    word: []const u8,
+    tags: []const []const u8,
+    target: []const u8 = "",
+    risk: ui.blocks.Risk = .normal,
+    api: ui.json.Target = .tailscale,
+    dev: tn.Device = undefined,
+    state: []const u8 = "",
+
+    pub fn read(op: *TagOp, ctx: *Context) !void {
+        op.dev, _, const own = try labDevice(ctx, op.c, op.word);
+        op.target = try clean(ctx, op.dev.machine);
+        // The router's tag belongs to 'router setup': routes are approved
+        // and the policy keyed by it (SPEC §9.6).
+        if (own.isRouter(op.dev)) return ctx.fail(error.Refused, "{s} is the subnet router; its tag {s} is set by 'artoo router setup'", .{ op.target, tn.router_tag });
+        op.state = try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ op.dev.id, try std.mem.join(ctx.arena, ",", op.dev.tags) });
+    }
+
+    pub fn plan(op: *TagOp, ctx: *Context) !?@import("../exec.zig").Plan {
+        if (sameTags(op.dev.tags, op.tags)) return null;
+        const a = ctx.arena;
+        const from = if (op.dev.tags.len == 0) "none (owned by its user)" else try clean(ctx, try std.mem.join(a, ", ", op.dev.tags));
+        var impact: std.ArrayList([]const u8) = .empty;
+        try impact.append(a, "The policy's rules for the old tags stop applying to it at once, the new tags' rules apply instead");
+        if (op.dev.tags.len == 0) try impact.append(a, "An untagged device becomes a tagged one: it stops belonging to its user, and its key no longer expires");
+        try impact.append(a, "Tailscale refuses a tag this client does not own or the policy's tagOwners does not name (400, nothing changed)");
+        return .{
+            .action = try std.fmt.allocPrint(a, "Set the tags of tailnet device {s}", .{op.target}),
+            .target = try deviceTarget(ctx, op.c),
+            .changes = try a.dupe(ui.blocks.Change, &.{.{ .field = "tags", .from = from, .to = try std.mem.join(a, ", ", op.tags) }}),
+            .impact = impact.items,
+            .recovery = if (op.dev.tags.len == 0) "an untagged device cannot be untagged through the API: re-authenticate it as its user" else try std.fmt.allocPrint(a, "artoo ts device tag {s} {s} (with those tags in tailscale.guest_tags)", .{ op.target, try clean(ctx, try std.mem.join(a, ",", op.dev.tags)) }),
+        };
+    }
+
+    pub fn fingerprint(op: *TagOp) []const u8 {
+        return op.state;
+    }
+
+    pub fn send(op: *TagOp, _: *Context) !void {
+        try tn.setTags(op.c, op.dev.id, op.tags);
+    }
+
+    pub fn verify(op: *TagOp, _: *Context) !bool {
+        const d = (try tn.getDevice(op.c, op.dev.id)) orelse return false;
+        return sameTags(d.tags, op.tags);
+    }
+
+    pub fn done(_: *TagOp) []const u8 {
+        return "tags set and verified";
+    }
+};
+
+/// The same tags, in any order.
+fn sameTags(have: []const []const u8, want: []const []const u8) bool {
+    if (have.len != want.len) return false;
+    for (want) |w| {
+        var found = false;
+        for (have) |h| found = found or std.mem.eql(u8, h, w);
+        if (!found) return false;
+    }
+    return true;
+}
+
+pub const device_tag = struct {
+    pub const name = "tag";
+    pub const summary = "Set a lab device's tags on the tailnet (each one of tailscale.guest_tags)";
+    pub const details =
+        \\Replaces the device's whole tag list. Every tag must be listed in
+        \\tailscale.guest_tags, so to move a device to a new tag: name the tag
+        \\in the policy's tagOwners ('ts policy apply'), give it to the OAuth
+        \\client, add it to tailscale.guest_tags, then run this. The subnet
+        \\router is refused: its tag belongs to 'router setup' (SPEC §19).
+    ;
+    pub const positionals = [_]cli.Positional{
+        device_arg[0],
+        .{ .name = "TAGS", .help = "Comma-separated tags, e.g. tag:lab-guest,tag:lab-app" },
+    };
+    pub const examples = [_][]const u8{ "artoo ts device tag naboo tag:lab-guest -n", "artoo ts device tag naboo tag:lab-guest,tag:lab-app" };
+
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+        const raw = args.pos("TAGS");
+        if (!config.validTsTags(raw)) return ctx.fail(error.Usage, "TAGS must be comma-separated tag:NAME values (letters, digits, '-'), never {s}; got '{s}'", .{ tn.router_tag, try clean(ctx, raw) });
+        const want = try config.tsTags(ctx.arena, raw);
+        const cfg = try ctx.config();
+        const allowed = try config.tsTags(ctx.arena, cfg.tailscale.guest_tags);
+        var uniq: std.ArrayList([]const u8) = .empty;
+        for (want) |t| {
+            var listed = false;
+            for (allowed) |x| listed = listed or std.mem.eql(u8, x, t);
+            if (!listed) return ctx.fail(error.Refused, "{s} is not in tailscale.guest_tags ({s}); add it there first", .{ t, try std.mem.join(ctx.arena, ", ", allowed) });
+            var dup = false;
+            for (uniq.items) |u| dup = dup or std.mem.eql(u8, u, t);
+            if (!dup) try uniq.append(ctx.arena, t);
+        }
+        var c = try ts.Client.open(ctx, .main);
+        defer c.deinit();
+        var op: TagOp = .{ .c = &c, .word = args.pos("NAME"), .tags = uniq.items };
+        try exec.run(ctx, &op, .{});
+    }
+};
+
 const RmOp = struct {
     c: *ts.Client,
     word: []const u8,
@@ -1167,7 +1270,7 @@ pub const policy_apply = struct {
 pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, split DNS and keys on the tailnet (SPEC §19)", &.{
     cli.leaf(join),
     cli.group("devices", "Devices on the tailnet", &.{cli.leaf(devices_ls)}),
-    cli.group("device", "One device", &.{ cli.leaf(device_show), cli.leaf(device_rename), cli.leaf(device_rm) }),
+    cli.group("device", "One device", &.{ cli.leaf(device_show), cli.leaf(device_rename), cli.leaf(device_tag), cli.leaf(device_rm) }),
     cli.group("routes", "Subnet routes", &.{cli.leaf(routes_approve)}),
     cli.group("dns", "Tailnet DNS", &.{ cli.leaf(dns_show), cli.group("split", "Split DNS for the lab's domains", &.{cli.leaf(dns_split_set)}) }),
     cli.group("keys", "Auth key metadata", &.{cli.leaf(keys_ls)}),
@@ -1371,6 +1474,38 @@ test "ts device rename: lab devices only, POST name, verified by a fresh read" {
     try testing.expectEqual(Exit.ok, f.h.run(&root, "ts device rename naboo hoth -y"));
     try expectHas(f.h.stdout(), &.{ "Plan · Rename tailnet device naboo to hoth", "name  naboo.example.ts.net → hoth", "✓ device renamed and verified" });
     for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /device/nNaboo/name")) try testing.expect(std.mem.endsWith(u8, q, "{\"name\":\"hoth\"}"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+}
+
+test "ts device tag: tags from tailscale.guest_tags only, never the router, POST tags verified by a fresh read" {
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_body),
+        route("POST /device/nNaboo/tags", "{}"),
+        route("GET /device/nNaboo?fields=all", "{\"nodeId\":\"nNaboo\",\"name\":\"naboo.example.ts.net\",\"tags\":[\"tag:lab-app\",\"tag:lab-guest\"]}"),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kTEST1CNTRL\",\"guest_tags\":\"tag:lab-guest,tag:lab-app\"}}\n" });
+    // Refused before anything is sent: a malformed tag, the router's tag,
+    // a tag outside tailscale.guest_tags.
+    try testing.expectEqual(Exit.usage, f.h.run(&root, "ts device tag naboo lab-guest -y"));
+    try testing.expectEqual(Exit.usage, f.h.run(&root, "ts device tag naboo tag:lab-router -y"));
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts device tag naboo tag:lab-other -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "tag:lab-other is not in tailscale.guest_tags (tag:lab-guest, tag:lab-app)") != null);
+    try testing.expectEqual(@as(usize, 0), f.sent());
+    // The subnet router keeps the tag 'router setup' gave it.
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts device tag dagobah tag:lab-guest -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "is the subnet router") != null);
+    // naboo (untagged, a lab device by its VM name) gets both tags.
+    try testing.expectEqual(Exit.ok, f.h.run(&root, "ts device tag naboo tag:lab-guest,tag:lab-app,tag:lab-guest -y"));
+    try expectHas(f.h.stdout(), &.{ "Plan · Set the tags of tailnet device naboo", "tags  none (owned by its user) → tag:lab-guest, tag:lab-app", "stops belonging to its user", "✓ tags set and verified" });
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /device/nNaboo/tags")) try testing.expect(std.mem.endsWith(u8, q, "{\"tags\":[\"tag:lab-guest\",\"tag:lab-app\"]}"));
     try testing.expectEqual(@as(usize, 0), f.srv.unused());
 }
 

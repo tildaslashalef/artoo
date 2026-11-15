@@ -588,8 +588,11 @@ ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
   roaming; the API key.
 - **Cloudflare dashboard:** the `artoo` token and its permissions; deleting
   the tunnel; Cloudflare Access in front of a public route (not artoo yet).
-- **Tailscale console:** the tailnet policy, split DNS, auth keys, removing
-  a machine; new personal devices join by logging in.
+- **Tailscale console:** the OAuth clients (`tailscale`, and
+  `tailscale-policy` for one policy change, revoked after); new personal
+  devices join by logging in. The policy (`ts policy apply`), split DNS,
+  lab devices' names, tags and removal, and join keys are artoo's (SPEC
+  §19).
 - **Physical work** (cabling, installing equipment) is always the
   operator's, with its own approval.
 
