@@ -234,6 +234,7 @@ artoo vm reboot VM -y
 artoo vm upgrade VM -n                   # what apt would install ('vm verify': pending updates)
 artoo vm upgrade VM -y                   # install it (SPEC §9.12); never reboots: then 'vm reboot VM'
 artoo vm upgrade --all -n                # every ordinary guest in one plan; the edge, router and watchdog get their own runs
+artoo vm reboot --pending -n             # then the guests that want a reboot, one by one; stops at the first that does not come back
 artoo vm stop VM --yes --confirm NAME    # power cut
 artoo vm set VM memory=4G cores=2 onboot=1 tags=artoo,web -y   # allowlisted keys, digest-guarded
                                          # running VM: CPU/memory may stay pending (SPEC §9.13);

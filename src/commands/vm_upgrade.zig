@@ -181,7 +181,7 @@ const UpgradeOp = struct {
 /// reach, serve and watch the rest — the same set `vm fence` refuses.
 const own_run_roles = [_][]const u8{ edge.role, router.role, watch.role };
 
-fn ownRunRole(tags: []const u8) ?[]const u8 {
+pub fn ownRunRole(tags: []const u8) ?[]const u8 {
     const r = vm_cmd.roleOf(tags) orelse return null;
     for (own_run_roles) |o| if (std.mem.eql(u8, r, o)) return o;
     return null;
