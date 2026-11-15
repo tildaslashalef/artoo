@@ -189,7 +189,8 @@ artoo vm new naboo --size medium -y      # waits for cloud-init (minutes)
 artoo vm new hoth --ip 192.168.1.230 --no-dns -y
 artoo vm new hoth --no-watch -y          # a test guest: never enrolled with the watchdog, no alerts; 'vm rm hoth' after the test
 artoo vm verify naboo                    # read-only checks; exit 8 on any failure
-artoo vm verify --all                    # every artoo guest at once (updates, pending reboots, …)
+artoo vm verify --all                    # every artoo guest at once: only warnings and failures (updates, pending reboots, …)
+artoo vm verify --all --full             # every check of every guest
 artoo vm ssh naboo [-- CMD]              # host key pinned through the guest agent
 artoo vm password naboo [--show]         # the guest user's sudo/console password to the clipboard (terminal only)
 artoo vm password naboo --reset -n       # a new password through the guest agent, stored on this machine (SPEC §9.17)

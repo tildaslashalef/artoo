@@ -1311,6 +1311,38 @@ pub fn renderChecks(ctx: *Context, checks: []const Check) !void {
     }, rows);
 }
 
+/// `vm verify --all` without --full (SPEC §9.4): only what needs
+/// attention — one row per warning or failure (a guest that could not be
+/// checked is one failed row), the guest named on its first row only —
+/// then the guests with nothing to report on one line.
+fn renderFindings(ctx: *Context, slots: []const VerifySlot) !void {
+    const a = ctx.arena;
+    var rows: std.ArrayList([]const ui.table.Cell) = .empty;
+    var clean: std.ArrayList([]const u8) = .empty;
+    for (slots) |s| {
+        const name = try k.clean(ctx, s.vm.name);
+        const first = rows.items.len;
+        if (s.err) |m| {
+            try rows.append(a, try a.dupe(ui.table.Cell, &.{ .{ .text = name }, .{ .text = "verify" }, try k.statusCell(ctx, .failed, "failed"), .{ .text = try k.clean(ctx, m) } }));
+        } else for (s.checks) |ch| {
+            if (ch.status != .warning and ch.status != .failed) continue;
+            try rows.append(a, try a.dupe(ui.table.Cell, &.{ .{ .text = if (rows.items.len == first) name else "" }, .{ .text = ch.name }, try k.statusCell(ctx, ch.status, ch.status.word()), .{ .text = ch.detail } }));
+        }
+        if (rows.items.len == first) try clean.append(a, name);
+    }
+    if (rows.items.len > 0) try ui.table.render(ctx.out, &ctx.ui, a, &.{
+        .{ .title = "GUEST", .truncate = false },
+        .{ .title = "CHECK", .truncate = false },
+        .{ .title = "STATUS", .truncate = false },
+        .{ .title = "DETAIL", .min = 20 },
+    }, rows.items);
+    if (clean.items.len > 0) {
+        if (rows.items.len > 0) try ctx.out.writeAll("\n");
+        const p = ctx.ui.palette;
+        try ctx.out.print("{s}{s}{s} {s}: {s}\n", .{ p.on(.ok), ctx.ui.glyphs.ok, p.off(.ok), if (clean.items.len == slots.len) "All checks ok" else "Nothing to report", try std.mem.join(a, ", ", clean.items) });
+    }
+}
+
 pub const verify = struct {
     pub const name = "verify";
     pub const summary = "Check that a guest is ready and set up as artoo expects";
@@ -1332,21 +1364,25 @@ pub const verify = struct {
         \\  from here     SSH login with the pinned host key; the DNS record
         \\                on UniFi and the gateway's answer
         \\
-        \\Any failed check exits 8. --all checks every artoo guest at once, one
-        \\block each, then a summary.
+        \\Any failed check exits 8. --all checks every artoo guest at once and
+        \\lists only the warnings and failures, one row each, then the guests
+        \\with nothing to report and a summary; --full prints every check of
+        \\every guest instead.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name", .required = false }};
     pub const flags = [_]cli.Flag{
         .{ .long = "all", .short = 'a', .help = "Every artoo guest (tag artoo, not templates)" },
+        .{ .long = "full", .help = "With --all: every check of every guest, not only the warnings and failures" },
         .{ .long = "no-dns", .help = "Skip the DNS checks (for a guest made with --no-dns)" },
     };
-    pub const examples = [_][]const u8{ "artoo vm verify web-01", "artoo vm verify --all", "artoo vm verify hoth --no-dns -o json" };
+    pub const examples = [_][]const u8{ "artoo vm verify web-01", "artoo vm verify --all", "artoo vm verify --all --full", "artoo vm verify hoth --no-dns -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         if (args.has("all")) {
             if (args.optPos("VM") != null) return ctx.fail(error.Usage, "give a VM or --all, not both", .{});
-            return verifyAll(ctx, args.has("no-dns"));
+            return verifyAll(ctx, args.has("no-dns"), args.has("full"));
         }
+        if (args.has("full")) return ctx.fail(error.Usage, "--full goes with --all (one guest always shows every check)", .{});
         const word = args.optPos("VM") orelse return ctx.fail(error.Usage, "missing VM (or --all)", .{});
         var c = try pve.Client.open(ctx);
         defer c.deinit();
@@ -1398,7 +1434,7 @@ fn verifyOne(slot: *VerifySlot, watched: ?[]const u8, no_dns: bool) void {
     };
 }
 
-fn verifyAll(ctx: *Context, no_dns: bool) !void {
+fn verifyAll(ctx: *Context, no_dns: bool, full: bool) !void {
     const a = ctx.arena;
     var c = try pve.Client.open(ctx);
     defer c.deinit();
@@ -1444,14 +1480,17 @@ fn verifyAll(ctx: *Context, no_dns: bool) !void {
         try ui.json.envelope(ctx.out, .pve, out, .{ .collected_at = ctx.ui.now, .failed = failed_guests });
     } else {
         try k.header(ctx, &c);
-        if (slots.items.len == 0) try ctx.out.print("{s}No artoo guests.{s}\n", .{ ctx.ui.palette.on(.muted), ctx.ui.palette.off(.muted) });
-        for (slots.items, 0..) |s, i| {
-            if (i > 0) try ctx.out.writeAll("\n");
-            try ctx.out.print("{s}{s} ({d}){s}\n", .{ ctx.ui.palette.on(.title), try k.clean(ctx, s.vm.name), s.vm.vmid, ctx.ui.palette.off(.title) });
-            if (s.err) |m| {
-                try ctx.out.print("  {s}{s} {s}{s}\n", .{ ctx.ui.palette.on(.fail), ctx.ui.glyphs.fail, try k.clean(ctx, m), ctx.ui.palette.off(.fail) });
-            } else try renderChecks(ctx, s.checks);
-        }
+        if (slots.items.len == 0) {
+            try ctx.out.print("{s}No artoo guests.{s}\n", .{ ctx.ui.palette.on(.muted), ctx.ui.palette.off(.muted) });
+        } else if (full) {
+            for (slots.items, 0..) |s, i| {
+                if (i > 0) try ctx.out.writeAll("\n");
+                try ctx.out.print("{s}{s} ({d}){s}\n", .{ ctx.ui.palette.on(.title), try k.clean(ctx, s.vm.name), s.vm.vmid, ctx.ui.palette.off(.title) });
+                if (s.err) |m| {
+                    try ctx.out.print("  {s}{s} {s}{s}\n", .{ ctx.ui.palette.on(.fail), ctx.ui.glyphs.fail, try k.clean(ctx, m), ctx.ui.palette.off(.fail) });
+                } else try renderChecks(ctx, s.checks);
+            }
+        } else try renderFindings(ctx, slots.items);
         if (slots.items.len > 0) try ctx.out.print("\n{f}: {d} ok, {d} with warnings, {d} failed\n", .{ ui.values.count(slots.items.len, "guest"), slots.items.len - failed_guests - warned_guests, warned_guests, failed_guests });
     }
     if (failed_guests > 0) return ctx.fail(error.Partial, "{d} guest{s} failed verification", .{ failed_guests, if (failed_guests == 1) "" else "s" });
@@ -1918,8 +1957,7 @@ test "vm verify --all: every artoo guest, concurrently; templates and foreign VM
             return .{ .match = match, .behavior = .{ .respond = .{ .body = body } } };
         }
     }.r;
-    var g: testkit.Gateway = undefined;
-    try g.initRoutes(&[_]R{
+    const routes = [_]R{
         ok("/nodes/pve/qemu ", list),
         ok("/nodes/pve/qemu ", list),
         ok("/qemu/100/config ", "{\"data\":{\"tags\":\"artoo\"}}"),
@@ -1930,22 +1968,59 @@ test "vm verify --all: every artoo guest, concurrently; templates and foreign VM
         ok("/qemu/101/pending ", "{\"data\":[]}"),
         ok("/qemu/100/snapshot ", "{\"data\":[{\"name\":\"current\"},{\"name\":\"artoo-upgrade-20200101T0000Z\",\"snaptime\":1577836800}]}"),
         ok("/qemu/101/snapshot ", "{\"data\":[{\"name\":\"current\"}]}"),
-    });
-    defer g.deinit();
+    };
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
-    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm verify --all --no-dns"));
-    try testing.expectEqual(@as(usize, 0), g.srv.unused());
-    const out = g.h.stdout();
-    for ([_][]const u8{ "naboo (100)\n", "hoth (101)\n", "VM running", "config pending          ▲ warning      cores 1 → 2 — 'artoo vm start naboo'\n", "config pending          ✓ ok           none\n", "snapshots               ▲ warning      artoo-upgrade-20200101T0000Z is ", " old — 'artoo vm snap prune naboo'\n", "snapshots               ✓ ok           none\n", "\n2 guests: 0 ok, 0 with warnings, 2 failed\n" }) |want| {
-        if (std.mem.find(u8, out, want) == null) {
-            std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out });
-            return error.TestUnexpectedResult;
-        }
+    {
+        // --full: one block per guest with every check.
+        var g: testkit.Gateway = undefined;
+        try g.initRoutes(&routes);
+        defer g.deinit();
+        try testing.expectEqual(Exit.partial, g.h.run(&root, "vm verify --all --full --no-dns"));
+        try testing.expectEqual(@as(usize, 0), g.srv.unused());
+        const out = g.h.stdout();
+        try expectHas(out, &.{ "naboo (100)\n", "hoth (101)\n", "VM running", "config pending          ▲ warning      cores 1 → 2 — 'artoo vm start naboo'\n", "config pending          ✓ ok           none\n", "snapshots               ▲ warning      artoo-upgrade-20200101T0000Z is ", " old — 'artoo vm snap prune naboo'\n", "snapshots               ✓ ok           none\n", "\n2 guests: 0 ok, 0 with warnings, 2 failed\n" });
+        try testing.expect(std.mem.find(u8, out, "other") == null and std.mem.find(u8, out, "ubuntu-2604") == null);
+        try testing.expectEqualStrings("artoo: 2 guests failed verification\n", g.h.stderr());
+        try testing.expectEqual(Exit.usage, g.h.run(&root, "vm verify naboo --all"));
+        try testing.expectEqual(Exit.usage, g.h.run(&root, "vm verify"));
+        try testing.expectEqual(Exit.usage, g.h.run(&root, "vm verify naboo --full"));
     }
-    try testing.expect(std.mem.find(u8, out, "other") == null and std.mem.find(u8, out, "ubuntu-2604") == null);
-    try testing.expectEqualStrings("artoo: 2 guests failed verification\n", g.h.stderr());
-    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm verify naboo --all"));
-    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm verify"));
+    {
+        // Default: only warnings and failures, the guest named once.
+        var g: testkit.Gateway = undefined;
+        try g.initRoutes(&routes);
+        defer g.deinit();
+        try testing.expectEqual(Exit.partial, g.h.run(&root, "vm verify --all --no-dns"));
+        const out = g.h.stdout();
+        try expectHas(out, &.{ "GUEST  CHECK           STATUS     DETAIL\n", "naboo  VM running      ✗ failed", "       config pending  ▲ warning  cores 1 → 2 — 'artoo vm start naboo'\n", "       snapshots       ▲ warning  artoo-upgrade-20200101T0000Z is ", "hoth   VM running      ✗ failed", "\n2 guests: 0 ok, 0 with warnings, 2 failed\n" });
+        for ([_][]const u8{ "✓ ok", "not checked", "naboo (100)", "Nothing to report" }) |gone| try testing.expect(std.mem.find(u8, out, gone) == null);
+    }
+}
+
+test "vm verify --all: a lab with nothing to report is one line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var h = try testkit.Harness.init();
+    defer h.deinit();
+    var buf: std.Io.Writer.Allocating = .init(arena.allocator());
+    var ctx: Context = .{ .arena = arena.allocator(), .gpa = testing.allocator, .io = testing.io, .out = &buf.writer, .err = undefined, .env = &h.env };
+    const vm: vms.Vm = .{ .vmid = 100, .name = "naboo", .status = "running", .template = false, .cpus = null, .cpu = null, .mem = null, .maxmem = null, .maxdisk = null, .uptime = null, .tags = "artoo", .lock = null };
+    var hoth = vm;
+    hoth.vmid = 101;
+    hoth.name = "hoth";
+    const slots = [_]VerifySlot{
+        .{ .ctx = ctx, .vm = vm, .checks = &.{ .{ .name = "VM running", .status = .ok }, .{ .name = "fence", .status = .not_checked } } },
+        .{ .ctx = ctx, .vm = hoth, .checks = &.{.{ .name = "VM running", .status = .ok }} },
+    };
+    try renderFindings(&ctx, &slots);
+    try testing.expectEqualStrings("✓ All checks ok: naboo, hoth\n", buf.written());
+}
+
+fn expectHas(out: []const u8, wants: []const []const u8) !void {
+    for (wants) |want| if (std.mem.find(u8, out, want) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out });
+        return error.TestUnexpectedResult;
+    };
 }
 
 const reboot_probe = struct {
