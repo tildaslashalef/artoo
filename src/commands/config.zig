@@ -342,7 +342,7 @@ test "config: show renders sections, marks defaults" {
     try testing.expectEqualStrings("Set unifi.timeout_seconds: 10 → 20\n", h.stdout());
     try testing.expectEqual(.ok, h.run(&root, "config show"));
     try testing.expectEqualStrings(
-        \\ARTOO  ~/.artoo/config.json
+        \\◓ ~/.artoo/config.json
         \\
         \\Output
         \\  format                 table  (default)

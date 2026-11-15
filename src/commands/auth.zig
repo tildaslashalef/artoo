@@ -236,7 +236,7 @@ test "auth: set via prompt and --stdin, status, rm with confirmations" {
 
     try testing.expectEqual(.ok, h.run(&root, "auth status"));
     try testing.expectEqualStrings(
-        \\ARTOO  memory (test)
+        \\◓ memory (test)
         \\
         \\SECRET            PURPOSE                                         STATUS
         \\pve               Proxmox API token secret (artoo@pve!cli)        ✗ missing

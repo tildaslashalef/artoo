@@ -186,11 +186,12 @@ never carries an error message.
 
 One shared rendering kit (`ui/`) used by every command:
 
-- **Header line**: `ARTOO` left — `ARTOO · <subject>` when the view is about
-  one guest (`vm verify`, `edge status`, …); the command is not echoed. Right:
-  `<service> · <scope> · <time>` (`pve/<node>`, `unifi · <site>`,
-  `tailscale · <tailnet>`, `cloudflare · <zone>`), or the local source
-  (config file, secret store, version) for local commands.
+- **Header line**: artoo's mark `◓` (`artoo` with `--ascii`), then — for a
+  view about one guest (`vm verify`, `edge status`, …) — its name, then the
+  context `<service> · <scope> · <time>` (`pve/<node>`, `unifi · <site>`,
+  `tailscale · <tailnet>`, `cloudflare · <zone>`) or, for local commands, the
+  local source (config file, secret store, version), all on the left. The
+  command is not echoed.
 - **Tables**: column specs (title, alignment, min width, priority). Numbers
   right-aligned; width-aware (drop low-priority columns on narrow terminals;
   identifiers are never truncated); UTF-8-safe truncation with `…`.

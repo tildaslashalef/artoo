@@ -335,7 +335,7 @@ test "host show: sections and string-typed load" {
     try testing.expectEqualStrings("GET /api2/json/nodes/pve/status HTTP/1.1", g.request(0));
     try testing.expect(std.ascii.findIgnoreCase(g.srv.received[0].?, "authorization: PVEAPIToken=artoo@pve!cli=test-secret\r\n") != null);
     const out = g.h.stdout();
-    try testing.expect(std.mem.startsWith(u8, out, "ARTOO  pve · "));
+    try testing.expect(std.mem.startsWith(u8, out, "◓ pve · "));
     for ([_][]const u8{
         "  Proxmox VE  9.2.21\n",
         "  Boot        UEFI, Secure Boot on\n",

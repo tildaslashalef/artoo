@@ -10,7 +10,7 @@ const tasks = @import("../pve/task.zig");
 const Context = app.Context;
 const Status = ui.style.Status;
 
-/// `ARTOO` left (the subject of a one-object view), `pve · <clock>` right (`pve/<node>` when
+/// The header: `◓ [subject ·] pve · <clock>` (`pve/<node>` when
 /// the configured node has another name).
 pub fn header(ctx: *Context, c: *const pve.Client) !void {
     const target = if (std.mem.eql(u8, c.node, "pve")) "pve" else try std.fmt.allocPrint(ctx.arena, "pve/{s}", .{try clean(ctx, c.node)});
