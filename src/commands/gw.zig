@@ -115,7 +115,7 @@ fn Ls(comptime r: *const catalog.Resource) type {
             var c = try unifi.Client.open(ctx);
             defer c.deinit();
             const page = try unifi.list(&c, r, opts);
-            try renderPage(ctx, &c, r.columns, page);
+            try renderPage(ctx, &c, r.columns, page, comptime pluralLabel(r.label));
         }
     };
 }
@@ -242,7 +242,7 @@ fn Extra(comptime r: *const catalog.Resource, comptime e: catalog.Extra) type {
             switch (comptime e.shape) {
                 .page => {
                     const page = try unifi.listPath(&c, try unifi.expandPath(&c, e.op.path, null), opts);
-                    return renderPage(ctx, &c, e.columns, page);
+                    return renderPage(ctx, &c, e.columns, page, "results");
                 },
                 .zone_pair => {
                     const from = args.pos("SRC_ZONE");
@@ -688,7 +688,15 @@ fn headerRight(ctx: *Context, c: *unifi.Client) ![]const u8 {
     });
 }
 
-fn renderPage(ctx: *Context, c: *unifi.Client, cols: []const catalog.Column, page: unifi.Page) !void {
+/// "DNS policy" → "DNS policies", "device" → "devices" (empty-list text).
+fn pluralLabel(comptime label: []const u8) []const u8 {
+    const last = label[label.len - 1];
+    if (last == 'y' and std.mem.findScalar(u8, "aeiou", label[label.len - 2]) == null) return label[0 .. label.len - 1] ++ "ies";
+    if (last == 's' or last == 'x' or std.mem.endsWith(u8, label, "ch")) return label ++ "es";
+    return label ++ "s";
+}
+
+fn renderPage(ctx: *Context, c: *unifi.Client, cols: []const catalog.Column, page: unifi.Page, plural: []const u8) !void {
     if (ctx.json()) {
         return ui.json.envelope(ctx.out, .unifi, page.items, .{
             .collected_at = ctx.ui.now,
@@ -700,7 +708,7 @@ fn renderPage(ctx: *Context, c: *unifi.Client, cols: []const catalog.Column, pag
     }
     try header(ctx, c);
     if (page.items.len == 0) {
-        try ctx.out.print("{s}No results.{s}\n", .{ ctx.ui.palette.on(.muted), ctx.ui.palette.off(.muted) });
+        try ctx.out.print("{s}No {s}.{s}\n", .{ ctx.ui.palette.on(.muted), plural, ctx.ui.palette.off(.muted) });
     } else {
         try ui.table.render(ctx.out, &ctx.ui, ctx.arena, try view.columnsFor(ctx.arena, cols), try view.rows(ctx.arena, &ctx.ui, page.items, cols));
     }
