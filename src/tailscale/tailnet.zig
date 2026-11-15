@@ -237,6 +237,58 @@ pub fn getKey(c: *ts.Client, id: []const u8) !?KeyInfo {
     return if (k.invalid) null else k;
 }
 
+/// A join key just created: its value is held in memory for this
+/// invocation, handed to a guest over the agent's stdin, never shown.
+pub const NewKey = struct { id: []const u8, key: []const u8 };
+
+/// Join keys live ten minutes: none outlives a run (SPEC §19).
+pub const join_key_seconds = 600;
+
+/// `POST /tailnet/{t}/keys`: a single-use, preauthorized, non-ephemeral
+/// auth key with `tags`. `description` must be at most 50 letters,
+/// digits, spaces or hyphens (the OpenAPI document's rule).
+pub fn createJoinKey(c: *ts.Client, tags: []const []const u8, description: []const u8) !NewKey {
+    const v = try c.send(.POST, try c.tailnetPath("/keys", .{}), .{
+        .keyType = "auth",
+        .description = description,
+        .expirySeconds = @as(i64, join_key_seconds),
+        .capabilities = .{ .devices = .{ .create = .{
+            .reusable = false,
+            .ephemeral = false,
+            .preauthorized = true,
+            .tags = tags,
+        } } },
+    });
+    const id = ts.str(v, "id") orelse "";
+    const key = ts.str(v, "key") orelse "";
+    if (id.len == 0 or key.len == 0 or !std.mem.startsWith(u8, key, "tskey-auth-"))
+        return c.ctx.fail(error.OutcomeUnknown, "Tailscale answered the key creation without a key; check 'artoo ts keys ls' and delete a stray key in the console", .{});
+    return .{ .id = id, .key = key };
+}
+
+/// `DELETE /tailnet/{t}/keys/{id}`.
+pub fn deleteKey(c: *ts.Client, id: []const u8) !void {
+    _ = try c.json(.DELETE, try c.tailnetPath("/keys/{s}", .{id}), null);
+}
+
+/// A key description the API accepts: letters, digits, spaces, hyphens.
+pub fn keyDescription(a: Allocator, words: []const []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (words) |w| {
+        if (out.items.len > 0) try out.append(a, ' ');
+        for (w) |ch| try out.append(a, if (std.ascii.isAlphanumeric(ch) or ch == '-') ch else '-');
+    }
+    if (out.items.len > 50) out.items.len = 50;
+    return out.items;
+}
+
+/// `text` with every occurrence of `secret` replaced: a key never
+/// reaches an error message, even when a guest echoes it.
+pub fn redact(a: Allocator, text: []const u8, secret: []const u8) ![]const u8 {
+    if (secret.len == 0 or std.mem.find(u8, text, secret) == null) return text;
+    return std.mem.replaceOwned(u8, a, text, secret, "[auth key]");
+}
+
 pub const Split = struct { domain: []const u8, nameservers: []const []const u8 };
 
 pub const Dns = struct {
