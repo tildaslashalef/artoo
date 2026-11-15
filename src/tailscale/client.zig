@@ -85,6 +85,10 @@ pub const Client = struct {
     authorization: []const u8,
     /// The scopes the token was granted (the token response's `scope`).
     scopes: []const u8 = "",
+    /// The tags the token may use, when the token response names them
+    /// (`tags`, a list or a space/comma-separated string); null when it
+    /// does not — the documented answer has no such field (SPEC §17.4).
+    tags: ?[]const []const u8 = null,
     /// Seconds the token is valid.
     expires_in: ?i64 = null,
 
@@ -152,6 +156,11 @@ pub const Client = struct {
             c.authorization = try std.fmt.allocPrint(ctx.arena, "Bearer {s}", .{token.?});
             c.scopes = try ui.text.sanitize(ctx.arena, if (v) |x| str(x, "scope") orelse "" else "", .line);
             c.expires_in = if (v) |x| int(x, "expires_in") else null;
+            if (v) |x| switch (field(x, "tags")) {
+                .array => c.tags = try strings(ctx.arena, x, "tags"),
+                .string => |s| c.tags = try scopeList(ctx.arena, try ui.text.sanitize(ctx.arena, s, .line)),
+                else => {},
+            };
             return;
         }
         const msg = try errorMessage(ctx.arena, r.body);

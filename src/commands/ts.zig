@@ -30,7 +30,10 @@ const Value = std.json.Value;
 /// The tags artoo's join keys carry: its devices.
 pub fn labTags(ctx: *Context) ![]const []const u8 {
     const cfg = try ctx.config();
-    return ctx.arena.dupe([]const u8, &.{ tn.router_tag, cfg.tailscale.guest_tag });
+    var out: std.ArrayList([]const u8) = .empty;
+    try out.append(ctx.arena, tn.router_tag);
+    try out.appendSlice(ctx.arena, try config.tsTags(ctx.arena, cfg.tailscale.guest_tags));
+    return out.items;
 }
 
 /// Who owns what (SPEC §19). Writes need Proxmox (`required`); listings
@@ -914,7 +917,8 @@ pub const join = struct {
     pub const name = "join";
     pub const summary = "Join a guest tagged tailnet to the tailnet with a key artoo creates";
     pub const details =
-        \\The guest becomes a tagged node (tailscale.guest_tag): it accepts no
+        \\The guest becomes a tagged node with --tag, one of
+        \\tailscale.guest_tags (default: the first): it accepts no
         \\routes, advertises none, runs no Tailscale SSH and keeps its own DNS
         \\(SPEC §9.6). artoo creates a single-use, preauthorized key (10 min),
         \\hands it to the guest over the agent's stdin and never shows it; a key
@@ -923,15 +927,22 @@ pub const join = struct {
         \\on the tailnet is only reported.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "A running guest tagged tailnet", .complete = .vm }};
-    pub const examples = [_][]const u8{ "artoo ts join naboo -n", "artoo ts join naboo" };
+    pub const flags = [_]cli.Flag{.{ .long = "tag", .kind = .string, .metavar = "TAG", .help = "One of tailscale.guest_tags (default: the first)" }};
+    pub const examples = [_][]const u8{ "artoo ts join naboo -n", "artoo ts join naboo --tag tag:lab-guest" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const cfg = try ctx.config();
+        const allowed = try config.tsTags(ctx.arena, cfg.tailscale.guest_tags);
+        if (allowed.len == 0) return ctx.fail(error.ConfigInvalid, "tailscale.guest_tags is empty", .{});
+        const tag = if (args.string("tag")) |want| blk: {
+            for (allowed) |t| if (std.mem.eql(u8, t, want)) break :blk t;
+            return ctx.fail(error.Refused, "--tag {s} is not in tailscale.guest_tags ({s}); add it there first", .{ try clean(ctx, want), try std.mem.join(ctx.arena, ", ", allowed) });
+        } else allowed[0];
         var c = try pve.Client.open(ctx);
         defer c.deinit();
         var tsc = try ts.Client.open(ctx, .main);
         defer tsc.deinit();
-        var op: JoinOp = .{ .c = &c, .tsc = &tsc, .word = args.pos("VM"), .tag = cfg.tailscale.guest_tag };
+        var op: JoinOp = .{ .c = &c, .tsc = &tsc, .word = args.pos("VM"), .tag = tag };
         try exec.run(ctx, &op, .{});
     }
 };
@@ -1339,4 +1350,40 @@ test "ts join: a failed join deletes the unused key and never shows it" {
     try testing.expect(std.mem.find(u8, f.h.stderr(), "invalid key [auth key]") != null);
     try testing.expect(std.mem.find(u8, f.h.stdout(), "JOINSECRET") == null);
     try testing.expect(std.mem.find(u8, f.h.stderr(), "JOINSECRET") == null);
+}
+
+test "ts join --tag: a tag outside tailscale.guest_tags is refused before any request; a listed one is used" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    {
+        var f: Fixture = undefined;
+        try f.initRoutes(&.{});
+        defer f.deinit();
+        try f.tmp.dir.createDirPath(testing.io, ".artoo");
+        try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kTEST1CNTRL\",\"guest_tags\":\"tag:lab-guest,tag:lab-app\"}}\n" });
+        try testing.expectEqual(Exit.refused, f.h.run(&root, "ts join naboo --tag tag:lab-other -y"));
+        try testing.expectEqual(@as(usize, 0), f.sent());
+        try testing.expect(std.mem.find(u8, f.h.stderr(), "--tag tag:lab-other is not in tailscale.guest_tags (tag:lab-guest, tag:lab-app)") != null);
+    }
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /api2/json/nodes/pve/qemu HTTP", join_vms),
+        route("agent/ping", agent_up),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        route("exec-status", try agentOut(a, 0, "{}", "")),
+        route("POST /tailnet/-/keys", join_key),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        route("exec-status", try agentOut(a, 0, "", "")),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":44}}"),
+        route("exec-status", try agentOut(a, 0, "{\"BackendState\":\"Running\",\"Self\":{\"HostName\":\"naboo\",\"Tags\":[\"tag:lab-app\"]}}", "")),
+        route("GET /tailnet/-/devices", "{\"devices\":[{\"nodeId\":\"nNaboo\",\"name\":\"naboo.example.ts.net\",\"tags\":[\"tag:lab-app\"]}]}"),
+    });
+    defer f.deinit();
+    try f.tmp.dir.createDirPath(testing.io, ".artoo");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kTEST1CNTRL\",\"guest_tags\":\"tag:lab-guest,tag:lab-app\"}}\n" });
+    try testing.expectEqual(Exit.ok, f.h.run(&root, "ts join naboo --tag tag:lab-app -y"));
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /tailnet/-/keys"))
+        try testing.expect(std.mem.find(u8, q, "\"tags\":[\"tag:lab-app\"]") != null);
 }

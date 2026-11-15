@@ -129,7 +129,7 @@ artoo ts policy show [--json] | validate FILE | preview USER|IP:PORT   the polic
 artoo ts device rename NAME NEW | device rm NAME   lab devices only (rm: typed confirmation)
 artoo ts routes approve ROUTER        approve exactly the LAN route a lab router advertises
 artoo ts dns split set DOMAIN NAMESERVER…   guests.domain or home.arpa → the gateway only
-artoo ts join VM                     enroll a guest tagged tailnet with a key artoo creates (never shown)
+artoo ts join VM [--tag TAG]         enroll a guest tagged tailnet with a key artoo creates (never shown)
 artoo svc ls | add NAME VM:PORT [--health PATH [--health-down TEXT]] | set NAME VM:PORT [--health …] | rm NAME
                                       service names on the edge VM (§9.6)
 artoo watch setup | status | enroll VM…|--all | secret grafana|phone | forget HOST
@@ -366,7 +366,7 @@ is printed, so the output is the same as without it.
     "client_id": "",
     "tailnet": "-",
     "timeout_seconds": 10,
-    "guest_tag": "tag:lab-guest",
+    "guest_tags": "tag:lab-guest",
     "policy_client_id": ""
   },
   "guests": {
@@ -416,8 +416,8 @@ The values shown are the defaults. Six `guests` keys need a word:
 while it is empty the Tailscale integrations are off, whatever the
 store holds. `tailscale.tailnet` is `-` (the client's own tailnet) or a
 tailnet ID — one URL path segment: letters, digits, `.`, `_`, `-`, `@`.
-`tailscale.guest_tag` is the tag `ts join` gives guests (never
-`tag:lab-router`); `tailscale.policy_client_id` is the separate
+`tailscale.guest_tags` lists the tags `ts join` may give guests,
+comma-separated, the first the default (never `tag:lab-router`); `tailscale.policy_client_id` is the separate
 policy-writing client's ID, used by `ts policy apply` alone (§19).
 
 `config show` prints an empty value as `--`.
@@ -3103,16 +3103,17 @@ an access token valid one hour, held in memory for that invocation only.
 
 | Scope | Needed for |
 | --- | --- |
-| `devices:core` (write), tags `tag:lab-router` and `tailscale.guest_tag` | read, rename and remove devices, set tags; auth keys it creates are limited to its tags |
+| `devices:core` (write), tags `tag:lab-router` and every `tailscale.guest_tags` entry | read, rename and remove devices, set tags; auth keys it creates are limited to its tags |
 | `devices:routes` (write) | read and approve the router's advertised route |
-| `auth_keys` (write), the same two tags | create and delete the single-use join keys of the router and of `ts join` |
+| `auth_keys` (write), the same tags | create and delete the single-use join keys of the router and of `ts join` |
 | `dns` (write) | read and set split DNS |
 | `policy_file:read` (+ `devices:core:read`, `devices:posture_attributes:read`, which it requires) | show, validate and preview the policy |
 
-The token response names the granted scopes, not tags, so `doctor
---connect` reports the scopes and says which tags the client needs; a
-tag it does not own is refused by Tailscale when a key is created (400,
-before anything reaches a guest).
+`doctor --connect` compares `tag:lab-router` plus `tailscale.guest_tags`
+with the tags the token response names (`tags`, when present). The
+documented response names scopes only; then doctor says which tags the
+client needs, and a tag it does not own is refused by Tailscale when a
+key is created (400, before anything reaches a guest).
 
 Protection model: a leaked secret can add tagged devices, approve routes
 and rename or remove devices, but cannot change who may reach what (no
@@ -3128,8 +3129,9 @@ no pooling, no write retries (§8.1). Errors are an HTTP status with
 limited, never retried by a write. No pagination: lists arrive whole.
 
 **Ownership.** Writes touch **lab devices only**: a device tagged
-`tag:lab-router` or `tailscale.guest_tag`, or one whose name is a VM on
-Proxmox tagged `artoo`.
+`tag:lab-router` or a `tailscale.guest_tags` entry, or one whose name is
+a VM on Proxmox tagged `artoo` — whatever its tag, so a guest that joined
+before under its own purpose tag stays a lab device.
 The operator's own devices (workstation, phone) are listed, never
 renamed, retagged or removed. The router's routes may be set only to
 the LAN (`guests.gateway`'s subnet): never an exit node, never another
@@ -3159,8 +3161,10 @@ both pointing at the gateway.
   does not advertise it.
 - `ts dns split set DOMAIN NAMESERVER…` — `PATCH …/dns/split-dns` with
   that one domain (others untouched), verified by a fresh read.
-- `ts join VM` — enrolls a running guest tagged `tailnet` (§9.6) as a
-  tagged node: `tailscale up --advertise-tags=<tailscale.guest_tag>
+- `ts join VM [--tag TAG]` — enrolls a running guest tagged `tailnet`
+  (§9.6) as a tagged node with `--tag` (which must be one of
+  `tailscale.guest_tags`, else refused before planning) or the list's
+  first entry: `tailscale up --advertise-tags=<tag>
   --hostname=<vm> --accept-routes=false --advertise-routes=
   --accept-dns=false --ssh=false`. The key path is the router's: artoo
   creates a single-use, preauthorized, non-ephemeral key with the guest
