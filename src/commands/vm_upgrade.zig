@@ -184,7 +184,25 @@ fn lastLine(s: []const u8) []const u8 {
 
 pub const upgrade = struct {
     pub const name = "upgrade";
-    pub const summary = "Install a guest's pending package updates (apt, through the guest agent; never a reboot)";
+    pub const summary = "Install a guest's pending package updates";
+    pub const details =
+        \\Installs the updates apt has pending on a running artoo guest,
+        \\through its guest agent. The plan lists every package with its old
+        \\and new version and marks security updates.
+        \\
+        \\Packages are upgraded as listed, with new dependencies (such as a
+        \\new kernel); nothing is removed. Services that use an upgraded
+        \\library are restarted, and configuration files keep local changes.
+        \\Package lists are not refreshed (apt does that daily), and pinned
+        \\packages stay at their pins.
+        \\
+        \\There is never a reboot: if one is needed, the result says so and
+        \\'artoo vm reboot VM' does it when convenient. apt has no undo, so
+        \\--snapshot takes a snapshot first as the way back.
+        \\
+        \\Refused: templates, VMs artoo did not create, stopped VMs, and
+        \\guests whose agent does not answer.
+    ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name" }};
     pub const flags = [_]cli.Flag{snapguard.flag};
     pub const examples = [_][]const u8{ "artoo vm upgrade naboo -n", "artoo vm upgrade naboo --snapshot", "artoo vm upgrade naboo -y" };

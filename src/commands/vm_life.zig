@@ -33,7 +33,7 @@ const Context = app.Context;
 const Value = std.json.Value;
 
 const vm_arg: cli.Positional = .{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name" };
-const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "Non-interactive confirmation (with --yes)" };
+const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "The target's name, to confirm with --yes" };
 
 fn vmLabel(ctx: *Context, v: vms.Vm) ![]const u8 {
     return if (v.name.len > 0) k.clean(ctx, v.name) else std.fmt.allocPrint(ctx.arena, "{d}", .{v.vmid});
@@ -163,13 +163,44 @@ fn PowerCmd(comptime action: Power) type {
         pub const name = @tagName(action);
         pub const summary = switch (action) {
             .start => "Start a VM",
-            .shutdown => "Shut a VM down cleanly (ACPI)",
+            .shutdown => "Shut a VM down cleanly through its OS",
             .reboot => "Reboot a running VM",
-            .stop => "Force-stop a VM (power cut; destructive confirmation)",
+            .stop => "Force-stop a VM by cutting its power",
+        };
+        pub const details = switch (action) {
+            .start =>
+            \\Boots a stopped VM and waits until Proxmox reports it running. A VM
+            \\that already runs is left alone; templates are refused.
+            \\
+            \\Configuration changes waiting for the next start are applied now.
+            ,
+            .shutdown =>
+            \\Asks the guest OS to shut down (ACPI) and waits until the VM is
+            \\stopped; Proxmox gives up after 180 seconds. A stopped VM is left
+            \\alone; templates are refused.
+            \\
+            \\If the guest does not react, 'artoo vm stop' cuts the power.
+            ,
+            .reboot =>
+            \\Restarts the guest through Proxmox and waits until it runs again;
+            \\its services are briefly unavailable. Use it to apply configuration
+            \\changes that wait for a restart. A stopped VM is refused (use
+            \\'artoo vm start'), and so are templates.
+            ,
+            .stop =>
+            \\Cuts the VM's power at once, like pulling the plug: unsaved data
+            \\in the guest can be lost. Use it only when 'artoo vm shutdown'
+            \\does not work. A stopped VM is left alone; templates are refused.
+            \\
+            \\Type the VM name to confirm, or pass --yes --confirm VM.
+            ,
         };
         pub const positionals = [_]cli.Positional{vm_arg};
         pub const flags = if (destructive) [_]cli.Flag{confirm_flag} else [_]cli.Flag{};
-        pub const examples = [_][]const u8{"artoo vm " ++ @tagName(action) ++ " web-01" ++ (if (destructive) " --yes --confirm web-01" else "")};
+        pub const examples = if (destructive)
+            [_][]const u8{ "artoo vm stop web-01 -n", "artoo vm stop web-01", "artoo vm stop web-01 --yes --confirm web-01" }
+        else
+            [_][]const u8{ "artoo vm " ++ @tagName(action) ++ " web-01 -n", "artoo vm " ++ @tagName(action) ++ " web-01" };
 
         pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
             var c = try pve.Client.open(ctx);
@@ -572,17 +603,33 @@ const SetOp = struct {
 
 pub const set = struct {
     pub const name = "set";
-    pub const summary = "Change allowlisted config keys (digest-guarded)";
+    pub const summary = "Change a VM's settings: CPU, memory, tags, boot order, …";
     pub const details =
-        \\Keys: name, description, tags (comma list), onboot, protection and
-        \\numa (yes/no), startup (order=N[,up=S][,down=S]), cores, sockets,
-        \\vcpus, cpulimit, cpuunits, memory and balloon (MiB, or 512M/2G;
-        \\balloon=0 turns ballooning off), hotplug (network,disk,usb,cpu,
-        \\memory,cloudinit; 0 or 1). Checked together: cores × sockets within
-        \\the host's CPUs, vcpus within cores × sockets, balloon within memory,
-        \\memory hotplug with numa. Unchanged keys are left out; nothing to
-        \\change exits 5. CPU and memory changes on a running VM may wait for
-        \\a restart: --reboot then reboots it through Proxmox.
+        \\Changes one or more of the VM's Proxmox settings in one write. Only
+        \\these keys are accepted:
+        \\  name=NAME              rename (a DNS label; artoo guests: vm rename)
+        \\  description=TEXT       notes shown in Proxmox
+        \\  tags=A,B               replaces all tags (keep artoo, role-ROLE)
+        \\  onboot=yes|no          start with the host
+        \\  startup=order=N[,up=S][,down=S]   boot order and delays (seconds)
+        \\  protection=yes|no      Proxmox refuses to destroy the VM
+        \\  cores=N  sockets=N  vcpus=N       CPU layout
+        \\  cpulimit=N             CPU cap in CPUs (0 = none)
+        \\  cpuunits=N             CPU weight under load (1-10000)
+        \\  memory=SIZE            RAM in MiB, or 512M / 2G
+        \\  balloon=SIZE           least RAM ballooning leaves (0 = off)
+        \\  numa=yes|no            needed for memory hotplug
+        \\  hotplug=LIST|0|1       network,disk,usb,cpu,memory,cloudinit
+        \\
+        \\The values are checked together: cores × sockets within the host's
+        \\CPUs, vcpus within cores × sockets, balloon within memory, memory
+        \\hotplug only with numa. Keys that already have the value are left
+        \\out; if nothing changes, the command exits 5. The write is refused
+        \\if the configuration changed since artoo read it.
+        \\
+        \\CPU and memory changes on a running VM may wait for a restart;
+        \\--reboot reboots it through Proxmox, or run 'artoo vm reboot' later.
+        \\An artoo guest's name is changed with 'artoo vm rename'.
     ;
     pub const positionals = [_]cli.Positional{ vm_arg, .{ .name = "KEY=VALUE", .help = "One or more assignments", .variadic = true, .choices = &.{
         .{ .text = "name=", .help = "Rename (a DNS label)" },
@@ -601,8 +648,8 @@ pub const set = struct {
         .{ .text = "numa=", .help = "NUMA (yes/no; needed for memory hotplug)", .values = &.{ "yes", "no" } },
         .{ .text = "hotplug=", .help = "Live-pluggable: network,disk,usb,cpu,memory,cloudinit (0/1)" },
     } } };
-    pub const flags = [_]cli.Flag{.{ .long = "reboot", .help = "Reboot through Proxmox when a change waits for a restart" }};
-    pub const examples = [_][]const u8{ "artoo vm set web-01 memory=4G cores=2 --reboot", "artoo vm set 100 tags=artoo,web onboot=yes startup=order=1,up=30", "artoo vm set web-01 protection=yes" };
+    pub const flags = [_]cli.Flag{.{ .long = "reboot", .help = "Reboot the VM when a change waits for a restart" }};
+    pub const examples = [_][]const u8{ "artoo vm set web-01 protection=yes -n", "artoo vm set web-01 memory=4G cores=2 --reboot", "artoo vm set 100 tags=artoo,web onboot=yes startup=order=1,up=30" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const words = args.rest("KEY=VALUE");
@@ -720,10 +767,20 @@ const CloneOp = struct {
 
 pub const clone = struct {
     pub const name = "clone";
-    pub const summary = "Full clone of a VM or template";
-    pub const positionals = [_]cli.Positional{ vm_arg, .{ .name = "NEWNAME", .help = "Name of the new VM" } };
-    pub const flags = [_]cli.Flag{.{ .long = "id", .kind = .int, .metavar = "VMID", .help = "VMID for the clone (default: lowest free ≥ 200)" }};
-    pub const examples = [_][]const u8{ "artoo vm clone ubuntu-2604 web-01", "artoo vm clone 9000 web-02 --id 210" };
+    pub const summary = "Copy a VM or template to a new VM";
+    pub const details =
+        \\Makes a full, independent copy of a VM or template, disks included,
+        \\under a new name; large disks take minutes. Only Proxmox changes;
+        \\the copy keeps the source's settings and gets no UniFi or DNS
+        \\record, stored password or pinned host key. For a ready guest use
+        \\'artoo vm new' instead.
+        \\
+        \\Refused when a VM of that name exists or the VMID is taken. Undo
+        \\with 'artoo vm rm NEWNAME'.
+    ;
+    pub const positionals = [_]cli.Positional{ vm_arg, .{ .name = "NEWNAME", .help = "Name of the new VM (a DNS label)" } };
+    pub const flags = [_]cli.Flag{.{ .long = "id", .kind = .int, .metavar = "VMID", .help = "VMID for the copy (default: lowest free ≥ 200)" }};
+    pub const examples = [_][]const u8{ "artoo vm clone ubuntu-2604 web-01 -n", "artoo vm clone ubuntu-2604 web-01", "artoo vm clone 9000 web-02 --id 210" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const new_name = args.pos("NEWNAME");
@@ -1083,18 +1140,31 @@ const RmOp = struct {
 
 pub const rm = struct {
     pub const name = "rm";
-    pub const summary = "Destroy a VM, its disks, its UniFi records and its stored password";
+    pub const summary = "Destroy a VM, its disks and every record artoo keeps of it";
     pub const details =
-        \\A running VM is force-stopped first. UniFi's client record for the
-        \\VM's MAC is forgotten when it carries the VM's name; the DNS record
-        \\<name>.<guests.domain> is removed only when it points at the VM's
-        \\configured address; the Keychain entry guest/<name> is removed when
-        \\present; its metrics on the watchdog are deleted, so alerts about it
-        \\resolve. Type the VM's name to confirm, or --yes --confirm NAME.
+        \\Deletes a VM for good, with its disks and snapshots, and cleans up
+        \\what pointed at it. In order, stopping at the first failure:
+        \\  - force-stop the VM if it runs
+        \\  - destroy the VM, its disks and snapshots
+        \\  - forget UniFi's client record for its MAC (if it has the VM's name)
+        \\  - remove the DNS record NAME.<guests.domain> (if it points at the
+        \\    VM's address; --keep-dns leaves DNS alone)
+        \\  - remove its stored password guest/NAME, its pinned host key and
+        \\    its block in ~/.artoo/ssh_config
+        \\  - delete its metrics on the watchdog, so alerts about it resolve
+        \\  - remove its device from the tailnet (lab devices only)
+        \\
+        \\Nothing is undone automatically.
+        \\
+        \\Refused: templates (use 'artoo template rm'), protected VMs ('artoo
+        \\vm set VM protection=no' first), and VMs that services still point
+        \\at (move or remove them with 'artoo svc' first).
+        \\
+        \\Type the VM's name to confirm, or pass --yes --confirm NAME.
     ;
     pub const positionals = [_]cli.Positional{vm_arg};
     pub const flags = [_]cli.Flag{ .{ .long = "keep-dns", .help = "Leave DNS records alone" }, confirm_flag };
-    pub const examples = [_][]const u8{ "artoo vm rm web-01", "artoo vm rm web-01 --yes --confirm web-01" };
+    pub const examples = [_][]const u8{ "artoo vm rm web-01 -n", "artoo vm rm web-01", "artoo vm rm web-01 --keep-dns --yes --confirm web-01" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -1249,9 +1319,17 @@ const SnapOp = struct {
 
 const snap_ls = struct {
     pub const name = "ls";
-    pub const summary = "A VM's snapshots";
+    pub const summary = "List a VM's snapshots";
+    pub const details =
+        \\Read-only. One row per snapshot: name, when it was taken, who owns
+        \\it, its parent, whether it holds RAM, and its description. Owner
+        \\'artoo' marks the snapshots artoo took before a change (names
+        \\starting with artoo-); those past guests.snapshot_max_age_days are
+        \\flagged for 'artoo vm snap prune'. Your own snapshots show
+        \\'operator' and are never pruned.
+    ;
     pub const positionals = [_]cli.Positional{vm_arg};
-    pub const examples = [_][]const u8{"artoo vm snap ls web-01"};
+    pub const examples = [_][]const u8{ "artoo vm snap ls web-01", "artoo vm snap ls 100 -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -1412,20 +1490,25 @@ const PruneOp = struct {
 
 const snap_prune = struct {
     pub const name = "prune";
-    pub const summary = "Delete artoo-owned snapshots beyond the cap or age (destructive confirmation)";
+    pub const summary = "Delete old artoo-owned snapshots of a VM or every guest";
     pub const details =
-        \\Selects only snapshots artoo took (--snapshot, names starting with
-        \\artoo-): beyond the newest N (guests.snapshot_keep) and any older than
-        \\DAYS (guests.snapshot_max_age_days). Snapshots you named are never
-        \\selected. One deletion per snapshot, oldest first; the first failure
-        \\stops the run. Confirm by typing the VM's name, or --yes --confirm VM;
-        \\--all covers every artoo guest and takes 'all'.
+        \\Frees the snapshots artoo took before its changes (--snapshot; names
+        \\starting with artoo-) once they pile up. It selects those beyond the
+        \\newest N and any older than DAYS. Snapshots you took yourself are
+        \\never selected.
+        \\
+        \\They are deleted one by one, oldest first; the first failure stops
+        \\the run. Type the VM's name to confirm, or pass --yes --confirm VM.
+        \\--all covers every artoo guest (high-impact) and is confirmed with
+        \\'all'.
+        \\
+        \\'artoo vm snap ls VM' shows what a guest holds.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name (or --all)", .required = false }};
     pub const flags = [_]cli.Flag{
         .{ .long = "all", .help = "Every artoo guest (high-impact; --confirm all)" },
-        .{ .long = "keep", .kind = .string, .metavar = "N", .help = "Keep the newest N artoo snapshots (default guests.snapshot_keep)" },
-        .{ .long = "older-than", .kind = .string, .metavar = "DAYS", .help = "Also remove those older than DAYS (default guests.snapshot_max_age_days)" },
+        .{ .long = "keep", .kind = .string, .metavar = "N", .help = "Keep the newest N artoo snapshots (default: guests.snapshot_keep)" },
+        .{ .long = "older-than", .kind = .string, .metavar = "DAYS", .help = "Also delete those older than DAYS (default: guests.snapshot_max_age_days)" },
         confirm_flag,
     };
     pub const examples = [_][]const u8{ "artoo vm snap prune naboo -n", "artoo vm snap prune naboo --keep 1 --yes --confirm naboo", "artoo vm snap prune --all -n" };
@@ -1455,20 +1538,53 @@ fn SnapCmd(comptime kind: Snap) type {
     return struct {
         pub const name = @tagName(kind);
         pub const summary = switch (kind) {
-            .add => "Take a snapshot",
-            .rm => "Delete a snapshot (destructive confirmation)",
-            .rollback => "Roll a VM back to a snapshot (destructive confirmation)",
+            .add => "Take a snapshot of a VM",
+            .rm => "Delete a snapshot of a VM",
+            .rollback => "Roll a VM back to a snapshot",
         };
-        pub const details = if (destructive) "Confirm by typing VM@SNAPSHOT, or --yes --confirm VM@SNAPSHOT." else "Names: 2-40 letters, digits, '-' or '_', starting with a letter.";
+        pub const details = switch (kind) {
+            .add =>
+            \\Saves the VM's disks and configuration as they are now, as a point
+            \\to roll back to before a risky change. It is not a backup: it
+            \\lives on the same storage as the VM. With --ram, a running VM's
+            \\memory is saved too, so a rollback resumes it where it was.
+            \\
+            \\Names: 2-40 letters, digits, '-' or '_', starting with a letter.
+            \\Names starting with artoo- are reserved for the snapshots artoo
+            \\takes itself. A snapshot of that name that already exists is left
+            \\alone.
+            ,
+            .rm =>
+            \\Deletes one snapshot; the VM can no longer be rolled back to it.
+            \\The VM's current state is not touched. A snapshot that does not
+            \\exist is nothing to delete.
+            \\
+            \\Type VM@SNAPSHOT to confirm, or pass --yes --confirm VM@SNAPSHOT.
+            ,
+            .rollback =>
+            \\Returns the VM's disks and configuration to the snapshot;
+            \\everything since is lost. A snapshot without RAM leaves a stopped
+            \\VM stopped and starts a running one again afterwards.
+            \\
+            \\Refused while newer snapshots exist: Proxmox rolls back only to the
+            \\newest. Delete them first ('artoo vm snap rm'); the rollback would
+            \\lose them anyway.
+            \\
+            \\Type VM@SNAPSHOT to confirm, or pass --yes --confirm VM@SNAPSHOT.
+            ,
+        };
         pub const positionals = [_]cli.Positional{ vm_arg, .{ .name = "NAME", .help = "Snapshot name" } };
         pub const flags = switch (kind) {
             .add => [_]cli.Flag{
                 .{ .long = "description", .short = 'd', .kind = .string, .metavar = "TEXT", .help = "Snapshot description" },
-                .{ .long = "ram", .help = "Include the running VM's memory" },
+                .{ .long = "ram", .help = "Also save the running VM's memory" },
             },
-            else => [_]cli.Flag{confirm_flag},
+            else => [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "VM@SNAPSHOT", .help = "The VM and snapshot, to confirm with --yes" }},
         };
-        pub const examples = [_][]const u8{"artoo vm snap " ++ @tagName(kind) ++ " web-01 pre-upgrade" ++ (if (destructive) " --yes --confirm web-01@pre-upgrade" else "")};
+        pub const examples = switch (kind) {
+            .add => [_][]const u8{ "artoo vm snap add web-01 pre-upgrade -n", "artoo vm snap add web-01 pre-upgrade", "artoo vm snap add web-01 pre-upgrade -d 'before the 26.04 upgrade' --ram" },
+            else => [_][]const u8{ "artoo vm snap " ++ @tagName(kind) ++ " web-01 pre-upgrade -n", "artoo vm snap " ++ @tagName(kind) ++ " web-01 pre-upgrade", "artoo vm snap " ++ @tagName(kind) ++ " web-01 pre-upgrade --yes --confirm web-01@pre-upgrade" },
+        };
 
         pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
             const snap = args.pos("NAME");
@@ -1487,7 +1603,7 @@ fn SnapCmd(comptime kind: Snap) type {
     };
 }
 
-pub const snap_group = cli.group("snap", "Snapshots", &.{
+pub const snap_group = cli.group("snap", "VM snapshots: list, take, delete, roll back, prune", &.{
     cli.leaf(snap_ls),
     cli.leaf(SnapCmd(.add)),
     cli.leaf(SnapCmd(.rm)),

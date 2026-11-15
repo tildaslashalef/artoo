@@ -295,7 +295,7 @@ pub fn verifyCheck(ctx: *Context, c: *pve.Client, vm: []const u8, vmid: u32) !Ve
 const read_ = read;
 
 /// `--snapshot`, shared by the workflows that take one.
-pub const flag: @import("../cli.zig").Flag = .{ .long = "snapshot", .help = "Take an artoo-owned snapshot first; refused at guests.snapshot_keep" };
+pub const flag: @import("../cli.zig").Flag = .{ .long = "snapshot", .help = "Snapshot the VM first, as a way back; refused at guests.snapshot_keep" };
 
 // ---------------------------------------------------------------- tests
 

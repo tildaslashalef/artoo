@@ -306,23 +306,32 @@ const RepinOp = struct {
 
 pub const ssh_config_cmd = struct {
     pub const name = "ssh-config";
-    pub const summary = "Write ~/.artoo/ssh_config so plain ssh, scp and rsync are as strict as vm ssh";
+    pub const summary = "Write an ssh config so plain ssh, scp and rsync reach the guests";
     pub const details =
-        \\One Host block per artoo guest (the VM name and its machine name) with
-        \\vm ssh's settings: the guest's address, guests.user, your key only, host
-        \\keys from ~/.artoo/known_hosts under the VM name, strict checking, and
-        \\the Proxmox jump for guests tagged ssh-jump. Running guests with no
-        \\pinned key are pinned through the guest agent first. artoo never edits
-        \\~/.ssh/config: add 'Include ~/.artoo/ssh_config' there once, above the
-        \\first Host or Match line. vm new and vm rm keep the file current.
-        \\--repin VM replaces VM's pinned key with the one its guest agent
-        \\reads from the guest (after a confirmation showing both
-        \\fingerprints) — for a guest whose host keys were regenerated, e.g.
-        \\by cloud-init after 'vm rename'. -n prints the file and writes
-        \\nothing.
+        \\Writes ~/.artoo/ssh_config, so plain ssh, scp and rsync reach every
+        \\artoo guest as strictly as 'artoo vm ssh' does. Each guest gets one
+        \\Host entry, under its VM name and its machine name, with:
+        \\  - its address and the guest user (guests.user)
+        \\  - your SSH key only
+        \\  - strict host key checking against the key pinned in
+        \\    ~/.artoo/known_hosts
+        \\  - the jump through Proxmox for guests tagged ssh-jump
+        \\
+        \\Running guests without a pinned key are pinned through their guest
+        \\agent first. 'artoo vm new' and 'artoo vm rm' keep the file current.
+        \\
+        \\artoo never edits ~/.ssh/config: add 'Include ~/.artoo/ssh_config'
+        \\there once, above the first Host or Match line.
+        \\
+        \\--repin VM replaces the guest's pinned key with the one its guest
+        \\agent reads, after a confirmation that shows both fingerprints. Use
+        \\it when a guest's host keys were regenerated, e.g. by cloud-init
+        \\after 'artoo vm rename'.
+        \\
+        \\-n prints the file and writes nothing.
     ;
-    pub const flags = [_]cli.Flag{.{ .long = "repin", .kind = .string, .metavar = "VM", .help = "Replace VM's pinned host key with the one read through its guest agent" }};
-    pub const examples = [_][]const u8{ "artoo vm ssh-config", "artoo vm ssh-config -n", "artoo vm ssh-config --repin bespin", "ssh bespin  # once the Include is in place" };
+    pub const flags = [_]cli.Flag{.{ .long = "repin", .kind = .string, .metavar = "VM", .help = "Replace VM's pinned host key with the one its guest agent reads" }};
+    pub const examples = [_][]const u8{ "artoo vm ssh-config -n", "artoo vm ssh-config", "artoo vm ssh-config --repin bespin", "ssh bespin  # once the Include is in place" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -654,17 +663,22 @@ fn quoted(arena: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
 
 pub const cp_cmd = struct {
     pub const name = "cp";
-    pub const summary = "Copy a file or tree as the guest user to, from or between guests (SHA-256 checked)";
+    pub const summary = "Copy files to, from or between guests, checksum-verified";
     pub const details =
-        \\One side or both are VM:PATH (a VM name or VMID of a running artoo guest;
-        \\a word with a / before its first : is local, so ./a:b is a local path).
-        \\Remote paths are absolute or relative to the guest user's home. Copies run as it
-        \\only (no sudo, no root destinations) through scp with ~/.artoo/ssh_config,
-        \\which is rewritten first; guest to guest is relayed through this machine
-        \\(scp -3), because the fences block SSH between guests. An existing
-        \\target is refused without --force. Afterwards the SHA-256 of what was
-        \\copied is compared on the far side; a mismatch exits 8. -n prints the
-        \\target and the scp command and copies nothing.
+        \\Copies a file, or a directory tree with -r, as the guest user. One
+        \\side or both are VM:PATH, where VM is the name or VMID of a running
+        \\artoo guest and PATH is absolute or relative to the guest user's
+        \\home. A word with a / before its first : is local, so ./a:b is a
+        \\local path.
+        \\
+        \\Copies run through scp with ~/.artoo/ssh_config, which is rewritten
+        \\first. Guest to guest is relayed through this machine, because the
+        \\fences block SSH between guests. Afterwards the SHA-256 of what was
+        \\copied is compared on the far side; a mismatch exits 8.
+        \\
+        \\There is no sudo: a destination only root can write is refused, and
+        \\so is an existing target without --force. -n prints the target and
+        \\the scp command and copies nothing.
     ;
     pub const flags = [_]cli.Flag{
         .{ .long = "recursive", .short = 'r', .help = "Copy a directory tree" },

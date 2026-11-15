@@ -27,22 +27,23 @@ pub fn secretName(ctx: *Context, name: []const u8) ![]const u8 {
 
 pub const password = struct {
     pub const name = "password";
-    pub const summary = "Copy the guest user's sudo password to the clipboard, or --reset it";
+    pub const summary = "Copy a guest's sudo password, or reset it";
     pub const details =
-        \\For sudo and the console. Copied to the clipboard (pbcopy; wl-copy,
-        \\xclip or xsel), or with --show printed after confirmation; only from
-        \\a terminal, never in JSON.
+        \\Copies the guest user's password, which sudo and the console ask
+        \\for, from this machine's secret store (guest/NAME) to the clipboard
+        \\(pbcopy; wl-copy, xclip or xsel). --show prints it instead, after a
+        \\confirmation. It is given only to a terminal, never in JSON output.
         \\
         \\--reset sets a new random password for the guest user through the
-        \\guest agent (sent as a SHA-512 crypt hash) and stores it in this
-        \\machine's secret store as guest/<name>; the guest's shadow entry is
-        \\read back to verify. Copies of the old password on other machines
-        \\stop working: reset there too, or carry this one with 'artoo config
-        \\export --guest-passwords'. SSH keys and open sessions are untouched.
+        \\guest agent and stores it here; only its hash reaches the guest,
+        \\which is read back to verify. Other machines that stored the old
+        \\password now hold a stale copy: reset there too, or carry this one
+        \\with 'artoo config export --guest-passwords'. SSH keys and open
+        \\sessions are untouched.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name" }};
     pub const flags = [_]cli.Flag{
-        .{ .long = "show", .help = "Print the password instead (after confirmation)" },
+        .{ .long = "show", .help = "Print the password instead (after a confirmation)" },
         .{ .long = "reset", .help = "Set a new password on the guest and store it here" },
     };
     pub const examples = [_][]const u8{

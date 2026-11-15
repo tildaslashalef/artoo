@@ -545,29 +545,38 @@ const FenceOp = struct {
 
 pub const fence = struct {
     pub const name = "fence";
-    pub const summary = "Put the Proxmox NIC firewall around a guest (high-impact)";
+    pub const summary = "Firewall a guest at its Proxmox NIC (high-impact)";
     pub const details =
-        \\Writes the VM's own Proxmox VE firewall, derived from the
-        \\lab: in, each service routed to the guest from the edge VM, SSH (from
-        \\Proxmox only for ssh-jump guests) and ping from the LAN; out, DNS on
-        \\UniFi, the watchdog's 8428/3100, the exceptions in
-        \\guests.fence_allow_out, then nothing private, then web, NTP and ping;
-        \\everything else dropped. The IP set ipfilter-net0 holds only the VM's
-        \\static address, with MAC filter and DROP policies; net0 gets
-        \\firewall=1 and the VM the tag 'fenced'. Nothing inside the guest
-        \\changes. The plan shows the full rule diff; type the VM name to
-        \\confirm, or --yes --confirm VM. A converged fence is a no-op.
+        \\Puts a firewall around one guest on the Proxmox side of its network
+        \\card, so a compromised guest cannot reach the rest of the LAN. The
+        \\rules are derived from the lab; nothing inside the guest changes.
         \\
-        \\--off removes it again: options off first, then rules, IP set, NIC
-        \\flag and tag. The edge VM, the watchdog and the subnet router are
-        \\refused (their setup owns their fence).
+        \\What the fence allows:
+        \\  in    services the edge VM routes to the guest; SSH (from Proxmox
+        \\        only for ssh-jump guests) and ping from the LAN
+        \\  out   DNS on UniFi; the watchdog's metrics and logs (8428, 3100);
+        \\        the exceptions in guests.fence_allow_out; then no private
+        \\        address, but web, NTP and ping to the internet
+        \\
+        \\Everything else is dropped. The NIC only accepts the guest's static
+        \\address and MAC, and the VM gets the tag 'fenced'.
+        \\
+        \\The plan shows the full rule diff. Type the VM name to confirm, or
+        \\pass --yes --confirm VM. A fence already in place is left alone.
+        \\
+        \\Refused: the edge VM and the watchdog (their setup owns their fence),
+        \\the subnet router (a fence would break its forwarding), and any
+        \\exception that would open the Proxmox host or the gateway.
+        \\
+        \\--off removes the fence again: rules, address filter, NIC flag and
+        \\tag.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name" }};
     pub const flags = [_]cli.Flag{
         .{ .long = "off", .help = "Remove the fence (rollback)" },
-        .{ .long = "confirm", .kind = .string, .metavar = "VM", .help = "Non-interactive confirmation (with --yes)" },
+        .{ .long = "confirm", .kind = .string, .metavar = "VM", .help = "The VM's name, to confirm with --yes" },
     };
-    pub const examples = [_][]const u8{ "artoo vm fence hoth -n", "artoo vm fence hoth --yes --confirm hoth", "artoo vm fence hoth --off" };
+    pub const examples = [_][]const u8{ "artoo vm fence hoth -n", "artoo vm fence hoth --yes --confirm hoth", "artoo vm fence hoth --off -n" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
