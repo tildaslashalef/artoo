@@ -649,7 +649,7 @@ ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
 | Exit 2, "no VM 'x'" / "not found" | Name typo; `artoo vm ls --all` (exact, then case-insensitive) |
 | Exit 2, "'x' matches 2 …" | Ambiguous name — use the ID shown |
 | Exit 2, "invalid --filter" | Filter grammar: single quotes for strings, see `-h` |
-| Exit 5, "service(s) … point at" / "public host(s) … reach" | Remove the dependent layer first (§13) |
+| Exit 5, "service … points at" / "public host … reaches" (or the plural) | Remove the dependent layer first (§13) |
 | Exit 7 after a write | Outcome unknown — check with a fresh read before anything else |
 | `svc add` ends with HTTP 502 | The app on the guest is not listening (yet) on that port |
 | A service name answers "no such service" (404) | No route file for it on the edge — `svc ls`, then `svc add` |
