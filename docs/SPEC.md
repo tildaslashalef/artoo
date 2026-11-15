@@ -2275,7 +2275,9 @@ that renames a client record (`PUT rest/user/{_id}` is expected, §17.1)
 — checked with a disposable record; whether cloud-init's per-boot
 hostname modules keep NEW across a reboot (Proxmox derives the
 cloud-init hostname from `name`, so they should) — checked by a reboot
-of a disposable guest.
+of a disposable guest. The `/etc/hosts`
+rewrite takes a line's trailing CR off before comparing names and puts
+it back.
 
 ## 10. UniFi
 
