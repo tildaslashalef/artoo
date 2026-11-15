@@ -581,9 +581,13 @@ ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
   `/root/pve-setup-backups/<topic>-<UTC timestamp>/`.
 - Development workloads belong in guests, never on the host. Prefer artoo
   for VM operations; `qm` over SSH is for bootstrap and emergencies.
-- Host updates (an approved host change): `pveupd` in root's fish — `apt
-  update`, summary, `apt full-upgrade`, reboot-needed check; never plain
-  `apt upgrade`. Root's shell config comes from `hosts/pve/`
+- Host updates: `pveupd -c` in root's fish is read-only (`apt update`
+  and what a `full-upgrade` would change); `pveupd` installs it (an
+  approved host change) — refused when it would remove a Proxmox core
+  package, then `apt full-upgrade` and the reboot check; never plain
+  `apt upgrade`. A host `reboot` needs no helper: Proxmox shuts every
+  guest down cleanly and starts the onboot ones again; `pveupd` names
+  running guests that would not come back. Root's shell config comes from `hosts/pve/`
   (`scripts/pve-shell.sh`, backs up first).
 - The host scripts `scripts/pve-*.sh` and the live tests in
   `scripts/live/` need `PVE_SSH=root@<host address>` (there is no
