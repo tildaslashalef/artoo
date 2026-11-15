@@ -123,6 +123,9 @@ artoo gw wans ls | show WAN | log [WAN] [--since 24h|7d|30d]
                                       WAN health, port assignment and outages (§10.4)
 artoo dns ls | add NAME IP | rm NAME  shortcut for gw dns-policy A records
 artoo cf dns … | cf tunnel …          Cloudflare zone records + tunnel routes (§15)
+artoo ts devices ls | device show NAME   the tailnet's devices, lab devices marked (§19)
+artoo ts dns show | keys ls           tailnet DNS; auth key metadata (never a key's value)
+artoo ts policy show [--json] | validate FILE | preview USER|IP:PORT   the policy, read-only
 artoo svc ls | add NAME VM:PORT [--health PATH [--health-down TEXT]] | set NAME VM:PORT [--health …] | rm NAME
                                       service names on the edge VM (§9.6)
 artoo watch setup | status | enroll VM…|--all | secret grafana|phone | forget HOST
