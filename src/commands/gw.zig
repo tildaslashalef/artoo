@@ -696,6 +696,22 @@ fn pluralLabel(comptime label: []const u8) []const u8 {
     return label ++ "s";
 }
 
+/// The zone list, when a column shows zones by name; a failed read
+/// leaves the IDs and no error.
+fn namesFor(c: *unifi.Client, cols: []const catalog.Column) !view.Names {
+    for (cols) |col| if (col.fmt == .zone) {
+        const saved = c.ctx.diag;
+        defer c.ctx.diag = saved;
+        const path = unifi.expandPath(c, "/v1/sites/{siteId}/firewall/zones", null) catch return .{};
+        const page = unifi.listPath(c, path, .{ .all = true }) catch |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => return .{},
+        };
+        return .{ .zones = page.items };
+    };
+    return .{};
+}
+
 fn renderPage(ctx: *Context, c: *unifi.Client, cols: []const catalog.Column, page: unifi.Page, plural: []const u8) !void {
     if (ctx.json()) {
         return ui.json.envelope(ctx.out, .unifi, page.items, .{
@@ -710,7 +726,7 @@ fn renderPage(ctx: *Context, c: *unifi.Client, cols: []const catalog.Column, pag
     if (page.items.len == 0) {
         try ctx.out.print("{s}No {s}.{s}\n", .{ ctx.ui.palette.on(.muted), plural, ctx.ui.palette.off(.muted) });
     } else {
-        try ui.table.render(ctx.out, &ctx.ui, ctx.arena, try view.columnsFor(ctx.arena, cols), try view.rows(ctx.arena, &ctx.ui, page.items, cols));
+        try ui.table.render(ctx.out, &ctx.ui, ctx.arena, try view.columnsFor(ctx.arena, cols), try view.rows(ctx.arena, &ctx.ui, page.items, cols, try namesFor(c, cols)));
     }
     const total = page.total orelse return;
     const end = page.offset + @as(i64, @intCast(page.items.len));

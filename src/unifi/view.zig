@@ -151,7 +151,20 @@ pub fn word(arena: Allocator, s: []const u8) Allocator.Error![]const u8 {
     return out.items;
 }
 
-pub fn cell(arena: Allocator, u: *const ui.Ui, item: Value, col: catalog.Column) Allocator.Error!ui.table.Cell {
+/// Names a table resolves IDs with: firewall zones by ID.
+pub const Names = struct {
+    zones: []const Value = &.{},
+
+    fn zone(n: Names, id: []const u8) ?[]const u8 {
+        for (n.zones) |z| if (std.mem.eql(u8, string(z, "id") orelse "", id)) return string(z, "name");
+        return null;
+    }
+};
+
+/// The API's int32 maximum: a policy placed after every other.
+const last_index = 2147483647;
+
+pub fn cell(arena: Allocator, u: *const ui.Ui, item: Value, col: catalog.Column, names: Names) Allocator.Error!ui.table.Cell {
     const v = lookup(item, col.path) orelse return .{ .text = "--" };
     switch (col.fmt) {
         .text => return .{ .text = (try scalar(arena, v)) orelse "…", .role = if (col.id) .text else .text },
@@ -165,6 +178,11 @@ pub fn cell(arena: Allocator, u: *const ui.Ui, item: Value, col: catalog.Column)
             if (t == null) return .{ .text = (try scalar(arena, v)) orelse "--" };
             return .{ .text = try ui.values.alloc(arena, ui.values.relative(u.now, t)) };
         },
+        .zone => {
+            const id = if (v == .string) v.string else return .{ .text = (try scalar(arena, v)) orelse "…" };
+            return .{ .text = try ui.text.sanitize(arena, names.zone(id) orelse id, .line) };
+        },
+        .order => return .{ .text = if (v == .integer and v.integer == last_index) "last" else (try scalar(arena, v)) orelse "…" },
         .word => return .{ .text = if (v == .string) try word(arena, v.string) else (try scalar(arena, v)) orelse "…" },
         .list, .words => {
             if (v != .array) return .{ .text = (try scalar(arena, v)) orelse "…" };
@@ -191,11 +209,11 @@ pub fn columnsFor(arena: Allocator, cols: []const catalog.Column) Allocator.Erro
     return out;
 }
 
-pub fn rows(arena: Allocator, u: *const ui.Ui, items: []const Value, cols: []const catalog.Column) Allocator.Error![]const []const ui.table.Cell {
+pub fn rows(arena: Allocator, u: *const ui.Ui, items: []const Value, cols: []const catalog.Column, names: Names) Allocator.Error![]const []const ui.table.Cell {
     const out = try arena.alloc([]const ui.table.Cell, items.len);
     for (items, out) |item, *row| {
         const cells = try arena.alloc(ui.table.Cell, cols.len);
-        for (cols, cells) |c, *x| x.* = try cell(arena, u, item, c);
+        for (cols, cells) |c, *x| x.* = try cell(arena, u, item, c, names);
         row.* = cells;
     }
     return out;
@@ -364,7 +382,7 @@ test "rows from catalog columns" {
     const r = catalog.find("devices").?;
     var out: Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
-    try ui.table.render(&out.writer, &u, ar, try columnsFor(ar, r.columns), try rows(ar, &u, items, r.columns));
+    try ui.table.render(&out.writer, &u, ar, try columnsFor(ar, r.columns), try rows(ar, &u, items, r.columns, .{}));
     try testing.expectEqualStrings(
         \\NAME    MODEL  STATE      IP            FIRMWARE  UPDATE  FEATURES      ID
         \\Beacon  U6+    ● online   192.168.1.20  6.7.54    no      access point  c0de
@@ -424,4 +442,17 @@ test "word: API enum values read as words" {
         .{ "Default", "Default" },
     };
     for (cases) |c| try std.testing.expectEqualStrings(c[1], try word(a.allocator(), c[0]));
+}
+
+test "cell: zones by name, the last index as last" {
+    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a.deinit();
+    const ar = a.allocator();
+    const zones = try std.json.parseFromSliceLeaky(Value, ar, "[{\"id\":\"z1\",\"name\":\"Internal\"}]", .{});
+    const item = try std.json.parseFromSliceLeaky(Value, ar, "{\"index\":2147483647,\"source\":{\"zoneId\":\"z1\"},\"destination\":{\"zoneId\":\"z9\"}}", .{});
+    const u: ui.Ui = .{};
+    const names: Names = .{ .zones = zones.array.items };
+    try std.testing.expectEqualStrings("Internal", (try cell(ar, &u, item, .{ .title = "FROM", .path = "source.zoneId", .fmt = .zone }, names)).text);
+    try std.testing.expectEqualStrings("z9", (try cell(ar, &u, item, .{ .title = "TO", .path = "destination.zoneId", .fmt = .zone }, names)).text);
+    try std.testing.expectEqualStrings("last", (try cell(ar, &u, item, .{ .title = "INDEX", .path = "index", .fmt = .order }, names)).text);
 }
