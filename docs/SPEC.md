@@ -119,6 +119,8 @@ artoo image ls | fetch IMAGE | rm IMAGE    pinned images on Proxmox (never the w
 artoo gw info                         UniFi: app version, site, WAN, counts
 artoo gw <resource> ls|show|…         full Integration API surface (§10)
 artoo gw spec                         live OpenAPI vs built-in catalog drift report
+artoo gw wans ls | show WAN | log [WAN] [--since 24h|7d|30d]
+                                      WAN health, port assignment and outages (§10.4)
 artoo dns ls | add NAME IP | rm NAME  shortcut for gw dns-policy A records
 artoo cf dns … | cf tunnel …          Cloudflare zone records + tunnel routes (§15)
 artoo svc ls | add NAME VM:PORT [--health PATH [--health-down TEXT]] | set NAME VM:PORT [--health …] | rm NAME
@@ -2258,7 +2260,8 @@ catalog generates the `gw` command tree, help and table columns.
 | `dns-policies` | ls, show, add, set, rm |
 | `traffic-lists` | ls, show, add, set, rm |
 | `vouchers` | ls, show, add, rm, purge |
-| `wans`, `vpn-servers`, `vpn-tunnels`, `radius`, `lags`, `mc-lag`, `stacks`, `dpi-apps`, `dpi-categories`, `device-tags`, `countries` | ls (show where the API has it) — read-only API areas |
+| `wans` | ls, show, log — from the gateway's own WAN data (§10.4) |
+| `vpn-servers`, `vpn-tunnels`, `radius`, `lags`, `mc-lag`, `stacks`, `dpi-apps`, `dpi-categories`, `device-tags`, `countries` | ls (show where the API has it) — read-only API areas |
 | `api METHOD /v1/…` | generic request, `/v1/` paths only, same pipeline for writes |
 
 List verbs support `--filter EXPR` (server filter syntax), `-l/--limit`,
@@ -2315,16 +2318,26 @@ changes nothing and is never retried.
   `WAN`/`wan1` and the second `WAN2`/`wan2`, and the v2
   `wan/load-balancing/status` lists `{name, state, wan_networkgroup}`
   (`ACTIVE`/`BACKUP`), which ties name to group. A WAN given by name or
-  ID is accepted wherever WAN is.
-- **`gw wans ls`** — one line per WAN: name, role (active, backup),
-  status (online, offline, unused for a backup without an address), WAN
+  ID is accepted wherever WAN is. Names are matched across sources at
+  run time only — the operator renames WANs in the UI, and nothing else
+  depends on a name.
+- **Port assignment:** a WAN can exist with no gateway port carrying it
+  (UI: Port "Unassigned"). The gateway's `ethernet_overrides` (§17.1)
+  names the interface of each group; a group missing there has **no
+  port**: status "no port", role "unassigned" — distinct from a backup
+  and from offline. Such a WAN is shown but has no address, link or
+  health; `status` does not count it as offline and `log` leaves its
+  events out. A WAN with a port shows its number (`port 5`).
+- **`gw wans ls`** — one line per WAN: name, role (active, backup,
+  unassigned), status (online, offline, no port, unknown), WAN
   address (marked "shared" inside `100.64.0.0/10`, the ISP's carrier-grade
-  NAT), ISP, link (speed and duplex of the WAN port), availability and
+  NAT), ISP, link (port number, speed and duplex of the WAN port), availability and
   average latency of the gateway's monitors, ID. JSON keeps `id` and
   `name` as before and adds the rest.
 - **`gw wans show WAN`** — the WAN in depth: status and role; address,
   netmask, ISP's next hop (`gateways[0]`) and whether the gateway sees it
-  reachable now (`wan1.mac_table` entry for it, `lastReachable`), ISP
+  reachable now (`wan1.mac_table` entry for it with `lastReachable` ≤
+  60 s; an entry older than that, or none, is not reachable), ISP
   name, organisation and AS number; the port (index, media, speed,
   duplex, rx/tx errors and drops); each monitor (target, type, health,
   availability, average latency, over the gateway's `time_period`); the
@@ -2334,7 +2347,12 @@ changes nothing and is never retried.
   system log's `INTERNET_AND_WAN` events in the window, paged until all
   are read, folded into **outages**: a `NETWORK_WAN_FAILED` opens one,
   the next `NETWORK_WAN_RESTORED` of that WAN closes it (its `DURATION`
-  is the outage's length); `ISP_PACKET_LOSS`, high-latency and
+  is the outage's length — it counts from the loss itself, so it runs
+  longer than the time between the two events, which starts at
+  detection); a restore whose failure lies before the window is an
+  outage of its `DURATION`; a `NETWORK_WAN_FAILED_TEMPORARY` (a short
+  disconnection reported once it is over, with its `DURATION`) is a
+  brief outage; `ISP_PACKET_LOSS`, high-latency and
   link-state events in the 10 minutes before a failure are listed as its
   lead-up; an outage still open is "ongoing". A summary ends the list:
   outages, total and longest downtime, availability over the window.
@@ -2351,15 +2369,28 @@ changes nothing and is never retried.
   | packet loss or latency in the lead-up | adds "degraded before" |
   | nothing to go on | unknown |
 
-  A past outage has no recorded next-hop state, so it is never blamed
-  on the first hop; `show` says so.
+  A past outage has no recorded next-hop or monitor state, so only the
+  link row can apply to it (else unknown); the other rows judge an
+  ongoing outage from the state read now. `show` says so.
 - **`status`** (§11) adds one UniFi line: each WAN's status and role,
   and the outages of the last 24 hours with their total downtime; an
   offline active WAN is a failed check, outages are a warning.
 - **Firmware:** the sources are not in the OpenAPI document and not
   covered by `gw spec`; a source that answers 404 or an unexpected shape
   makes its part "not available on this firmware" while the rest is
-  shown (exit 8 when nothing answers).
+  shown (exit 8 when nothing answers: no state source for `ls`/`show`,
+  the system log for `log`). A source that fails otherwise (transport,
+  5xx) is named and exits 8. A failed system-log search is a failed read
+  (exit 4), never an unknown write.
+- **JSON:** `ls` keeps `id` and `name` and adds `group`, `role`,
+  `status` (`online|offline|no_port|unknown`), `address`,
+  `shared_address`, `netmask`, `next_hop`, `isp`, `port`,
+  `availability` and monitor availabilities as fractions, `latency_ms`,
+  `time_period` as the gateway sends it (its unit is undocumented),
+  `last_downtime_seconds`; `meta.errors` lists unanswered sources.
+  `show` adds `outages` and `events`; `log` has `outages`, `events`
+  (the unfolded rest) and `summary` per WAN. Times are epoch ms as the
+  gateway sends them (`meta.units`).
 
 **Testing.** Offline against the fake server with documents shaped like
 the verified ones (§17.1): matching by name and group, the shared-address
@@ -2723,7 +2754,15 @@ procedures in GUIDE.md.
   rx_errors, tx_errors, rx_dropped, tx_dropped, mac_table[{ip, mac,
   lastReachable}]}`, `last_wan_status{WAN}`, `last_wan_interfaces{WAN{ip,
   alive}}`, `last_downtime_stats{WAN}` (seconds), `uptime_stats` as above,
-  `port_table[]`. `stat/event` and `stat/alarm` answer 404 ("NotFound"),
+  `port_table[{port_idx, ifname, media, up, speed, full_duplex}]`, and
+  `ethernet_overrides[{ifname, networkgroup}]` — **the port assignment**:
+  which interface carries which WAN group (`eth4` → `WAN`); a WAN group
+  without an entry has no port (seen 2026-11-15: a second WAN with
+  Port "Unassigned" in the UI has none, `wan2` is `null`, and it is
+  `BACKUP` in the load-balancing status). The v2
+  `wan/enriched-configuration` (200; per WAN `configuration{name,
+  wan_networkgroup, …}`, `details.service_provider`, `statistics`)
+  carries no port and is not used. `stat/event` and `stat/alarm` answer 404 ("NotFound"),
   `rest/alarm` 400. Under `/proxy/network/v2/api/site/default/`: `GET
   wan/load-balancing/status` → `{wan_interfaces:[{name, state
   (ACTIVE|BACKUP), wan_networkgroup (WAN|WAN2)}]}`; `POST
@@ -2734,8 +2773,11 @@ procedures in GUIDE.md.
   `NETWORK_WAN_FAILED_MULTIPLE_TIMES`, `ISP_PACKET_LOSS`, …), `severity`
   (`MEDIUM`, `VERY_HIGH`, …), `timestamp` (ms), `title_raw`,
   `message_raw` with `{PLACEHOLDERS}` and `parameters{NAME:{id?, name}}`
-  (`WAN_ID` `WAN1`, `ISP_NAME`, `PORT`, `DURATION` like `2m 35s`,
-  `COUNT`). `system-log/critical` with the same body answered `[]`.
+  (`WAN_ID` `{id: WAN, name: WAN1}`, `WAN_NAME` `{id: <group>, name:
+  <WAN name>}`, `ISP_NAME`, `PORT`, `DURATION` `{id: seconds, name: "2m
+  35s"}`, `COUNT`); also `NETWORK_WAN_FAILED_TEMPORARY` ("restored after
+  a temporary disconnection", `DURATION` of seconds, no preceding
+  failure event). `system-log/critical` with the same body answered `[]`.
 - **Live quirks (2026-10-10):** firewall zones/policies answer 400 "Zone
   Based Firewall is not configured"; the device list reports the gateway's
   WAN address as its `ipAddress`; device-to-port mapping is not exposed.

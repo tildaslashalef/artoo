@@ -461,9 +461,19 @@ the API allows, `add`/`set`/`rm`: `sites`, `devices` (`stats`, `pending`,
 `adopt`, `restart`, `port-cycle`, `rm`), `clients` (`authorize`,
 `unauthorize`), `networks` (`refs`), `wifi`, `fw-policies` and `acl`
 (`order`, `reorder`; `fw-policies patch`), `fw-zones`, `dns-policies`,
-`traffic-lists`, `vouchers` (`purge`), and read-only `wans`,
-`vpn-servers`, `vpn-tunnels`, `radius`, `lags`, `mc-lag`, `stacks`,
-`device-tags`, `dpi-apps`, `dpi-categories`, `countries`.
+`traffic-lists`, `vouchers` (`purge`), and read-only `wans` (`ls`,
+`show`, `log`: see below), `vpn-servers`, `vpn-tunnels`, `radius`,
+`lags`, `mc-lag`, `stacks`, `device-tags`, `dpi-apps`,
+`dpi-categories`, `countries`.
+
+**When the internet drops** (SPEC §10.4), all read-only: `gw wans ls`
+shows each WAN's role, status, address ("shared" = the ISP's
+carrier-grade NAT), port and health; a WAN no gateway port carries is
+"no port", not offline. `gw wans show WAN` adds the next hop, ISP,
+port counters, monitors and the last 24 hours' outages; `gw wans log
+[WAN] --since 7d` lists outages with their lead-up and likely cause
+(evidence only: a link-down event, an unreachable next hop, failing
+monitors — else "unknown"). `status` has one WAN line.
 
 ```console
 artoo gw clients ls --filter "type.eq('WIRED')"   # 'ls -h' shows the filter grammar per resource
