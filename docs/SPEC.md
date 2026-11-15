@@ -126,6 +126,9 @@ artoo cf dns … | cf tunnel …          Cloudflare zone records + tunnel route
 artoo ts devices ls | device show NAME   the tailnet's devices, lab devices marked (§19)
 artoo ts dns show | keys ls           tailnet DNS; auth key metadata (never a key's value)
 artoo ts policy show [--json] | validate FILE | preview USER|IP:PORT   the policy, read-only
+artoo ts device rename NAME NEW | device rm NAME   lab devices only (rm: typed confirmation)
+artoo ts routes approve ROUTER        approve exactly the LAN route a lab router advertises
+artoo ts dns split set DOMAIN NAMESERVER…   guests.domain or home.arpa → the gateway only
 artoo svc ls | add NAME VM:PORT [--health PATH [--health-down TEXT]] | set NAME VM:PORT [--health …] | rm NAME
                                       service names on the edge VM (§9.6)
 artoo watch setup | status | enroll VM…|--all | secret grafana|phone | forget HOST

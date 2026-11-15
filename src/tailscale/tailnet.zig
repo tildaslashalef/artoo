@@ -110,6 +110,28 @@ pub fn routes(c: *ts.Client, id: []const u8) !Routes {
     return .{ .advertised = try ts.strings(c.ctx.arena, v, "advertisedRoutes"), .enabled = try ts.strings(c.ctx.arena, v, "enabledRoutes") };
 }
 
+/// `POST /device/{id}/name`.
+pub fn renameDevice(c: *ts.Client, id: []const u8, name: []const u8) !void {
+    _ = try c.send(.POST, try std.fmt.allocPrint(c.ctx.arena, "/device/{s}/name", .{id}), .{ .name = name });
+}
+
+/// `DELETE /device/{id}`.
+pub fn deleteDevice(c: *ts.Client, id: []const u8) !void {
+    _ = try c.json(.DELETE, try std.fmt.allocPrint(c.ctx.arena, "/device/{s}", .{id}), null);
+}
+
+/// `POST /device/{id}/routes`: the enabled (approved) list, replaced.
+pub fn setRoutes(c: *ts.Client, id: []const u8, list: []const []const u8) !void {
+    _ = try c.send(.POST, try std.fmt.allocPrint(c.ctx.arena, "/device/{s}/routes", .{id}), .{ .routes = list });
+}
+
+/// Exactly `want`, in any order.
+pub fn sameSet(have: []const []const u8, want: []const []const u8) bool {
+    if (have.len != want.len) return false;
+    for (want) |w| if (!contains(have, w)) return false;
+    return true;
+}
+
 pub const Match = union(enum) {
     device: Device,
     missing,
@@ -269,6 +291,18 @@ pub fn splitOf(a: Allocator, m: Value, resolver_objects: bool) ![]const Split {
 /// `GET dns/split-dns`.
 pub fn splitDns(c: *ts.Client) ![]const Split {
     return splitOf(c.ctx.arena, try c.get(try c.tailnetPath("/dns/split-dns", .{})), false);
+}
+
+/// `PATCH dns/split-dns` with one domain (the others untouched).
+pub fn patchSplit(c: *ts.Client, domain: []const u8, nameservers: []const []const u8) !void {
+    var out: std.Io.Writer.Allocating = .init(c.ctx.arena);
+    const w = &out.writer;
+    w.writeByte('{') catch return error.OutOfMemory;
+    std.json.Stringify.value(domain, .{}, w) catch return error.OutOfMemory;
+    w.writeByte(':') catch return error.OutOfMemory;
+    std.json.Stringify.value(nameservers, .{}, w) catch return error.OutOfMemory;
+    w.writeByte('}') catch return error.OutOfMemory;
+    _ = try c.json(.PATCH, try c.tailnetPath("/dns/split-dns", .{}), out.written());
 }
 
 pub const Policy = struct {
