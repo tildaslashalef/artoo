@@ -77,6 +77,10 @@ pub const doctor = struct {
                     have_ts_policy = false;
                 } else try r.add("tailscale policy client", .ok, "stored — revoke it once the policy change is done", .{});
             }
+            // The policy writer is a separate, short-lived client: the same
+            // ID would make the everyday client a policy writer (SPEC §19).
+            if (cfg.tailscale.client_id.len > 0 and std.mem.eql(u8, cfg.tailscale.client_id, cfg.tailscale.policy_client_id))
+                try r.add("tailscale clients", .failed, "tailscale.client_id and tailscale.policy_client_id name the same OAuth client; the policy client must be a separate one (SPEC §19)", .{});
             try caCheck(&r, "unifi CA", cfg.unifi.ca_bundle);
             try caCheck(&r, "pve CA", cfg.pve.ca_bundle);
             try fileCheck(&r, "ssh key", cfg.guests.ssh_public_key);
@@ -276,6 +280,10 @@ fn probeTailscale(r: *Report) !void {
     var missing: std.ArrayList(u8) = .empty;
     for (ts_scopes) |s| if (!ts.grants(have, s[0])) try missing.print(ctx.arena, "{s}{s} ({s})", .{ if (missing.items.len > 0) ", " else "", s[0], s[1] });
     const granted = if (c.scopes.len > 0) c.scopes else "none reported";
+    // The everyday client only reads the policy; writing it is the
+    // separate policy client's (SPEC §19).
+    for (have) |h| if (std.mem.eql(u8, h, "policy_file") or std.mem.eql(u8, h, "all"))
+        return r.add("tailscale", .failed, "token granted: {s}; the main client may write the policy ({s}) — give it policy_file:read only and keep policy writes to the policy client (SPEC §19)", .{ granted, h });
     const cfg = try ctx.config();
     // The router's tag and every guest tag `ts join` may use.
     var want: std.ArrayList([]const u8) = .empty;
@@ -475,6 +483,36 @@ test "doctor --connect: a stored policy client is exchanged with its own ID and 
         try testing.expect(main or policy);
     };
     try testing.expectEqual(@as(usize, 2), bodies);
+}
+
+test "doctor --connect: a main client that may write the policy, or shares the policy client's ID, fails" {
+    const T = struct {
+        fn run(scope: []const u8, cfg: []const u8, want: []const u8) !void {
+            var f: @import("../testkit.zig").Gateway = undefined;
+            const body = try std.fmt.allocPrint(testing.allocator, "{{\"access_token\":\"a1\",\"scope\":\"{s}\"}}", .{scope});
+            defer testing.allocator.free(body);
+            try f.initRoutes(&.{
+                .{ .match = "/v1/info", .behavior = .{ .respond = .{ .body = "{\"applicationVersion\":\"10.6.106\"}" } } },
+                .{ .match = "/version", .behavior = .{ .respond = .{ .body = "{\"data\":{\"version\":\"9.2.21\"}}" } } },
+                .{ .match = "/zones", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":[{\"id\":\"Z1\",\"name\":\"example.com\",\"account\":{\"id\":\"A1\"}}],\"result_info\":{\"page\":1,\"per_page\":100,\"count\":1,\"total_count\":1}}" } } },
+                .{ .match = "/tokens/verify", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":{\"id\":\"T1\",\"status\":\"active\"}}" } } },
+                .{ .match = "POST /oauth/token", .behavior = .{ .respond = .{ .body = body } } },
+            });
+            defer f.deinit();
+            try f.tailscaleConfig("");
+            try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = cfg });
+            try testing.expectEqual(@import("../testkit.zig").Exit.partial, f.h.run(&root, "doctor --connect"));
+            const out = f.h.stdout();
+            if (std.mem.find(u8, out, want) == null) {
+                std.debug.print("--- output:\n{s}\n", .{out});
+                return error.TestUnexpectedResult;
+            }
+        }
+    };
+    const main_only = "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kMAIN\"}}\n";
+    try T.run("devices:core devices:routes auth_keys dns policy_file", main_only, "the main client may write the policy (policy_file)");
+    try T.run("all", main_only, "the main client may write the policy (all)");
+    try T.run("devices:core devices:routes auth_keys dns policy_file:read", "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kSAME\",\"policy_client_id\":\"kSAME\"}}\n", "name the same OAuth client");
 }
 
 test "doctor --connect: a rejected Tailscale client fails without echoing the secret" {
