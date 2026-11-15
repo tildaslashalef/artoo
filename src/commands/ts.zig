@@ -984,10 +984,11 @@ pub fn checkPolicyLocally(ctx: *Context, word: []const u8, text: []const u8) !vo
 }
 
 /// The tailnet's DNS name for the typed confirmation: `tailscale.tailnet`
-/// when it names one, else the suffix of a device's MagicDNS name.
+/// when it names one, else the suffix of a device's MagicDNS name — never
+/// a device shared in from another tailnet, whose name carries that one's.
 fn tailnetName(ctx: *Context, c: *ts.Client) ![]const u8 {
     if (!std.mem.eql(u8, c.tailnet, "-")) return c.tailnet;
-    for (try tn.devices(c)) |d| if (std.mem.findScalar(u8, d.name, '.')) |dot| {
+    for (try tn.devices(c)) |d| if (!d.external) if (std.mem.findScalar(u8, d.name, '.')) |dot| {
         const rest = d.name[dot + 1 ..];
         if (rest.len > 0) return clean(ctx, rest);
     };
@@ -1733,6 +1734,21 @@ test "the policy credential: only ts policy apply uses it; it needs its own secr
     const p = try f.file("new.hujson", new_policy);
     try testing.expectEqual(Exit.auth, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm example.ts.net", .{p})));
     try testing.expectEqual(@as(usize, 0), f.sent());
+}
+
+test "ts policy apply: the confirmation's tailnet name never comes from a shared-in device" {
+    var f: Fixture = undefined;
+    try policyFixture(&f, &.{
+        route("POST /oauth/token", policy_token),
+        route("GET /tailnet/-/devices", "{\"devices\":[{\"nodeId\":\"nShared\",\"name\":\"friend.other.ts.net\",\"isExternal\":true},{\"nodeId\":\"nNaboo\",\"name\":\"naboo.example.ts.net\"}]}"),
+        liveAcl(live_policy),
+        route("POST /tailnet/-/acl/validate", "{}"),
+    });
+    defer f.deinit();
+    const p = try f.file("new.hujson", new_policy);
+    try testing.expectEqual(Exit.ok, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -n", .{p})));
+    try expectHas(f.h.stdout(), &.{"Tailscale policy of example.ts.net"});
+    try testing.expect(std.mem.find(u8, f.h.stdout(), "other.ts.net") == null);
 }
 
 test "ts policy apply: the confirmation must name the tailnet; a wrong one sends no write" {
