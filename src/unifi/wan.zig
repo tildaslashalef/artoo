@@ -295,7 +295,7 @@ fn fill(arena: Allocator, w: *Wan, group: []const u8, idx: u32, gw: ?Value, hs: 
         w.time_period = int(u, "time_period");
         w.monitors = try monitors(arena, u);
     };
-    if (gw) |d| w.last_downtime_seconds = int(d, try std.fmt.allocPrint(arena, "last_downtime_stats.{s}", .{group}));
+    if (gw) |d| w.last_downtime_seconds = bounded(int(d, try std.fmt.allocPrint(arena, "last_downtime_stats.{s}", .{group})), 0, max_seconds);
 
     // Status: the gateway's per-WAN word, then the link, then health.
     const lws = if (gw) |d| view.string(d, try std.fmt.allocPrint(arena, "last_wan_status.{s}", .{group})) else null;
@@ -365,7 +365,7 @@ fn nextHop(addr: []const u8, port_obj: ?Value) NextHop {
     h.reachable = false;
     for (mt.array.items) |e| {
         if (!std.mem.eql(u8, view.string(e, "ip") orelse "", addr)) continue;
-        h.last_reachable_seconds = int(e, "lastReachable");
+        h.last_reachable_seconds = bounded(int(e, "lastReachable"), 0, max_seconds);
         h.reachable = if (h.last_reachable_seconds) |s| s <= reachable_within else false;
         break;
     }
@@ -418,6 +418,17 @@ pub fn int(v: Value, path: []const u8) ?i64 {
         .number_string, .string => |s| std.fmt.parseInt(i64, s, 10) catch null,
         else => null,
     };
+}
+
+/// Durations and ages beyond ten years are not believed.
+pub const max_seconds: i64 = 10 * 366 * 86400;
+/// Event times beyond the year 2200 (ms) are not believed.
+pub const max_timestamp_ms: i64 = 7_258_118_400_000;
+
+/// `x` when inside [lo, hi], else null.
+pub fn bounded(x: ?i64, lo: i64, hi: i64) ?i64 {
+    const v = x orelse return null;
+    return if (v >= lo and v <= hi) v else null;
 }
 
 fn boolean(v: Value, path: []const u8) ?bool {
@@ -496,7 +507,8 @@ pub fn fillIn(arena: Allocator, raw: []const u8, params: ?Value) ![]const u8 {
 }
 
 pub fn parseEvent(arena: Allocator, v: Value) !?Event {
-    const ts = int(v, "timestamp") orelse return null;
+    // Server integers are bounded here, so time arithmetic cannot overflow.
+    const ts = bounded(int(v, "timestamp"), 0, max_timestamp_ms) orelse return null;
     const name = view.string(v, "event") orelse return null;
     const params = view.lookup(v, "parameters");
     const group = if (params) |p| view.string(p, "WAN_NAME.id") orelse view.string(p, "WAN_ID.id") else null;
@@ -510,7 +522,7 @@ pub fn parseEvent(arena: Allocator, v: Value) !?Event {
         .title = try fillIn(arena, view.string(v, "title_raw") orelse name, params),
         .message = try fillIn(arena, view.string(v, "message_raw") orelse "", params),
     };
-    if (params) |p| e.duration_seconds = int(p, "DURATION.id");
+    if (params) |p| e.duration_seconds = bounded(int(p, "DURATION.id"), 0, max_seconds);
     return e;
 }
 
@@ -800,6 +812,29 @@ test "fillIn: placeholders from parameters, unknown ones kept" {
     defer a.deinit();
     const p = try std.json.parseFromSliceLeaky(Value, a.allocator(), "{\"WAN_ID\":{\"id\":\"WAN\",\"name\":\"WAN1\"},\"PORT\":{\"id\":\"5\"}}", .{});
     try testing.expectEqualStrings("WAN1 on port 5 {NOPE} {", try fillIn(a.allocator(), "{WAN_ID} on port {PORT} {NOPE} {", p));
+}
+
+test "parseEvent: absurd integers are dropped, not trusted" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const ar = a.allocator();
+    const huge = try std.json.parseFromSliceLeaky(Value, ar,
+        \\{"id":"x","event":"NETWORK_WAN_RESTORED","timestamp":1000000,"parameters":{"WAN_NAME":{"id":"WAN"},"DURATION":{"id":"922337203685477580"}}}
+    , .{});
+    const e = (try parseEvent(ar, huge)).?;
+    try testing.expectEqual(@as(?i64, null), e.duration_seconds);
+    const far = try std.json.parseFromSliceLeaky(Value, ar,
+        \\{"id":"y","event":"NETWORK_WAN_FAILED","timestamp":9223372036854775807}
+    , .{});
+    try testing.expect((try parseEvent(ar, far)) == null);
+    const neg = try std.json.parseFromSliceLeaky(Value, ar,
+        \\{"id":"z","event":"NETWORK_WAN_FAILED_TEMPORARY","timestamp":5000,"parameters":{"WAN_NAME":{"id":"WAN"},"DURATION":{"id":"-9223372036854775807"}}}
+    , .{});
+    const n = (try parseEvent(ar, neg)).?;
+    try testing.expectEqual(@as(?i64, null), n.duration_seconds);
+    // Folded and summarized without overflow.
+    const f = try fold(ar, &.{ e, n });
+    _ = try summarize(ar, f.outages, &.{"WAN"}, 0, 10_000);
 }
 
 test "classify" {
