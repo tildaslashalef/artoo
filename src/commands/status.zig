@@ -537,7 +537,13 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
                 const shown = g.reboot_packages[0..@min(g.reboot_packages.len, 2)];
                 try waiting.append(a, if (shown.len == 0) try k.clean(ctx, g.name) else try std.fmt.allocPrint(a, "{s} ({s}{s})", .{ try k.clean(ctx, g.name), try k.clean(ctx, try std.mem.join(a, ", ", shown)), if (g.reboot_packages.len > 2) ", …" else "" }));
             };
-            if (waiting.items.len > 0) try ctx.out.print("  {s}{s} reboot pending: {s} — 'artoo vm reboot VM'{s}\n", .{ u.palette.on(.warn), u.glyphs.warn, try std.mem.join(a, ", ", waiting.items), u.palette.off(.warn) });
+            if (waiting.items.len == 1) {
+                try ctx.out.print("  {s}{s} reboot pending: {s} — 'artoo vm reboot VM'{s}\n", .{ u.palette.on(.warn), u.glyphs.warn, waiting.items[0], u.palette.off(.warn) });
+            } else if (waiting.items.len > 1) {
+                // One guest per line: the list outgrows any terminal.
+                try ctx.out.print("  {s}{s} reboot pending on {d} guests — 'artoo vm reboot VM'{s}\n", .{ u.palette.on(.warn), u.glyphs.warn, waiting.items.len, u.palette.off(.warn) });
+                for (waiting.items) |line| try ctx.out.print("    {s}{s}{s}\n", .{ u.palette.on(.warn), line, u.palette.off(.warn) });
+            }
             for (gs) |g| if (g.fence_drift) |d| {
                 try ctx.out.print("  {s}{s} fence drift: {s} ({s}) — 'artoo vm fence {s}'{s}\n", .{ u.palette.on(.warn), u.glyphs.warn, try k.clean(ctx, g.name), try k.clean(ctx, d), try k.clean(ctx, g.name), u.palette.off(.warn) });
             };
