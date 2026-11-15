@@ -17,13 +17,16 @@ const Context = app.Context;
 
 pub const default_base = "https://api.tailscale.com/api/v2";
 
-/// Which OAuth client: `main` (secret `tailscale`).
+/// Which OAuth client: `main` (secret `tailscale`) for everything but
+/// `ts policy apply`, which alone uses `policy` (`tailscale-policy`).
 pub const Credential = enum {
     main,
+    policy,
 
     pub fn secretName(c: Credential) []const u8 {
         return switch (c) {
             .main => "tailscale",
+            .policy => "tailscale-policy",
         };
     }
 
@@ -31,12 +34,14 @@ pub const Credential = enum {
         const cfg = try ctx.config();
         return switch (c) {
             .main => cfg.tailscale.client_id,
+            .policy => cfg.tailscale.policy_client_id,
         };
     }
 
     fn idKey(c: Credential) []const u8 {
         return switch (c) {
             .main => "tailscale.client_id",
+            .policy => "tailscale.policy_client_id",
         };
     }
 };
