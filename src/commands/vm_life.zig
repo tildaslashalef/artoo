@@ -33,6 +33,8 @@ const Context = app.Context;
 const Value = std.json.Value;
 
 const vm_arg: cli.Positional = .{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name" };
+const optional_vm_arg: cli.Positional = .{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name", .required = false };
+const pending_flag: cli.Flag = .{ .long = "pending", .help = "Every artoo guest that wants a reboot after updates, one after another" };
 const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "The target's name, to confirm with --yes" };
 
 fn vmLabel(ctx: *Context, v: vms.Vm) ![]const u8 {
@@ -186,6 +188,13 @@ fn PowerCmd(comptime action: Power) type {
             \\its services are briefly unavailable. Use it to apply configuration
             \\changes that wait for a restart. A stopped VM is refused (use
             \\'artoo vm start'), and so are templates.
+            \\
+            \\--pending reboots, instead of one VM, every running artoo guest that
+            \\wants it after updates (/run/reboot-required), one after another:
+            \\each must run again, its agent answer and the request be gone
+            \\before the next, and the first that does not come back stops the
+            \\run. The edge, the router and the watchdog are named but left to
+            \\their own 'artoo vm reboot VM'.
             ,
             .stop =>
             \\Cuts the VM's power at once, like pulling the plug: unsaved data
@@ -195,17 +204,27 @@ fn PowerCmd(comptime action: Power) type {
             \\Type the VM name to confirm, or pass --yes --confirm VM.
             ,
         };
-        pub const positionals = [_]cli.Positional{vm_arg};
-        pub const flags = if (destructive) [_]cli.Flag{confirm_flag} else [_]cli.Flag{};
+        pub const positionals = [_]cli.Positional{if (action == .reboot) optional_vm_arg else vm_arg};
+        pub const flags = if (destructive) [_]cli.Flag{confirm_flag} else if (action == .reboot) [_]cli.Flag{pending_flag} else [_]cli.Flag{};
         pub const examples = if (destructive)
             [_][]const u8{ "artoo vm stop web-01 -n", "artoo vm stop web-01", "artoo vm stop web-01 --yes --confirm web-01" }
+        else if (action == .reboot)
+            [_][]const u8{ "artoo vm reboot web-01 -n", "artoo vm reboot web-01", "artoo vm reboot --pending -n" }
         else
             [_][]const u8{ "artoo vm " ++ @tagName(action) ++ " web-01 -n", "artoo vm " ++ @tagName(action) ++ " web-01" };
 
         pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+            const word = if (comptime action == .reboot) blk: {
+                if (args.has("pending")) {
+                    if (args.optPos("VM") != null) return ctx.fail(error.Usage, "give a VM or --pending, not both", .{});
+                    if (ctx.globals.no_wait) return ctx.fail(error.Usage, "--no-wait goes with one VM: --pending waits for each guest before the next", .{});
+                    return @import("vm_reboot.zig").runPending(ctx);
+                }
+                break :blk args.optPos("VM") orelse return ctx.fail(error.Usage, "missing VM (or --pending)", .{});
+            } else args.pos("VM");
             var c = try pve.Client.open(ctx);
             defer c.deinit();
-            var op: PowerOp = .{ .c = &c, .action = action, .word = args.pos("VM"), .risk = if (destructive) .destructive else .normal };
+            var op: PowerOp = .{ .c = &c, .action = action, .word = word, .risk = if (destructive) .destructive else .normal };
             const confirm: ?[]const u8 = if (comptime destructive) args.string("confirm") else null;
             try exec.run(ctx, &op, .{ .confirm = confirm });
         }
