@@ -2,13 +2,14 @@
 
 const cli = @import("../cli.zig");
 
-pub const root = cli.group("artoo", "Home-lab CLI for a Proxmox VE host, a UniFi gateway and a Cloudflare zone.", &.{
+pub const root = cli.group("artoo", "Home-lab CLI for a Proxmox VE host, a UniFi gateway, a Cloudflare zone and a tailnet.", &.{
     @import("auth.zig").group,
     @import("config.zig").group,
     @import("doctor.zig").command,
     @import("gw.zig").group,
     @import("dns.zig").group,
     @import("cf.zig").group,
+    @import("ts.zig").group,
     @import("host.zig").group,
     @import("storage.zig").group,
     @import("task.zig").group,
@@ -38,6 +39,8 @@ test {
     _ = @import("../cloudflare/dns.zig");
     _ = @import("../cloudflare/tunnel.zig");
     _ = @import("../tailscale/client.zig");
+    _ = @import("../tailscale/tailnet.zig");
+    _ = @import("ts.zig");
     _ = @import("../exposure.zig");
     _ = @import("../unifi/dns.zig");
     _ = @import("../unifi/wan.zig");
