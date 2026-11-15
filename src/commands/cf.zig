@@ -67,11 +67,15 @@ pub fn header(ctx: *Context, c: *const cf.Client) !void {
 
 pub const ls = struct {
     pub const name = "ls";
-    pub const summary = "List the zone's DNS records";
-    pub const details = "Every record; ARTOO marks the ones artoo created and may change.";
+    pub const summary = "List the public DNS records of the zone";
+    pub const details =
+        \\Shows every record in cloudflare.zone, whoever created it. The ARTOO
+        \\column marks the records artoo created; only those can be removed with
+        \\'artoo cf dns rm'.
+    ;
     pub const flags = [_]cli.Flag{
-        .{ .long = "type", .kind = .string, .metavar = "T", .help = "Only this type (A, CNAME, …)" },
-        .{ .long = "name", .kind = .string, .metavar = "NAME", .help = "Only this name (short names get the zone)" },
+        .{ .long = "type", .kind = .string, .metavar = "T", .help = "Only records of this type (A, AAAA, CNAME, TXT, …)" },
+        .{ .long = "name", .kind = .string, .metavar = "NAME", .help = "Only this name; a short name gets the zone appended" },
     };
     pub const examples = [_][]const u8{ "artoo cf dns ls", "artoo cf dns ls --type CNAME", "artoo cf dns ls -o json" };
 
@@ -184,13 +188,18 @@ const AddOp = struct {
 
 pub const add = struct {
     pub const name = "add";
-    pub const summary = "Add a record to the Cloudflare zone";
+    pub const summary = "Add a public DNS record to the zone";
     pub const details =
-        \\Types A, AAAA, CNAME and TXT; a short NAME gets cloudflare.zone. The
-        \\record is marked with the comment 'artoo: NOTE' so artoo may remove it
-        \\later. Refused before planning: Proxmox or UniFi by
-        \\name or address, LAN/loopback/link-local/Tailscale addresses, and names
-        \\under guests.domain (private guest names never go public).
+        \\Creates an A, AAAA, CNAME or TXT record in cloudflare.zone; a short NAME
+        \\gets the zone appended. The record carries the comment 'artoo: NOTE',
+        \\which marks it as artoo's so 'artoo cf dns rm' may remove it later.
+        \\
+        \\Refused before any plan, because these must never be public:
+        \\  the Proxmox host or the UniFi gateway, by name or address
+        \\  LAN, loopback, link-local and Tailscale addresses
+        \\  names under guests.domain (private guest names)
+        \\
+        \\To publish a lab service, use 'artoo cf tunnel route add' instead.
     ;
     pub const positionals = [_]cli.Positional{
         .{ .name = "NAME", .help = "Host name or FQDN in the zone" },
@@ -198,13 +207,14 @@ pub const add = struct {
         .{ .name = "CONTENT", .help = "Address, target host name or text" },
     };
     pub const flags = [_]cli.Flag{
-        .{ .long = "proxied", .help = "Through Cloudflare's proxy (A, AAAA, CNAME)" },
-        .{ .long = "ttl", .kind = .int, .metavar = "SECONDS", .default = "1", .help = "1 (auto) or 60-86400" },
+        .{ .long = "proxied", .help = "Serve through Cloudflare's proxy (A, AAAA, CNAME only)" },
+        .{ .long = "ttl", .kind = .int, .metavar = "SECONDS", .default = "1", .help = "Time to live: 1 (auto) or 60-86400" },
         .{ .long = "note", .kind = .string, .metavar = "TEXT", .help = "Purpose, kept in the record's comment" },
     };
     pub const examples = [_][]const u8{
         "artoo cf dns add _artoo-test TXT hello -n",
         "artoo cf dns add www CNAME example.pages.dev --proxied --note 'blog'",
+        "artoo cf dns add mail A 203.0.113.10 --ttl 300",
     };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
@@ -323,12 +333,15 @@ pub const rm = struct {
     pub const name = "rm";
     pub const summary = "Delete a record artoo created (destructive)";
     pub const details =
-        \\Only records marked with an 'artoo' comment. Interactive: type the
-        \\record's full name to confirm. Non-interactive: --yes --confirm FQDN.
+        \\Deletes a public record from cloudflare.zone. Only records marked with
+        \\an 'artoo' comment can be deleted; records made elsewhere are refused.
+        \\
+        \\Interactively, type the record's full name to confirm. Without a
+        \\terminal, pass --yes --confirm FQDN.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "NAME", .help = "Host name or FQDN in the zone" }};
     pub const flags = [_]cli.Flag{
-        .{ .long = "type", .kind = .string, .metavar = "T", .help = "Record type, when NAME has several" },
+        .{ .long = "type", .kind = .string, .metavar = "T", .help = "Record type, when NAME has several records" },
         .{ .long = "confirm", .kind = .string, .metavar = "FQDN", .help = "Non-interactive confirmation (with --yes)" },
     };
     pub const examples = [_][]const u8{
@@ -346,8 +359,8 @@ pub const rm = struct {
     }
 };
 
-pub const group = cli.group("cf", "Cloudflare: public DNS of the zone and the lab's tunnel", &.{
-    cli.group("dns", "Records of cloudflare.zone", &.{
+pub const group = cli.group("cf", "Cloudflare: the zone's public DNS and the lab's tunnel", &.{
+    cli.group("dns", "Public DNS records of cloudflare.zone", &.{
         cli.leaf(ls),
         cli.leaf(add),
         cli.leaf(rm),
