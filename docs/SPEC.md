@@ -2352,9 +2352,12 @@ changes nothing and is never retried.
   detection); a restore whose failure lies before the window is an
   outage of its `DURATION`; a `NETWORK_WAN_FAILED_TEMPORARY` (a short
   disconnection reported once it is over, with its `DURATION`) is a
-  brief outage; `ISP_PACKET_LOSS`, high-latency and
-  link-state events in the 10 minutes before a failure are listed as its
-  lead-up; an outage still open is "ongoing". A summary ends the list:
+  brief outage. An outage spans from the loss (`end − DURATION` once
+  closed, else the failure event) to its end: link-state events of the
+  WAN in that span are "during" it; `ISP_PACKET_LOSS`, high-latency and
+  link-state events in the 10 minutes before it are listed as its
+  lead-up. At equal timestamps a failure folds before a restore. An
+  outage still open is "ongoing". A summary ends the list:
   outages, total and longest downtime, availability over the window.
   Events artoo does not know are shown as they are (title and message
   with parameters filled in), never dropped.
