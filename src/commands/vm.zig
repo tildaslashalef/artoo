@@ -607,7 +607,7 @@ test "vm show and vm config: pending values marked (SPEC §9.13)" {
     try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/pending HTTP/1.1", g.request(1));
     try expectLines(g.h.stdout(), &.{
         "2 (12.5% used) → 4  pending restart\n",
-        "1.5 GiB / 2.0 GiB (75.0%)  ████████░░  incl. cache → 2.0 GiB  pending restart\n",
+        "1.5 GiB / 2.0 GiB (75.0%)    ████████░░  incl. cache → 2.0 GiB  pending restart\n",
         "  Host        1.0 GiB  QEMU process on the host\n",
         "  cipassword  set (hidden) → (changed)  pending restart\n",
     });

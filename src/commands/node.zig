@@ -45,10 +45,17 @@ pub fn fmt(ctx: *Context, v: anytype) ![]const u8 {
 }
 
 /// `used / total (pct)` + bar, or `--`.
+/// `used / total (pct)  bar`, the figures padded to one width so the bars
+/// of neighbouring rows and fields line up.
 pub fn usage(ctx: *Context, used: ?u64, total: ?u64) ![]const u8 {
     if (used == null or total == null or total.? == 0) return "--";
-    return std.fmt.allocPrint(ctx.arena, "{f}  {f}", .{ ui.values.usedTotal(used, total), ui.values.bar(ui.values.ratio(used, total), ctx.ui.glyphs) });
+    const figures = try std.fmt.allocPrint(ctx.arena, "{f}", .{ui.values.usedTotal(used, total)});
+    return std.fmt.allocPrint(ctx.arena, "{s:<[2]}  {[1]f}", .{ figures, ui.values.bar(ui.values.ratio(used, total), ctx.ui.glyphs), usage_width });
 }
+
+/// Fits `1023.9 MiB / 1023.9 GiB (99.9%)` minus a little: wider figures
+/// push their bar right rather than every bar.
+const usage_width = 27;
 
 /// Plan target line: `Proxmox (node pve)`.
 pub fn nodeTarget(ctx: *Context, c: *pve.Client) ![]const u8 {
