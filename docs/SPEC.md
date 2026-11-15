@@ -3145,7 +3145,10 @@ key is created (400, before anything reaches a guest).
 
 Protection model: a leaked secret can add tagged devices, approve routes
 and rename or remove devices, but cannot change who may reach what (no
-`policy_file` write). Revoking the client revokes its access tokens, not
+`policy_file` write; `doctor --connect` fails the check when the main
+client's token grants `policy_file` or `all`, and `doctor` fails when
+`tailscale.client_id` equals `tailscale.policy_client_id`). Revoking
+the client revokes its access tokens, not
 the auth keys it made — artoo's keys are single-use and expire in
 minutes, so none outlives a run.
 
