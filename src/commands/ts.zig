@@ -20,13 +20,17 @@ const config = @import("../config.zig");
 const guest_names = @import("../guest/names.zig");
 const router = @import("router.zig");
 const vm_new = @import("vm_new.zig");
+const vm_cmd = @import("vm.zig");
+const agent = @import("../pve/agent.zig");
+const edge = @import("edge.zig");
 
 const Context = app.Context;
 const Value = std.json.Value;
 
 /// The tags artoo's join keys carry: its devices.
 pub fn labTags(ctx: *Context) ![]const []const u8 {
-    return ctx.arena.dupe([]const u8, &.{tn.router_tag});
+    const cfg = try ctx.config();
+    return ctx.arena.dupe([]const u8, &.{ tn.router_tag, cfg.tailscale.guest_tag });
 }
 
 /// Who owns what (SPEC §19). Writes need Proxmox (`required`); listings
@@ -747,7 +751,193 @@ pub const dns_split_set = struct {
     }
 };
 
+// ---------------------------------------------------------------- join
+
+/// The guest's own view: `tailscale status --json` (`{}` when absent).
+pub const GuestState = struct {
+    backend: []const u8 = "unknown",
+    hostname: []const u8 = "",
+    dns_name: []const u8 = "",
+    tags: []const []const u8 = &.{},
+    raw: []const u8 = "",
+
+    pub fn running(s: GuestState) bool {
+        return std.mem.eql(u8, s.backend, "Running");
+    }
+};
+
+pub fn parseGuestState(a: std.mem.Allocator, out: []const u8) !GuestState {
+    const v = std.json.parseFromSliceLeaky(Value, a, out, .{}) catch Value{ .null = {} };
+    const self = ts.field(v, "Self");
+    return .{
+        .backend = ts.str(v, "BackendState") orelse "unknown",
+        .hostname = ts.str(self, "HostName") orelse "",
+        .dns_name = std.mem.trimEnd(u8, ts.str(self, "DNSName") orelse "", "."),
+        .tags = try ts.strings(a, self, "Tags"),
+        .raw = out,
+    };
+}
+
+pub fn guestState(c: *pve.Client, vmid: u32) !GuestState {
+    const ctx = c.ctx;
+    const r = try agent.sh(c, vmid, "tailscale status --json 2>/dev/null || echo '{}'", 60_000);
+    if (!r.ok()) return ctx.fail(error.Protocol, "reading tailscale status on VM {d} failed", .{vmid});
+    return parseGuestState(ctx.arena, r.out);
+}
+
+/// Enrolls with the key on stdin: written to a 0600 file under /run,
+/// passed as `file:`, removed on exit. `$1` hostname, `$2` tag. A tagged
+/// node that accepts no routes, advertises none, runs no Tailscale SSH and
+/// keeps its own DNS (SPEC §9.6).
+const join_script =
+    \\set -eu
+    \\umask 077
+    \\key=$(mktemp /run/artoo-tskey.XXXXXX)
+    \\trap 'rm -f "$key"' EXIT
+    \\cat > "$key"
+    \\tailscale up --auth-key="file:$key" --advertise-tags="$2" --hostname="$1" --accept-routes=false --advertise-routes= --accept-dns=false --ssh=false --timeout=60s
+    \\
+;
+
+const join_timeout_ms = 2 * 60 * 1000;
+
+const JoinOp = struct {
+    c: *pve.Client,
+    tsc: *ts.Client,
+    word: []const u8,
+    tag: []const u8,
+    target: []const u8 = "",
+    risk: ui.blocks.Risk = .normal,
+    api: ui.json.Target = .tailscale,
+    vm: vms.Vm = undefined,
+    state: GuestState = .{},
+    ledger: exec.Ledger = .{},
+    key: ?tn.NewKey = null,
+    key_used: bool = false,
+    device: ?tn.Device = null,
+
+    pub fn read(op: *JoinOp, ctx: *Context) !void {
+        const v = try vms.resolve(op.c, op.word);
+        op.vm = v;
+        op.target = v.name;
+        if (v.template) return ctx.fail(error.Refused, "{s} is a template", .{v.name});
+        if (!template.taggedWith(v.tags, "artoo")) return ctx.fail(error.Refused, "{s} is not an artoo guest (no tag artoo)", .{v.name});
+        if (vm_cmd.roleOf(v.tags)) |r| if (std.mem.eql(u8, r, "edge") or std.mem.eql(u8, r, "watch") or std.mem.eql(u8, r, "router"))
+            return ctx.fail(error.Refused, "{s} carries role-{s}: {s}", .{ v.name, r, if (std.mem.eql(u8, r, "router")) "it joins with 'artoo router setup'" else "it never joins the tailnet (SPEC §9.6, §9.7, §9.9)" });
+        if (!template.taggedWith(v.tags, "tailnet")) return ctx.fail(error.Refused, "{s} is not tagged tailnet; guests join the tailnet only when tagged (SPEC §9.6): 'artoo vm set {s} tags=…;tailnet' first", .{ v.name, v.name });
+        if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; start it first", .{ v.name, v.status });
+        if (!try agent.ping(op.c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{v.name});
+        op.state = try guestState(op.c, v.vmid);
+        if (op.state.running()) return ctx.fail(error.NoChange, "{s} is already on the tailnet ({s}, tags {s}); nothing to join", .{ v.name, try clean(ctx, if (op.state.dns_name.len > 0) op.state.dns_name else op.state.hostname), try joinClean(ctx, op.state.tags) });
+    }
+
+    pub fn plan(op: *JoinOp, ctx: *Context) !?exec.Plan {
+        const a = ctx.arena;
+        return .{
+            .action = try std.fmt.allocPrint(a, "Join {s} ({d}) to the tailnet", .{ op.vm.name, op.vm.vmid }),
+            .target = try deviceTarget(ctx, op.tsc),
+            .changes = try a.dupe(ui.blocks.Change, &.{
+                .{ .field = "join key", .from = null, .to = try std.fmt.allocPrint(a, "single-use, preauthorized, {s}, 10 min (created by artoo, never shown)", .{op.tag}) },
+                .{ .field = "tailnet", .from = try clean(ctx, op.state.backend), .to = try std.fmt.allocPrint(a, "{s} as {s}: no routes accepted or advertised, no Tailscale SSH, its own DNS", .{ op.vm.name, op.tag }) },
+            }),
+            .impact = try a.dupe([]const u8, &.{try std.fmt.allocPrint(a, "Tailnet devices reach {s} as the policy allows {s}", .{ op.vm.name, op.tag })}),
+            .recovery = try std.fmt.allocPrint(a, "artoo ts device rm {s}", .{op.vm.name}),
+            .notes = try a.dupe([]const u8, &.{"The key goes over the guest agent's stdin into a 0600 file under /run, removed after use; a key left unused by a failed run is deleted."}),
+        };
+    }
+
+    pub fn fingerprint(op: *JoinOp) []const u8 {
+        return op.state.raw;
+    }
+
+    pub fn send(op: *JoinOp, ctx: *Context) !void {
+        const a = ctx.arena;
+        const l = &op.ledger;
+        const s_key = try l.add(a, "create the join key");
+        const s_join = try l.add(a, "join the tailnet");
+        errdefer {
+            op.dropKey(ctx);
+            ctx.out.writeAll("\n") catch {};
+            l.render(ctx.out, &ctx.ui) catch {};
+        }
+        l.set(s_key, .unknown, "");
+        const nk = try tn.createJoinKey(op.tsc, &.{op.tag}, try tn.keyDescription(a, &.{ "artoo", "join", op.vm.name }));
+        op.key = nk;
+        l.set(s_key, .done, try std.fmt.allocPrint(a, "{s}, single-use, 10 min", .{try clean(ctx, nk.id)}));
+        l.set(s_join, .unknown, "");
+        const r = try agent.exec(op.c, op.vm.vmid, &.{ "sh", "-c", join_script, "sh", op.vm.name, op.tag }, nk.key, join_timeout_ms);
+        if (!r.ok()) {
+            l.set(s_join, .failed, "");
+            const why = try tn.redact(a, edge.firstLine(if (r.err.len > 0) r.err else r.out), nk.key);
+            return ctx.fail(error.Partial, "tailscale up failed on {s} (exit {?d}): {s}", .{ op.vm.name, r.code, try clean(ctx, why) });
+        }
+        op.key_used = true;
+        l.set(s_join, .done, op.tag);
+    }
+
+    /// Delete the key artoo created when the guest did not use it; keeps
+    /// the error being reported.
+    fn dropKey(op: *JoinOp, ctx: *Context) void {
+        const k = op.key orelse return;
+        if (op.key_used) return;
+        const diag = ctx.diag;
+        defer ctx.diag = diag;
+        tn.deleteKey(op.tsc, k.id) catch return;
+        op.key = null;
+    }
+
+    /// The guest says Running with the tag, and the API lists its device
+    /// with the tag (polled briefly).
+    pub fn verify(op: *JoinOp, ctx: *Context) !bool {
+        try ctx.out.writeAll("\n");
+        try op.ledger.render(ctx.out, &ctx.ui);
+        const st = try guestState(op.c, op.vm.vmid);
+        if (!st.running() or !tn.contains(st.tags, op.tag)) return false;
+        var tries: usize = 0;
+        while (true) : (tries += 1) {
+            for (try tn.devices(op.tsc)) |d| if (d.hasTag(op.tag) and std.ascii.eqlIgnoreCase(d.machine, op.vm.name)) {
+                op.device = d;
+                return true;
+            };
+            if (tries >= 10) return false;
+            try ctx.io.sleep(.fromMilliseconds(@intCast(ctx.test_hooks.poll_ms orelse 2000)), .awake);
+        }
+    }
+
+    pub fn done(op: *JoinOp) []const u8 {
+        const d = op.device orelse return "joined";
+        return std.fmt.allocPrint(op.c.ctx.arena, "{s} joined the tailnet as {s} ({s})", .{ op.vm.name, op.tag, clean(op.c.ctx, d.name) catch d.id }) catch "joined";
+    }
+};
+
+pub const join = struct {
+    pub const name = "join";
+    pub const summary = "Join a guest tagged tailnet to the tailnet with a key artoo creates";
+    pub const details =
+        \\The guest becomes a tagged node (tailscale.guest_tag): it accepts no
+        \\routes, advertises none, runs no Tailscale SSH and keeps its own DNS
+        \\(SPEC §9.6). artoo creates a single-use, preauthorized key (10 min),
+        \\hands it to the guest over the agent's stdin and never shows it; a key
+        \\left unused by a failed run is deleted. Refused for guests without the
+        \\tailnet tag, role-edge, role-watch and role-router; a guest already
+        \\on the tailnet is only reported.
+    ;
+    pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "A running guest tagged tailnet", .complete = .vm }};
+    pub const examples = [_][]const u8{ "artoo ts join naboo -n", "artoo ts join naboo" };
+
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+        const cfg = try ctx.config();
+        var c = try pve.Client.open(ctx);
+        defer c.deinit();
+        var tsc = try ts.Client.open(ctx, .main);
+        defer tsc.deinit();
+        var op: JoinOp = .{ .c = &c, .tsc = &tsc, .word = args.pos("VM"), .tag = cfg.tailscale.guest_tag };
+        try exec.run(ctx, &op, .{});
+    }
+};
+
 pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, split DNS and keys on the tailnet (SPEC §19)", &.{
+    cli.leaf(join),
     cli.group("devices", "Devices on the tailnet", &.{cli.leaf(devices_ls)}),
     cli.group("device", "One device", &.{ cli.leaf(device_show), cli.leaf(device_rename), cli.leaf(device_rm) }),
     cli.group("routes", "Subnet routes", &.{cli.leaf(routes_approve)}),
@@ -1008,4 +1198,145 @@ test "ts dns split set: lab domains to the gateway only; PATCH with that domain 
     // Already so: a no-op, refused (exit 5).
     try testing.expectEqual(Exit.refused, f.h.run(&root, "ts dns split set lab.example.com 192.168.1.1 -y"));
     try testing.expect(std.mem.find(u8, f.h.stderr(), "nothing to change") != null);
+}
+
+fn agentOut(a: std.mem.Allocator, code: i64, out: []const u8, err: []const u8) ![]const u8 {
+    return std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = code, .@"out-data" = out, .@"err-data" = err } }, .{});
+}
+
+const join_vms = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;tailnet\"},{\"vmid\":202,\"name\":\"dagobah\",\"status\":\"running\",\"tags\":\"artoo;role-router;tailnet\"},{\"vmid\":203,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":204,\"name\":\"bespin\",\"status\":\"running\",\"tags\":\"artoo;role-edge;tailnet\"},{\"vmid\":205,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch;tailnet\"},{\"vmid\":206,\"name\":\"kessel\",\"status\":\"stopped\",\"tags\":\"artoo;tailnet\"},{\"vmid\":207,\"name\":\"endor\",\"status\":\"running\",\"tags\":\"tailnet\"}]}";
+const join_key = "{\"id\":\"kJoin\",\"key\":\"tskey-auth-JOINSECRET\",\"keyType\":\"auth\"}";
+const agent_up = "{\"data\":{\"result\":{}}}";
+
+test "ts join: artoo creates a single-use guest key, the guest joins as a tagged node, verified by guest and API" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /api2/json/nodes/pve/qemu HTTP", join_vms),
+        route("agent/ping", agent_up),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        route("exec-status", try agentOut(a, 0, "{\"BackendState\":\"NeedsLogin\"}", "")),
+        route("POST /tailnet/-/keys", join_key),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        route("exec-status", try agentOut(a, 0, "", "")),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":44}}"),
+        route("exec-status", try agentOut(a, 0, "{\"BackendState\":\"Running\",\"Self\":{\"HostName\":\"naboo\",\"DNSName\":\"naboo.example.ts.net.\",\"Tags\":[\"tag:lab-guest\"]}}", "")),
+        route("GET /tailnet/-/devices", "{\"devices\":[{\"nodeId\":\"nNaboo\",\"name\":\"naboo.example.ts.net\",\"tags\":[\"tag:lab-guest\"]}]}"),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    const code = f.h.run(&root, "ts join naboo -y");
+    const out = f.h.stdout();
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ out, f.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    try expectHas(out, &.{
+        "single-use, preauthorized, tag:lab-guest, 10 min (created by artoo, never shown)",
+        "create the join key  done  kJoin, single-use, 10 min",
+        "join the tailnet     done  tag:lab-guest",
+        "naboo joined the tailnet as tag:lab-guest (naboo.example.ts.net)",
+    });
+    var joined = false;
+    for (f.srv.received) |req| if (req) |q| {
+        if (std.mem.startsWith(u8, q, "POST /tailnet/-/keys")) try testing.expect(std.mem.endsWith(u8, q,
+            \\{"keyType":"auth","description":"artoo join naboo","expirySeconds":600,"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":false,"preauthorized":true,"tags":["tag:lab-guest"]}}}}
+        ));
+        // The key travels only as the agent's stdin, never in argv.
+        if (std.mem.find(u8, q, "JOINSECRET") != null) {
+            try testing.expect(std.mem.find(u8, q, "input-data=tskey-auth-JOINSECRET") != null);
+            try testing.expect(std.mem.find(u8, q, "accept-routes%3Dfalse") != null or std.mem.find(u8, q, "accept-routes=false") != null);
+            joined = true;
+        }
+    };
+    try testing.expect(joined);
+    try testing.expect(std.mem.find(u8, out, "JOINSECRET") == null);
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "JOINSECRET") == null);
+}
+
+test "ts join: refused for a guest without tailnet, edge, watch, router, stopped and foreign guests; no key is created" {
+    for ([_][]const u8{ "hoth", "bespin", "scarif", "dagobah", "kessel", "endor" }) |vm| {
+        var f: Fixture = undefined;
+        try f.initRoutes(&.{
+            route("POST /oauth/token", token_ok),
+            route("GET /api2/json/nodes/pve/qemu HTTP", join_vms),
+        });
+        defer f.deinit();
+        try f.tailscaleConfig("");
+        const line = try std.fmt.allocPrint(f.h.arena.allocator(), "ts join {s} -y", .{vm});
+        try testing.expectEqual(Exit.refused, f.h.run(&root, line));
+        for (f.srv.received) |req| if (req) |q| try testing.expect(std.mem.find(u8, q, "/keys") == null);
+    }
+}
+
+test "ts join: a guest already on the tailnet is only reported" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /api2/json/nodes/pve/qemu HTTP", join_vms),
+        route("agent/ping", agent_up),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        route("exec-status", try agentOut(a, 0, "{\"BackendState\":\"Running\",\"Self\":{\"HostName\":\"naboo\",\"DNSName\":\"naboo.example.ts.net.\",\"Tags\":[\"tag:lab-guest\"]}}", "")),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts join naboo -y"));
+    if (std.mem.find(u8, f.h.stderr(), "already on the tailnet (naboo.example.ts.net, tags tag:lab-guest)") == null) {
+        std.debug.print("--- err:\n{s}\n", .{f.h.stderr()});
+        return error.TestUnexpectedResult;
+    }
+    for (f.srv.received) |req| if (req) |q| try testing.expect(std.mem.find(u8, q, "/keys") == null);
+}
+
+test "ts join: a tag the client does not own is refused by Tailscale before anything reaches the guest" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /api2/json/nodes/pve/qemu HTTP", join_vms),
+        route("agent/ping", agent_up),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        route("exec-status", try agentOut(a, 0, "{}", "")),
+        .{ .match = "POST /tailnet/-/keys", .behavior = .{ .respond = .{ .status = 400, .body = "{\"message\":\"requested tags [tag:lab-guest] are invalid or not permitted\"}" } } },
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts join naboo -y"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    if (std.mem.find(u8, f.h.stderr(), "not permitted") == null) {
+        std.debug.print("--- err:\n{s}\n", .{f.h.stderr()});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "ts join: a failed join deletes the unused key and never shows it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /api2/json/nodes/pve/qemu HTTP", join_vms),
+        route("agent/ping", agent_up),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        route("exec-status", try agentOut(a, 0, "{}", "")),
+        route("POST /tailnet/-/keys", join_key),
+        route("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        route("exec-status", try agentOut(a, 1, "", "backend error: invalid key tskey-auth-JOINSECRET")),
+        route("DELETE /tailnet/-/keys/kJoin", ""),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(Exit.partial, f.h.run(&root, "ts join naboo -y"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "invalid key [auth key]") != null);
+    try testing.expect(std.mem.find(u8, f.h.stdout(), "JOINSECRET") == null);
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "JOINSECRET") == null);
 }
