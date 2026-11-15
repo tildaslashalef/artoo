@@ -306,7 +306,7 @@ fn probeTailscale(r: *Report) !void {
             try std.fmt.allocPrint(ctx.arena, "tags granted: {s}", .{want_text});
     } else try std.fmt.allocPrint(ctx.arena, "tags not reported by Tailscale; the client needs {s}", .{want_text});
     if (missing.items.len > 0 or tags_missing.items.len > 0) return r.add("tailscale", .warning, "token granted: {s}{s}{s} (SPEC §19); {s}", .{ granted, if (missing.items.len > 0) "; missing: " else "", missing.items, tags });
-    try r.add("tailscale", .ok, "token granted: {s}; tailnet {s}; {s}", .{ granted, c.tailnet, tags });
+    try r.add("tailscale", .ok, "token granted: {s}; tailnet {s}; {s}", .{ granted, c.shownName(), tags });
 }
 
 /// The policy client: `policy_file` (write) and what it requires.

@@ -85,6 +85,14 @@ pub fn devices(c: *ts.Client) ![]Device {
     if (list != .array) return c.ctx.fail(error.Protocol, "Tailscale sent an unexpected device list", .{});
     var out: std.ArrayList(Device) = .empty;
     for (list.array.items) |it| if (try device(c.ctx.arena, it)) |d| try out.append(c.ctx.arena, d);
+    // The tailnet's name, as the devices' MagicDNS names carry it.
+    if (c.seen_name == null) for (out.items) |d| if (!d.external) if (std.mem.findScalar(u8, d.name, '.')) |dot| {
+        const rest = d.name[dot + 1 ..];
+        if (rest.len > 0) {
+            c.seen_name = try ui.text.sanitize(c.ctx.arena, rest, .line);
+            break;
+        }
+    };
     std.mem.sort(Device, out.items, {}, struct {
         fn lt(_: void, x: Device, y: Device) bool {
             return std.mem.order(u8, x.name, y.name) == .lt;
