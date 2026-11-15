@@ -8,6 +8,8 @@ const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const ts = @import("client.zig");
 const parseTime = @import("../unifi/view.zig").parseTime;
+const ui = @import("../ui.zig");
+const Context = @import("../app.zig").Context;
 
 pub const router_tag = "tag:lab-router";
 
@@ -239,7 +241,7 @@ pub fn getKey(c: *ts.Client, id: []const u8) !?KeyInfo {
 
 /// A join key just created: its value is held in memory for this
 /// invocation, handed to a guest over the agent's stdin, never shown.
-pub const NewKey = struct { id: []const u8, key: []const u8 };
+pub const NewKey = struct { id: []const u8, key: []const u8, expires: ?i64 = null };
 
 /// Join keys live ten minutes: none outlives a run (SPEC §19).
 pub const join_key_seconds = 600;
@@ -263,7 +265,20 @@ pub fn createJoinKey(c: *ts.Client, tags: []const []const u8, description: []con
     const key = ts.str(v, "key") orelse "";
     if (id.len == 0 or key.len == 0 or !std.mem.startsWith(u8, key, "tskey-auth-"))
         return c.ctx.fail(error.OutcomeUnknown, "Tailscale answered the key creation without a key; check 'artoo ts keys ls' and delete a stray key in the console", .{});
-    return .{ .id = id, .key = key };
+    return .{ .id = id, .key = key, .expires = time(v, "expires") };
+}
+
+/// The ledger detail for a join key artoo made, the guest did not use
+/// and the delete failed for: its ID and when it expires on its own
+/// (the creation response's `expires`, else about ten minutes from now).
+pub fn strayKey(ctx: *Context, id: []const u8, expires: ?i64, why: []const u8) ![]const u8 {
+    const at = expires orelse ctx.ui.now + join_key_seconds;
+    return std.fmt.allocPrint(ctx.arena, "{s} unused but not deleted ({s}); it expires {s}{f} — delete it sooner in the console (Settings → Keys)", .{
+        try ui.text.sanitize(ctx.arena, id, .line),
+        try ui.text.sanitize(ctx.arena, why, .line),
+        if (expires == null) "about " else "",
+        ui.values.absolute(at, &ctx.ui.zone),
+    });
 }
 
 /// `DELETE /tailnet/{t}/keys/{id}`.
