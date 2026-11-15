@@ -39,11 +39,30 @@ const secret_arg = [_]cli.Positional{.{ .name = "SECRET", .help = "pve, unifi, c
 pub const set = struct {
     pub const name = "set";
     pub const summary = "Store a secret (hidden prompt or --stdin)";
-    pub const details = "Replacing an existing secret asks first. The value is never echoed.";
+    pub const details =
+        \\Stores the credential artoo uses for one service in this machine's
+        \\secret store (credentials.store: macOS Keychain, Secret Service or a
+        \\0600 file). Run it once per service during setup, and again to rotate
+        \\a key.
+        \\
+        \\The value is read from a hidden prompt, or from standard input with
+        \\--stdin. It is never echoed, printed or written to the config file.
+        \\Replacing a stored secret asks first.
+        \\
+        \\Secrets:
+        \\  pve               Proxmox API token secret (for pve.token_id)
+        \\  unifi             UniFi Integration API key
+        \\  cloudflare        Cloudflare API token (DNS records, tunnel)
+        \\  tailscale         Tailscale OAuth client secret (for tailscale.client_id)
+        \\  tailscale-policy  Policy-writing OAuth client secret ('ts policy apply' only)
+        \\
+        \\See what is stored with 'artoo auth status'.
+    ;
     pub const positionals = secret_arg;
     pub const flags = [_]cli.Flag{.{ .long = "stdin", .help = "Read the secret from standard input" }};
     pub const examples = [_][]const u8{
         "artoo auth set unifi",
+        "artoo auth set tailscale",
         "ssh root@pve 'pveum user token add …' | artoo auth set pve --stdin --yes",
     };
 
@@ -79,8 +98,15 @@ pub const set = struct {
 
 pub const status = struct {
     pub const name = "status";
-    pub const summary = "Show the secret store and which secrets are present";
-    pub const details = "Checks presence only; secrets are not read.";
+    pub const summary = "Show the secret store and which secrets are stored";
+    pub const details =
+        \\Shows which secret store artoo uses on this machine and, for each
+        \\credential, whether it is stored. Only presence is checked: no secret
+        \\is read or printed.
+        \\
+        \\Add a missing one with 'artoo auth set'; 'artoo doctor --connect' also
+        \\tests that the stored credentials work.
+    ;
     pub const examples = [_][]const u8{"artoo auth status"};
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -128,8 +154,14 @@ pub const status = struct {
 pub const rm = struct {
     pub const name = "rm";
     pub const summary = "Delete a stored secret (asks first)";
+    pub const details =
+        \\Deletes one credential from this machine's secret store, for example
+        \\after revoking it at the service. It asks first; -n only shows what
+        \\would be deleted. Commands that need the credential fail until it is
+        \\stored again with 'artoo auth set'.
+    ;
     pub const positionals = secret_arg;
-    pub const examples = [_][]const u8{"artoo auth rm pve"};
+    pub const examples = [_][]const u8{ "artoo auth rm cloudflare -n", "artoo auth rm cloudflare" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const kind = try kindArg(ctx, args.pos("SECRET"));

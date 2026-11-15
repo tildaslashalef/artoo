@@ -22,19 +22,25 @@ pub const update = struct {
     pub const name = "update";
     pub const summary = "Replace this artoo with a verified GitHub release";
     pub const details =
-        \\Without VERSION: the latest release (never a pre-release). The archive
-        \\for this machine is downloaded from github.com/tildaslashalef/artoo and
-        \\checked against SHA256SUMS and GitHub's digest, and the binary inside
-        \\must report the release's version — all before the plan is shown.
-        \\Then the current binary is copied to .artoo.previous beside it and
-        \\the new one renamed into place. -n downloads and verifies but
-        \\replaces nothing. --check reads the release only: exit 0 when an
-        \\update is available, 5 when there is nothing to update.
-        \\A symbolic link or an unwritable directory is refused; artoo never
-        \\runs sudo. Roll back: mv <dir>/.artoo.previous <dir>/artoo.
+        \\Replaces this artoo binary with a release from
+        \\github.com/tildaslashalef/artoo: the latest one (never a pre-release),
+        \\or VERSION.
+        \\
+        \\Before the plan is shown, the archive for this machine is downloaded
+        \\and checked against SHA256SUMS and GitHub's digest, and the binary
+        \\inside must report the release's version. Once confirmed, the current
+        \\binary is copied to .artoo.previous beside it and the new one is
+        \\renamed into place.
+        \\
+        \\-n downloads and verifies but replaces nothing. --check only reads the
+        \\release: exit 0 when an update is available, 5 when there is nothing
+        \\to update.
+        \\
+        \\A symbolic link or an unwritable directory is refused; artoo never runs
+        \\sudo. To roll back: mv <dir>/.artoo.previous <dir>/artoo
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "VERSION", .required = false, .help = "A release to install, e.g. 0.4.0 (default: the latest)" }};
-    pub const flags = [_]cli.Flag{.{ .long = "check", .help = "Only tell whether an update is available (exit 0) or not (exit 5)" }};
+    pub const positionals = [_]cli.Positional{.{ .name = "VERSION", .required = false, .help = "Release to install, e.g. 0.4.0 (default: the latest)" }};
+    pub const flags = [_]cli.Flag{.{ .long = "check", .help = "Only report whether an update is available (exit 0) or not (exit 5)" }};
     pub const examples = [_][]const u8{
         "artoo update --check",
         "artoo update -n",

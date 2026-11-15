@@ -33,7 +33,14 @@ const section_titles = [_]struct { []const u8, []const u8 }{
 pub const show = struct {
     pub const name = "show";
     pub const summary = "Show the effective configuration";
-    pub const details = "Keys not set in the file show their default, marked (default).";
+    pub const details =
+        \\Shows every setting artoo uses: the values in ~/.artoo/config.json
+        \\(or --config PATH), with keys not set in the file shown at their
+        \\default and marked (default).
+        \\
+        \\The file holds no secrets; see 'artoo auth status' for those. Change a
+        \\value with 'artoo config set' or 'artoo config edit'.
+    ;
     pub const examples = [_][]const u8{ "artoo config show", "artoo config show -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -85,8 +92,14 @@ const key_choices = blk: {
 pub const get = struct {
     pub const name = "get";
     pub const summary = "Print one value";
+    pub const details =
+        \\Prints the effective value of one key, from the file or its default,
+        \\and nothing else, so scripts can use it. With -o json it also says
+        \\whether the value is the default. 'artoo help config set' lists the
+        \\keys.
+    ;
     pub const positionals = [_]cli.Positional{.{ .name = "KEY", .help = "Dotted key, e.g. unifi.endpoint", .choices = key_choices }};
-    pub const examples = [_][]const u8{"artoo config get unifi.endpoint"};
+    pub const examples = [_][]const u8{ "artoo config get unifi.endpoint", "artoo config get guests.domain -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const l = try loaded(ctx);
@@ -102,12 +115,19 @@ pub const get = struct {
 pub const set = struct {
     pub const name = "set";
     pub const summary = "Set one value (validated, written atomically)";
-    pub const details = config.key_help;
+    pub const details =
+        \\Checks VALUE for KEY, then rewrites the config file atomically,
+        \\changing only that key, and prints the old and the new value. A key
+        \\that already has this value is left alone.
+        \\
+        \\
+    ++ config.key_help;
     pub const positionals = [_]cli.Positional{
         .{ .name = "KEY", .help = "Dotted key (see 'artoo config show')", .choices = key_choices },
         .{ .name = "VALUE", .help = "New value" },
     };
     pub const examples = [_][]const u8{
+        "artoo config set guests.domain lab.example.com",
         "artoo config set unifi.timeout_seconds 20",
         "artoo config set credentials.store file",
     };
@@ -144,7 +164,12 @@ pub const set = struct {
 pub const unset = struct {
     pub const name = "unset";
     pub const summary = "Remove a key from the file (its default applies)";
-    pub const positionals = [_]cli.Positional{.{ .name = "KEY", .help = "Dotted key", .choices = key_choices }};
+    pub const details =
+        \\Deletes KEY from the config file, so artoo uses its built-in default
+        \\again, and prints that default. A key that is not in the file is left
+        \\alone. 'artoo config show' marks which values are defaults.
+    ;
+    pub const positionals = [_]cli.Positional{.{ .name = "KEY", .help = "Dotted key (see 'artoo config show')", .choices = key_choices }};
     pub const examples = [_][]const u8{"artoo config unset unifi.timeout_seconds"};
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
@@ -164,8 +189,16 @@ pub const unset = struct {
 
 pub const init = struct {
     pub const name = "init";
-    pub const summary = "Write a fresh config with all defaults";
-    pub const details = "Refuses to overwrite an existing file (there is no migration).";
+    pub const summary = "Write a fresh config file with all defaults";
+    pub const details =
+        \\Creates ~/.artoo/config.json (or --config PATH) with every key at its
+        \\default: the first step on a new machine. Then set your lab's values
+        \\with 'artoo config set' or 'artoo config edit', and store the
+        \\credentials with 'artoo auth set'.
+        \\
+        \\An existing file is never overwritten. To copy a working setup from
+        \\another machine, use 'artoo config import' instead.
+    ;
     pub const examples = [_][]const u8{"artoo config init"};
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -183,11 +216,14 @@ pub const init = struct {
 
 pub const edit = struct {
     pub const name = "edit";
-    pub const summary = "Edit the file in $EDITOR, validated before saving";
+    pub const summary = "Edit the config file in $EDITOR, validated before saving";
     pub const details =
-        \\Opens a private copy in $VISUAL or $EDITOR (default vi). The file is
-        \\replaced only if the edited copy is a valid config; otherwise the
-        \\copy is kept and its path is printed.
+        \\Opens a private copy of the config file in $VISUAL or $EDITOR (default
+        \\vi). The file is replaced only if the edited copy is a valid config;
+        \\otherwise the file stays as it was, and the copy is kept with its path
+        \\printed so no edit is lost.
+        \\
+        \\Never put a secret in the file; store it with 'artoo auth set'.
     ;
     pub const examples = [_][]const u8{"EDITOR=vim artoo config edit"};
 

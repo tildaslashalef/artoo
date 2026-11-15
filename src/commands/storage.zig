@@ -54,6 +54,12 @@ fn stateCell(ctx: *Context, s: Storage) !ui.table.Cell {
 pub const ls = struct {
     pub const name = "ls";
     pub const summary = "List storages on Proxmox with usage";
+    pub const details =
+        \\Lists the node's storages with type, content types, used and available
+        \\space and state. Read-only. 'artoo storage show' breaks one storage
+        \\down by content; 'artoo host health storage' flags full or inactive
+        \\ones.
+    ;
     pub const examples = [_][]const u8{ "artoo storage ls", "artoo storage ls -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -86,9 +92,14 @@ pub const ls = struct {
 
 pub const show = struct {
     pub const name = "show";
-    pub const summary = "One storage: status and content by type";
+    pub const summary = "Show one storage: usage and content by type";
+    pub const details =
+        \\Shows one storage's type, content types, usage, state and whether it
+        \\is shared, then how many volumes of each content type (disk images,
+        \\imports, ISOs, snippets, backups) it holds and their size. Read-only.
+    ;
     pub const positionals = [_]cli.Positional{.{ .name = "STORAGE", .help = "Storage name (see 'artoo storage ls')" }};
-    pub const examples = [_][]const u8{"artoo storage show local-zfs"};
+    pub const examples = [_][]const u8{ "artoo storage show local-zfs", "artoo storage show local -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const want = args.pos("STORAGE");
