@@ -245,7 +245,8 @@ fn fill(arena: Allocator, w: *Wan, group: []const u8, idx: u32, gw: ?Value, hs: 
     } else null;
 
     // Port assignment: the gateway's `ethernet_overrides` names the
-    // interface carrying each group; a group missing there has no port.
+    // interface carrying each group; a group missing there, and without a
+    // live `wanN` object (`up` or `ip`), has no port.
     var assigned: ?bool = null;
     var ifname: ?[]const u8 = null;
     if (gw) |d| if (d.object.get("ethernet_overrides")) |ov| if (ov == .array) {
@@ -258,7 +259,8 @@ fn fill(arena: Allocator, w: *Wan, group: []const u8, idx: u32, gw: ?Value, hs: 
             }
         }
     };
-    if (assigned == false) {
+    const live = if (port_obj) |p| p.object.get("up") != null or p.object.get("ip") != null else false;
+    if (assigned == false and !live) {
         w.role = .unassigned;
         w.status = .no_port;
         return;
@@ -982,6 +984,22 @@ test "judgeOngoing: every cause row" {
     var past: Outage = .{ .group = "WAN", .start = 0, .end = 1 };
     judgeOngoing(&past, &cases[1].w);
     try testing.expectEqual(Cause.unknown, past.cause);
+}
+
+test "build: no override but a live wanN object is a normal WAN, not 'no port'" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const ar = a.allocator();
+    const dev = try std.mem.replaceOwned(u8, ar, fixture_device, "{\"ifname\":\"eth4\",\"networkgroup\":\"WAN\"},", "");
+    const devs = try std.json.parseFromSliceLeaky(Value, ar, dev, .{});
+    const wans = try std.json.parseFromSliceLeaky(Value, ar, fixture_wans, .{});
+    const load = try std.json.parseFromSliceLeaky(Value, ar, fixture_load, .{});
+    const ws = try build(ar, .{ .wans = view.lookup(wans, "data").?.array.items, .devices = view.lookup(devs, "data").?.array.items, .load = load });
+    try testing.expectEqual(Status.online, ws[0].status);
+    try testing.expectEqual(Role.active, ws[0].role.?);
+    try testing.expectEqual(@as(?i64, 5), ws[0].port.?.index);
+    // WAN2: no override and `wan2` null: no port.
+    try testing.expectEqual(Status.no_port, ws[1].status);
 }
 
 test "build: unexpected shapes are skipped, never trusted" {
