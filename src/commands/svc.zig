@@ -65,9 +65,9 @@ pub const Health = struct {
         return std.mem.eql(u8, x.down.?, y.down.?);
     }
 
-    /// `/v1/health`, `/v1/health, down "down"`.
+    /// `/v1/health`, `/v1/health, down if it says "down"`.
     pub fn describe(h: Health, a: std.mem.Allocator) ![]const u8 {
-        return if (h.down) |t| std.fmt.allocPrint(a, "{s}, down {s}", .{ h.path, t }) else h.path;
+        return if (h.down) |t| std.fmt.allocPrint(a, "{s}, down if it says {s}", .{ h.path, t }) else h.path;
     }
 };
 
@@ -1106,7 +1106,7 @@ test "health: paths, down texts, describe, recovery flags" {
     const h: Health = .{ .path = "/v1/health", .down = "it's \"down\"" };
     try testing.expect(h.eql(.{ .path = "/v1/health", .down = "it's \"down\"" }));
     try testing.expect(!h.eql(.{ .path = "/v1/health" }) and !(Health{}).eql(.{ .down = "x" }));
-    try testing.expectEqualStrings("/v1/health, down it's \"down\"", try h.describe(a));
+    try testing.expectEqualStrings("/v1/health, down if it says it's \"down\"", try h.describe(a));
     try testing.expectEqualStrings(" --health /v1/health --health-down 'it'\\''s \"down\"'", try healthFlags(a, h, false));
     try testing.expectEqualStrings("", try healthFlags(a, .{}, false));
     try testing.expectEqualStrings(" --health /", try healthFlags(a, .{}, true));
@@ -1212,7 +1212,7 @@ test "svc add -n --health: a new service plans its health; the note names watch 
     try expectLines(g.h.stdout(), &.{
         "Plan · Add service search → naboo:8080",
         "route       (none) → naboo.lab.example.com:8080 (/etc/caddy/services/search.caddy on bespin)",
-        "health      (none) → /v1/health, down \"down\"",
+        "health      (none) → /v1/health, down if it says \"down\"",
         "Run 'artoo watch setup' afterwards so the watchdog probes https://search.apps.lab.example.com/v1/health.",
         "artoo svc rm search",
     });
