@@ -475,7 +475,7 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
     const a = ctx.arena;
     const u = &ctx.ui;
     const right = try std.fmt.allocPrint(a, "lab {s} {f}", .{ u.glyphs.dot, ui.values.clock(u.now, &u.zone) });
-    try ui.blocks.header(ctx.out, u, "status", right);
+    try ui.blocks.header(ctx.out, u, null, right);
 
     // Proxmox host.
     try ctx.out.print("{s}Proxmox{s}\n", .{ u.palette.on(.title), u.palette.off(.title) });

@@ -127,7 +127,7 @@ pub const ls = struct {
             }
         }
         if (ctx.json()) return ui.json.envelope(ctx.out, .cloudflare, .{ .tunnels = all, .routes = rows.items }, .{ .collected_at = ctx.ui.now, .tunnel = cfg.cloudflare.tunnel });
-        try ui.blocks.header(ctx.out, &ctx.ui, ctx.path, try cf_cmd.zoneLabel(ctx, &c));
+        try cf_cmd.header(ctx, &c);
         if (all.len == 0) {
             try ctx.out.print("{s}No tunnels. Create the lab's with 'artoo edge tunnel'.{s}\n", .{ ctx.ui.palette.on(.muted), ctx.ui.palette.off(.muted) });
             return;

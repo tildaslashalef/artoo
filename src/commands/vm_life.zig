@@ -1260,6 +1260,7 @@ const snap_ls = struct {
         var list: std.ArrayList(Value) = .empty;
         for (try vms.snapshots(&c, v.vmid)) |s| if (!std.mem.eql(u8, pve.str(s, "name") orelse "", "current")) try list.append(ctx.arena, s);
         if (ctx.json()) return ui.json.envelope(ctx.out, .pve, list.items, .{ .collected_at = ctx.ui.now, .vmid = v.vmid });
+        ctx.subject = try k.clean(ctx, v.name);
         try k.header(ctx, &c);
         if (list.items.len == 0) {
             try ctx.out.print("{s}No snapshots.{s}\n", .{ ctx.ui.palette.on(.muted), ctx.ui.palette.off(.muted) });

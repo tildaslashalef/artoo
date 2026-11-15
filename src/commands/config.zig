@@ -50,7 +50,7 @@ pub const show = struct {
             });
         }
         const u = &ctx.ui;
-        try ui.blocks.header(ctx.out, u, "config", ctx.tilde(l.path));
+        try ui.blocks.header(ctx.out, u, null, ctx.tilde(l.path));
         if (!l.exists) {
             try ctx.out.print("{s}No config file; showing defaults. Create one with 'artoo config init'.{s}\n\n", .{ u.palette.on(.muted), u.palette.off(.muted) });
         }
@@ -306,7 +306,7 @@ test "config: show renders sections, marks defaults" {
     try testing.expectEqualStrings("Set unifi.timeout_seconds: 10 → 20\n", h.stdout());
     try testing.expectEqual(.ok, h.run(&root, "config show"));
     try testing.expectEqualStrings(
-        \\ARTOO · config  ~/.artoo/config.json
+        \\ARTOO  ~/.artoo/config.json
         \\
         \\Output
         \\  format                 table  (default)

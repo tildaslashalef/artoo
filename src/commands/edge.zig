@@ -887,6 +887,7 @@ pub const status = struct {
         defer c.deinit();
         const h = try health(ctx, &c);
         if (ctx.json()) return ui.json.envelope(ctx.out, .pve, h, .{ .collected_at = ctx.ui.now });
+        ctx.subject = try k.clean(ctx, h.vm);
         try k.header(ctx, &c);
         try vm_new.renderChecks(ctx, h.checks);
         const failed = vm_new.failures(h.checks);

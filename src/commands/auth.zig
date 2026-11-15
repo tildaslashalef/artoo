@@ -98,7 +98,7 @@ pub const status = struct {
             }, .{});
         }
         const u = &ctx.ui;
-        try ui.blocks.header(ctx.out, u, "auth", where);
+        try ui.blocks.header(ctx.out, u, null, where);
         var rows: [kinds.len][]const ui.table.Cell = undefined;
         for (kinds, 0..) |k, i| {
             const optional = k == .@"tailscale-policy";
@@ -204,7 +204,7 @@ test "auth: set via prompt and --stdin, status, rm with confirmations" {
 
     try testing.expectEqual(.ok, h.run(&root, "auth status"));
     try testing.expectEqualStrings(
-        \\ARTOO · auth  memory (test)
+        \\ARTOO  memory (test)
         \\
         \\SECRET            PURPOSE                                         STATUS
         \\pve               Proxmox API token secret (artoo@pve!cli)        ✗ missing
