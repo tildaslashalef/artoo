@@ -1047,6 +1047,11 @@ const RmOp = struct {
             l.set(i, .unknown, "");
             tn.deleteDevice(&op.tsc.?, d.id) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
+                // The request may have applied: never claimed either way.
+                error.OutcomeUnknown => {
+                    l.set(i, .unknown, ctx.diag orelse @errorName(err));
+                    return ctx.fail(error.Partial, "VM destroyed; whether its tailnet device was removed is unknown — check with 'artoo ts device show {s}', then 'artoo ts device rm {s}' if it is still listed", .{ v.name, v.name });
+                },
                 else => {
                     l.set(i, .failed, ctx.diag orelse @errorName(err));
                     return ctx.fail(error.Partial, "VM destroyed, but its tailnet device stays; run 'artoo ts device rm {s}'", .{v.name});
@@ -1862,6 +1867,46 @@ test "vm rm: with the Tailscale credential its lab device leaves the tailnet aft
         std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
         return error.TestUnexpectedResult;
     };
+}
+
+test "vm rm: a refused device removal (501) is a failed step, a 5xx an unknown one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const T = struct {
+        fn run(ar: std.mem.Allocator, status: u16, step: []const u8, err_text: []const u8) !void {
+            const out = try std.json.Stringify.valueAlloc(ar, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = "{\"status\":\"success\",\"data\":[]}", .@"err-data" = "" } }, .{});
+            var g: testkit.Gateway = undefined;
+            try g.init(&.{
+                .{ .respond = .{ .body = vm_cmd.resources_body } },
+                .{ .respond = .{ .body = vm_cmd.config_body } },
+                .{ .respond = .{ .body = vm_cmd.resources_body } },
+                .{ .respond = .{ .body = "{\"meta\":{\"rc\":\"ok\"},\"data\":[]}" } },
+                .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"S1\",\"internalReference\":\"default\",\"name\":\"Default\"}]}" } },
+                .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}" } },
+                .{ .respond = .{ .body = "{\"data\":[{\"vmid\":202,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"}]}" } },
+                .{ .respond = .{ .body = "{\"data\":{\"pid\":42}}" } },
+                .{ .respond = .{ .body = out } },
+                .{ .respond = .{ .body = "{\"access_token\":\"tskey-access-xyz\",\"expires_in\":3600,\"scope\":\"devices:core\"}" } },
+                .{ .respond = .{ .body = "{\"devices\":[{\"nodeId\":\"nWeb\",\"name\":\"web-01.example.ts.net\",\"tags\":[]}]}" } },
+                .{ .respond = .{ .body = upid_body } },
+                .{ .respond = .{ .body = task_ok } },
+                .{ .respond = .{ .body = upid_body } },
+                .{ .respond = .{ .body = task_ok } },
+                .{ .respond = .{ .status = status, .body = "{\"message\":\"Device not owned by tailnet\"}" } },
+            });
+            defer g.deinit();
+            try g.tailscaleConfig("");
+            try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
+            try testing.expectEqualStrings("DELETE /device/nWeb HTTP/1.1", g.request(15));
+            if (std.mem.find(u8, g.h.stdout(), step) == null or std.mem.find(u8, g.h.stderr(), err_text) == null) {
+                std.debug.print("--- stdout:\n{s}\n--- stderr:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+                return error.TestUnexpectedResult;
+            }
+        }
+    };
+    try T.run(a, 501, "remove from the tailnet  failed  Tailscale refused DELETE /device/nWeb (501): Device not owned by tailnet; nothing was applied", "its tailnet device stays; run 'artoo ts device rm web-01'");
+    try T.run(a, 502, "remove from the tailnet  unknown", "whether its tailnet device was removed is unknown");
 }
 
 test "vm rm: a protected VM is refused before anything is stopped" {
