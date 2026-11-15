@@ -381,19 +381,19 @@ const RenameOp = struct {
             }
         }.f;
         try ch.append(a, .{ .field = "Proxmox", .from = if (p.proxmox) try std.fmt.allocPrint(a, "name {s}", .{o.vm.name}) else try same(a, "name"), .to = try std.fmt.allocPrint(a, "name {s} ({d}, digest-guarded)", .{ op.new, o.vm.vmid }) });
-        try ch.append(a, .{ .field = "guest", .from = if (p.guest) try std.fmt.allocPrint(a, "hostname {s}{s}", .{ try k.clean(ctx, o.hostname), if (o.hosts_old) ", /etc/hosts" else "" }) else try same(a, "hostname"), .to = try std.fmt.allocPrint(a, "hostname {s} and /etc/hosts (agent)", .{op.new}) });
-        try ch.append(a, if (o.record) |r| .{ .field = "UniFi", .from = if (p.unifi) try std.fmt.allocPrint(a, "client {s} ({s})", .{ try k.clean(ctx, r.name), r.mac }) else try same(a, "client record"), .to = try std.fmt.allocPrint(a, "client {s} (PUT rest/user, matched by MAC)", .{op.new}) } else .{ .field = "UniFi", .from = none, .to = "nothing to change" });
         const cfg = try ctx.config();
         const new_fqdn = try dns.fqdn(a, op.new, cfg.guests.domain);
-        try ch.append(a, if (o.dns_old) |r| .{ .field = "DNS", .from = try std.fmt.allocPrint(a, "{s} {s} {s}", .{ try k.clean(ctx, r.domain), arrow, r.ipv4 }), .to = try std.fmt.allocPrint(a, "{s} {s} {s} (added first)", .{ new_fqdn, arrow, r.ipv4 }) } else if (o.dns_new != null) .{ .field = "DNS", .from = try same(a, new_fqdn), .to = new_fqdn } else .{ .field = "DNS", .from = none, .to = "nothing to change" });
-        try ch.append(a, if (o.secret_old) .{ .field = "secret store", .from = try std.fmt.allocPrint(a, "guest/{s}", .{op.old}), .to = try std.fmt.allocPrint(a, "guest/{s} (read back before guest/{s} is removed)", .{ op.new, op.old }) } else if (o.secret_new) .{ .field = "secret store", .from = try same(a, "password"), .to = try std.fmt.allocPrint(a, "guest/{s}", .{op.new}) } else .{ .field = "secret store", .from = none, .to = "nothing to change" });
-        try ch.append(a, if (p.ssh) .{ .field = "SSH", .from = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ if (o.key_old != null) "pinned key" else "", if (o.key_old != null and o.ssh_old) " and " else "", if (o.ssh_old) "ssh_config block" else "" }), .to = try std.fmt.allocPrint(a, "HostKeyAlias {s}{s}", .{ op.new, if (o.ssh_old) ", Host block rewritten" else "" }) } else .{ .field = "SSH", .from = if (o.key_new != null or o.ssh_new) try same(a, "pinned key") else none, .to = if (o.key_new != null or o.ssh_new) op.new else none });
+        try ch.append(a, if (o.dns_old) |r| .{ .field = "DNS", .from = try std.fmt.allocPrint(a, "{s} {s} {s}", .{ try k.clean(ctx, r.domain), arrow, r.ipv4 }), .to = try std.fmt.allocPrint(a, "{s} {s} {s} (added first; {s} removed last)", .{ new_fqdn, arrow, r.ipv4, try k.clean(ctx, r.domain) }) } else if (o.dns_new != null) .{ .field = "DNS", .from = try same(a, new_fqdn), .to = new_fqdn } else .{ .field = "DNS", .from = none, .to = "nothing to change" });
         if (o.routes.len > 0) {
             for (o.routes) |r| try ch.append(a, .{ .field = "service", .from = try std.fmt.allocPrint(a, "{s} {s} {s}:{d}", .{ r.name, arrow, op.old, r.port }), .to = try std.fmt.allocPrint(a, "{s}:{d} (on {s}, as svc set)", .{ op.new, r.port, o.edge_vm.?.name }) });
         } else try ch.append(a, .{ .field = "service", .from = none, .to = "nothing to change" });
+        try ch.append(a, if (p.ssh) .{ .field = "SSH", .from = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ if (o.key_old != null) "pinned key" else "", if (o.key_old != null and o.ssh_old) " and " else "", if (o.ssh_old) "ssh_config block" else "" }), .to = try std.fmt.allocPrint(a, "HostKeyAlias {s}{s}", .{ op.new, if (o.ssh_old) ", Host block rewritten" else "" }) } else .{ .field = "SSH", .from = if (o.key_new != null or o.ssh_new) try same(a, "pinned key") else none, .to = if (o.key_new != null or o.ssh_new) op.new else none });
+        try ch.append(a, if (o.secret_old) .{ .field = "secret store", .from = try std.fmt.allocPrint(a, "guest/{s}", .{op.old}), .to = try std.fmt.allocPrint(a, "guest/{s} (read back before guest/{s} is removed)", .{ op.new, op.old }) } else if (o.secret_new) .{ .field = "secret store", .from = try same(a, "password"), .to = try std.fmt.allocPrint(a, "guest/{s}", .{op.new}) } else .{ .field = "secret store", .from = none, .to = "nothing to change" });
         try ch.append(a, if (o.fence_entries > 0) .{ .field = "fence", .from = try std.fmt.allocPrint(a, "{d} guests.fence_allow_out entr{s} naming {s}", .{ o.fence_entries, if (o.fence_entries == 1) "y" else "ies", op.old }), .to = try std.fmt.allocPrint(a, "naming {s}; fences re-derived ({s})", .{ op.new, if (o.fenced.len > 0) try std.mem.join(a, ", ", o.fenced) else "none fenced" }) } else if (p.fence) .{ .field = "fence", .from = "unchanged entries", .to = try std.fmt.allocPrint(a, "fences re-derived ({s}), applied where they differ", .{try std.mem.join(a, ", ", o.fenced)}) } else .{ .field = "fence", .from = none, .to = "nothing to change" });
         try ch.append(a, if (o.ts_state) |s| .{ .field = "tailnet", .from = if (p.tailnet) try std.fmt.allocPrint(a, "{s}{s}", .{ if (s.running()) try k.clean(ctx, s.hostname) else "not joined", if (o.device) |d| try std.fmt.allocPrint(a, " (device {s})", .{try k.clean(ctx, d.name)}) else "" }) else try same(a, "tailnet name"), .to = try std.fmt.allocPrint(a, "{s} (tailscale set --hostname{s})", .{ op.new, if (op.tsc != null) ", checked with the API" else "" }) } else .{ .field = "tailnet", .from = none, .to = "nothing to change" });
         try ch.append(a, if (o.watch_vm) |w| .{ .field = "watchdog", .from = try std.fmt.allocPrint(a, "{d} series of {s} on {s}", .{ o.old_series, op.old, w.name }), .to = try std.fmt.allocPrint(a, "watch enroll {s}, then {s}'s series deleted", .{ op.new, op.old }) } else .{ .field = "watchdog", .from = none, .to = "nothing to change" });
+        try ch.append(a, .{ .field = "guest", .from = if (p.guest) try std.fmt.allocPrint(a, "hostname {s}{s}", .{ try k.clean(ctx, o.hostname), if (o.hosts_old) ", /etc/hosts" else "" }) else try same(a, "hostname"), .to = try std.fmt.allocPrint(a, "hostname {s} and /etc/hosts (agent)", .{op.new}) });
+        try ch.append(a, if (o.record) |r| .{ .field = "UniFi", .from = if (p.unifi) try std.fmt.allocPrint(a, "client {s} ({s})", .{ try k.clean(ctx, r.name), r.mac }) else try same(a, "client record"), .to = try std.fmt.allocPrint(a, "client {s} (PUT rest/user, matched by MAC)", .{op.new}) } else .{ .field = "UniFi", .from = none, .to = "nothing to change" });
         var notes: std.ArrayList([]const u8) = .empty;
         if (!p.proxmox) try notes.append(a, try std.fmt.allocPrint(a, "{s} is already {s} on Proxmox: this run continues a rename that stopped.", .{ op.old, op.new }));
         if (o.dns_note) |n| try notes.append(a, n);
@@ -440,17 +440,20 @@ const RenameOp = struct {
         const p = op.p;
         const l = &op.ledger;
         const cfg = try ctx.config();
+        // NEW resolves before anything points at it; OLD's places that
+        // mark a stopped rename (hostname, UniFi record, OLD's DNS record)
+        // go last, OLD's DNS record very last (SPEC §9.18).
         const s_pve = if (p.proxmox) try l.add(a, "rename on Proxmox") else null;
-        const s_guest = if (p.guest) try l.add(a, "set the hostname") else null;
-        const s_unifi = if (p.unifi) try l.add(a, "rename the client record") else null;
         const s_dns_add = if (p.dns_add) try l.add(a, "add DNS record") else null;
-        const s_dns_rm = if (p.dns_rm) try l.add(a, "remove old DNS record") else null;
-        const s_secret = if (p.secret) try l.add(a, "move the password") else null;
-        const s_ssh = if (p.ssh) try l.add(a, "move the pinned key") else null;
         const s_svc = if (p.services) try l.add(a, "move the services") else null;
+        const s_ssh = if (p.ssh) try l.add(a, "move the pinned key") else null;
+        const s_secret = if (p.secret) try l.add(a, "move the password") else null;
         const s_fence = if (p.fence) try l.add(a, "update the fences") else null;
         const s_ts = if (p.tailnet) try l.add(a, "rename on the tailnet") else null;
         const s_watch = if (p.watch) try l.add(a, "move the watchdog series") else null;
+        const s_guest = if (p.guest) try l.add(a, "set the hostname") else null;
+        const s_unifi = if (p.unifi) try l.add(a, "rename the client record") else null;
+        const s_dns_rm = if (p.dns_rm) try l.add(a, "remove old DNS record") else null;
         errdefer {
             ctx.out.writeAll("\n") catch {};
             l.render(ctx.out, &ctx.ui) catch {};
@@ -465,59 +468,11 @@ const RenameOp = struct {
             });
             l.set(i, .done, op.new);
         }
-        if (s_guest) |i| {
-            l.set(i, .unknown, "");
-            const r = try agent.exec(op.c, vmid, &.{ "sh", "-c", guest_script, "sh", op.new, op.old }, null, 60_000);
-            if (!r.ok()) {
-                l.set(i, .failed, "");
-                return ctx.fail(error.Partial, "setting the hostname of {s} failed (exit {?d}): {s}", .{ op.new, r.code, try k.clean(ctx, edge.firstLine(r.err)) });
-            }
-            l.set(i, .done, op.new);
-        }
-        if (s_unifi) |i| {
-            l.set(i, .unknown, "");
-            try classic.rename(op.u, o.record.?.id, op.new);
-            l.set(i, .done, o.record.?.mac);
-        }
         const new_fqdn = try dns.fqdn(a, op.new, cfg.guests.domain);
         if (s_dns_add) |i| {
             l.set(i, .unknown, "");
             try dns.create(op.u, new_fqdn, o.dns_old.?.ipv4, dns.default_ttl);
             l.set(i, .done, new_fqdn);
-        }
-        if (s_dns_rm) |i| {
-            l.set(i, .unknown, "");
-            try dns.delete(op.u, o.dns_old.?.id);
-            l.set(i, .done, try k.clean(ctx, o.dns_old.?.domain));
-        }
-        if (s_secret) |i| {
-            const store = try ctx.secretStore();
-            const s_old = try std.fmt.allocPrint(a, "guest/{s}", .{op.old});
-            const s_new = try std.fmt.allocPrint(a, "guest/{s}", .{op.new});
-            l.set(i, .unknown, "");
-            if (!o.secret_new) {
-                const pw = try store.require(ctx.io, a, s_old);
-                try store.set(ctx.io, a, s_new, pw);
-                const back = (try store.get(ctx.io, a, s_new)) orelse "";
-                if (!std.mem.eql(u8, back, pw)) {
-                    l.set(i, .failed, "read-back differs");
-                    return ctx.fail(error.Partial, "{s} did not read back as written; {s} is kept", .{ s_new, s_old });
-                }
-            }
-            _ = try store.delete(ctx.io, a, s_old);
-            l.set(i, .done, s_new);
-        }
-        if (s_ssh) |i| {
-            l.set(i, .unknown, "");
-            if (o.key_old) |key| {
-                if (o.key_new == null) try known_hosts.record(ctx, op.new, key);
-                try known_hosts.record(ctx, op.old, null);
-            }
-            if (o.ssh_old) {
-                if (vm_ssh.blockOf(op.new, o.cfg)) |b| try vm_ssh.put(ctx, op.new, b);
-                try vm_ssh.put(ctx, op.old, null);
-            }
-            l.set(i, .done, if (o.ssh_old) "known_hosts, ssh_config" else "known_hosts");
         }
         if (s_svc) |i| {
             const e = o.edge_vm.?;
@@ -535,6 +490,35 @@ const RenameOp = struct {
                 }
             }
             l.set(i, .done, try std.fmt.allocPrint(a, "{d} on {s}", .{ o.routes.len, e.name }));
+        }
+        if (s_ssh) |i| {
+            l.set(i, .unknown, "");
+            if (o.key_old) |key| {
+                if (o.key_new == null) try known_hosts.record(ctx, op.new, key);
+                try known_hosts.record(ctx, op.old, null);
+            }
+            if (o.ssh_old) {
+                if (vm_ssh.blockOf(op.new, o.cfg)) |b| try vm_ssh.put(ctx, op.new, b);
+                try vm_ssh.put(ctx, op.old, null);
+            }
+            l.set(i, .done, if (o.ssh_old) "known_hosts, ssh_config" else "known_hosts");
+        }
+        if (s_secret) |i| {
+            const store = try ctx.secretStore();
+            const s_old = try std.fmt.allocPrint(a, "guest/{s}", .{op.old});
+            const s_new = try std.fmt.allocPrint(a, "guest/{s}", .{op.new});
+            l.set(i, .unknown, "");
+            if (!o.secret_new) {
+                const pw = try store.require(ctx.io, a, s_old);
+                try store.set(ctx.io, a, s_new, pw);
+                const back = (try store.get(ctx.io, a, s_new)) orelse "";
+                if (!std.mem.eql(u8, back, pw)) {
+                    l.set(i, .failed, "read-back differs");
+                    return ctx.fail(error.Partial, "{s} did not read back as written; {s} is kept", .{ s_new, s_old });
+                }
+            }
+            _ = try store.delete(ctx.io, a, s_old);
+            l.set(i, .done, s_new);
         }
         if (s_fence) |i| {
             l.set(i, .unknown, "");
@@ -578,6 +562,25 @@ const RenameOp = struct {
             const n = try watch.forgetHost(op.c, w, op.old);
             l.set(i, .done, try std.fmt.allocPrint(a, "enrolled on {s}, {d} old series deleted", .{ w.name, n }));
         }
+        if (s_guest) |i| {
+            l.set(i, .unknown, "");
+            const r = try agent.exec(op.c, vmid, &.{ "sh", "-c", guest_script, "sh", op.new, op.old }, null, 60_000);
+            if (!r.ok()) {
+                l.set(i, .failed, "");
+                return ctx.fail(error.Partial, "setting the hostname of {s} failed (exit {?d}): {s}", .{ op.new, r.code, try k.clean(ctx, edge.firstLine(r.err)) });
+            }
+            l.set(i, .done, op.new);
+        }
+        if (s_unifi) |i| {
+            l.set(i, .unknown, "");
+            try classic.rename(op.u, o.record.?.id, op.new);
+            l.set(i, .done, o.record.?.mac);
+        }
+        if (s_dns_rm) |i| {
+            l.set(i, .unknown, "");
+            try dns.delete(op.u, o.dns_old.?.id);
+            l.set(i, .done, try k.clean(ctx, o.dns_old.?.domain));
+        }
     }
 
     pub fn verify(op: *RenameOp, ctx: *Context) !bool {
@@ -615,10 +618,10 @@ pub const rename = struct {
     pub const name = "rename";
     pub const summary = "Rename an artoo guest everywhere its name lives (high impact)";
     pub const details =
-        \\Proxmox, the guest's hostname and /etc/hosts, the UniFi client record,
-        \\the DNS record (NEW added before OLD is removed), the guest/<name>
-        \\password, the pinned host key and ssh_config, the services and fence
-        \\exceptions naming it, its tailnet name and the watchdog's series — one
+        \\Proxmox, NEW's DNS record, the services and the pinned host key and
+        \\ssh_config, the guest/<name> password, the fence exceptions naming
+        \\it, its tailnet name, the watchdog, the guest's hostname and
+        \\/etc/hosts, the UniFi client record and, last, OLD's DNS record — one
         \\ledger step each, in that order. Each step checks observed state
         \\first: after a failure, the same command continues. Refused for
         \\role-edge and role-watch (rebuild those), templates, foreign VMs and
@@ -872,6 +875,7 @@ test "vm rename: a failure after the first step is exit 8 and says how to contin
     try routes.appendSlice(a, try renameReads(a, list_old, users_old, dns_old_body, "naboo", true));
     try routes.appendSlice(a, &.{
         rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("POST /v1/sites/S1/dns/policies", "{}"),
         rt("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
         rt("exec-status", try agentOut(a, 0, "")),
         .{ .match = "PUT /proxy/network/api/s/default/rest/user/U1", .behavior = .{ .respond = .{ .status = 400, .body = "{\"meta\":{\"rc\":\"error\",\"msg\":\"api.err.Invalid\"},\"data\":[]}" } } },
@@ -881,9 +885,56 @@ test "vm rename: a failure after the first step is exit 8 and says how to contin
     defer g.deinit();
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
-    try testing.expect(std.mem.find(u8, g.h.stderr(), "the rename stopped after 2 steps") != null);
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "the rename stopped after 3 steps") != null);
     try testing.expect(std.mem.find(u8, g.h.stderr(), "run 'artoo vm rename naboo hoth' again to continue") != null);
     try testing.expect(std.mem.find(u8, g.h.stdout(), "✓ set the hostname") != null);
-    // Nothing after the failed step ran: the password stays under OLD.
-    try testing.expect(g.mem.map.get("guest/hoth") == null);
+    // OLD's DNS record goes last: never removed by a run that stopped.
+    for (g.srv.received) |req| if (req) |q| try testing.expect(!std.mem.startsWith(u8, q, "DELETE /v1/sites/S1/dns/policies"));
+}
+
+test "vm rename: NEW's DNS record comes first, OLD's is removed last" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try renameReads(a, list_old, users_old, dns_old_body, "naboo", true));
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("POST /v1/sites/S1/dns/policies", "{}"),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+        rt("PUT /proxy/network/api/s/default/rest/user/U1", users_new),
+        rt("DELETE /v1/sites/S1/dns/policies/R1", ""),
+    });
+    try routes.appendSlice(a, try renameReads(a, list_new, users_new, dns_new_body, "hoth", false));
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try g.mem.map.put(g.h.arena.allocator(), "guest/naboo", "naboo-password");
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
+    // The writes in order: Proxmox, NEW's record, (password, local), the
+    // hostname, the UniFi record, OLD's record last.
+    var writes: std.ArrayList([]const u8) = .empty;
+    for (g.srv.received) |req| if (req) |q| if (!std.mem.startsWith(u8, q, "GET ") and std.mem.find(u8, q, "exec-status") == null) {
+        const end = std.mem.findScalar(u8, q, ' ').?;
+        const end2 = std.mem.findScalarPos(u8, q, end + 1, ' ').?;
+        try writes.append(a, q[0..end2]);
+    };
+    const want = [_][]const u8{
+        "PUT /api2/json/nodes/pve/qemu/201/config",
+        "POST /v1/sites/S1/dns/policies",
+        "POST /api2/json/nodes/pve/qemu/201/agent/exec",
+        "PUT /proxy/network/api/s/default/rest/user/U1",
+        "DELETE /v1/sites/S1/dns/policies/R1",
+    };
+    var n: usize = 0;
+    for (writes.items) |w| {
+        if (std.mem.eql(u8, w, "POST /api2/json/nodes/pve/qemu/201/agent/exec") and n != 2) continue;
+        if (n < want.len and std.mem.eql(u8, w, want[n])) n += 1;
+    }
+    if (n != want.len) {
+        for (writes.items) |w| std.debug.print("write: {s}\n", .{w});
+        return error.TestUnexpectedResult;
+    }
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "(added first; naboo.lab.example.com removed last)") != null);
 }
