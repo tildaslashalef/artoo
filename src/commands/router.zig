@@ -439,16 +439,35 @@ fn askKey(ctx: *Context, from_stdin: bool) ![]const u8 {
 
 pub const setup = struct {
     pub const name = "setup";
-    pub const summary = "Turn the role-router VM into the tailnet's subnet router (idempotent)";
+    pub const summary = "Make the role-router VM the tailnet's subnet router";
     pub const details =
-        \\IP forwarding, then — when the router is not enrolled — `tailscale up`
-        \\with a single-use auth key tagged tag:lab-router (Tailscale console →
-        \\Keys → Generate auth key), read from a hidden prompt or --stdin and
-        \\removed from the VM right after use. The router advertises the LAN of
-        \\guests.gateway; the tailnet policy approves the route.
+        \\Sets up the one VM tagged role-router so your tailnet devices can reach
+        \\the LAN (the network of guests.gateway) from anywhere. Create the VM
+        \\first with 'artoo vm new NAME --role router'. Idempotent: a rerun does
+        \\only the steps still missing, and nothing when all is in place.
+        \\
+        \\Steps:
+        \\  turn on IPv4 and IPv6 forwarding
+        \\  join the tailnet as tag:lab-router, when not joined yet
+        \\  advertise the LAN route
+        \\  approve that route, and only it (with the Tailscale credential)
+        \\  check that the device's key expiry is off (with the credential)
+        \\
+        \\With the Tailscale credential set up ('artoo auth set tailscale'),
+        \\artoo creates the single-use, 10-minute join key itself and deletes it
+        \\if a failed run leaves it unused. Without it, generate a single-use
+        \\auth key tagged tag:lab-router in the Tailscale console; artoo asks for
+        \\it after you confirm the plan (hidden prompt, or --stdin), and the
+        \\tailnet policy's autoApprovers must approve the route.
+        \\
+        \\Either way the key goes to the VM over the guest agent into a 0600
+        \\file under /run that is removed after use; artoo never stores or
+        \\prints it.
+        \\
+        \\Check the result with 'artoo router status'.
     ;
-    pub const flags = [_]cli.Flag{ .{ .long = "stdin", .help = "Read the auth key from standard input" }, snapguard.flag };
-    pub const examples = [_][]const u8{ "artoo router setup -n", "artoo router setup" };
+    pub const flags = [_]cli.Flag{ .{ .long = "stdin", .help = "Read the auth key from standard input (without the Tailscale credential only)" }, snapguard.flag };
+    pub const examples = [_][]const u8{ "artoo router setup -n", "artoo router setup", "pbpaste | artoo router setup --stdin -y" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -479,7 +498,17 @@ pub fn findRouter(c: *tsapi.Client, node_id: []const u8) !?tn.Device {
 
 pub const status = struct {
     pub const name = "status";
-    pub const summary = "The subnet router: tailnet state, tag, routes, forwarding (read-only)";
+    pub const summary = "Show the subnet router's health (read-only)";
+    pub const details =
+        \\Checks the role-router VM from the inside: its tailnet state, the
+        \\tag:lab-router tag, the advertised and approved LAN route, IP
+        \\forwarding and the Tailscale version. With the Tailscale credential it
+        \\also checks the tailnet's side: the device, the routes approved
+        \\through the API, key expiry and when it was last seen.
+        \\
+        \\Ends with an error when a check fails; 'artoo router setup' repairs
+        \\most of them.
+    ;
     pub const examples = [_][]const u8{ "artoo router status", "artoo router status -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -547,7 +576,7 @@ fn tailnetChecks(ctx: *Context, checks: *std.ArrayList(vm_new.Check), vm_name: [
     try checks.append(a, .{ .name = "last seen", .status = .ok, .detail = if (d.connected) "connected" else try std.fmt.allocPrint(a, "{f}", .{ui.values.relative(ctx.ui.now, d.last_seen)}) });
 }
 
-pub const group = cli.group("router", "The Tailscale subnet router for remote access", &.{
+pub const group = cli.group("router", "The Tailscale subnet router: remote access to the LAN", &.{
     cli.leaf(setup),
     cli.leaf(status),
 });

@@ -585,16 +585,27 @@ const SetupOp = struct {
 
 pub const setup = struct {
     pub const name = "setup";
-    pub const summary = "Set up the watchdog VM (idempotent)";
+    pub const summary = "Set up the watchdog VM";
     pub const details =
-        \\Brings the VM tagged role-watch to its hardened layout: service accounts, the
-        \\nftables policy (ingest from the guest pool and Proxmox, Grafana and
-        \\ntfy only from the edge, no internet for the service users), Grafana,
-        \\Loki, Alloy and ntfy at their pinned versions from their signed
-        \\repositories, VictoriaMetrics from its checksummed release, every
-        \\telemetry switch off, provisioned data sources, dashboards and alert
-        \\rules, and the same policy as the VM's Proxmox firewall on Proxmox.
-        \\Only the steps the observed state needs are planned.
+        \\Turns the VM tagged role-watch into the lab's watchdog: it collects
+        \\metrics and logs from every guest and Proxmox, and sends alerts to
+        \\your phone through ntfy. Idempotent: only the steps the observed state
+        \\still needs are planned.
+        \\
+        \\Steps:
+        \\  service accounts
+        \\  an nftables policy: ingest only from the guest pool and Proxmox,
+        \\    Grafana and ntfy only from the edge VM, no internet for the
+        \\    service users
+        \\  Grafana, Loki, Alloy and ntfy at pinned versions from their signed
+        \\    repositories; VictoriaMetrics from its checksummed release
+        \\  every telemetry switch off
+        \\  data sources, dashboards and alert rules
+        \\  the same policy as the VM's Proxmox firewall, which root inside the
+        \\    VM cannot change
+        \\
+        \\Next: 'artoo watch secret grafana' and 'artoo watch secret phone',
+        \\then 'artoo watch enroll --all' for guests made before the watchdog.
     ;
     pub const flags = [_]cli.Flag{snapguard.flag};
     pub const examples = [_][]const u8{ "artoo watch setup -n", "artoo watch setup --snapshot -y" };
@@ -839,19 +850,27 @@ const EnrollOp = struct {
 
 pub const enroll = struct {
     pub const name = "enroll";
-    pub const summary = "Run Alloy on guests, pushing to the watchdog (idempotent)";
+    pub const summary = "Make guests report to the watchdog";
     pub const details =
-        \\Installs Alloy at its pin where missing (guests from older templates),
-        \\writes its configuration (journald → Loki, node metrics and artoo's
-        \\facts → VictoriaMetrics; Caddy and cloudflared metrics on the edge) and
-        \\starts it with the facts timer. Alloy reports nothing to Grafana Labs
-        \\and reaches only private networks. New guests are enrolled by 'vm new'.
-        \\--all skips guests tagged no-watch ('vm new --no-watch'); naming one
-        \\is refused while it carries the tag.
+        \\Runs Alloy on the named guests (or all of them) so their logs and
+        \\metrics reach the watchdog. New guests are enrolled by 'artoo vm new'
+        \\already; use this for guests made before the watchdog, or to repair
+        \\one. Idempotent.
+        \\
+        \\Per guest:
+        \\  install Alloy at its pinned version where missing (older templates)
+        \\  write its configuration: the journal to Loki; node metrics and
+        \\    artoo's facts to VictoriaMetrics; on the edge VM, Caddy and
+        \\    cloudflared metrics too
+        \\  start it, with the facts timer
+        \\
+        \\Alloy reports nothing to Grafana Labs and reaches only private
+        \\networks. --all skips guests tagged no-watch ('artoo vm new
+        \\--no-watch'); naming such a guest is refused while it has the tag.
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "guests to enroll", .complete = .vm, .required = false, .variadic = true }};
+    pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "Guests to enroll (VMID or name)", .complete = .vm, .required = false, .variadic = true }};
     pub const flags = [_]cli.Flag{.{ .long = "all", .help = "Every running artoo guest" }};
-    pub const examples = [_][]const u8{ "artoo watch enroll --all -n", "artoo watch enroll bespin jakku" };
+    pub const examples = [_][]const u8{ "artoo watch enroll --all -n", "artoo watch enroll naboo hoth", "artoo watch enroll --all -y" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const words = args.rest("VM");
@@ -966,14 +985,18 @@ const SecretOp = struct {
 
 pub const secret = struct {
     pub const name = "secret";
-    pub const summary = "Set a watchdog password (hidden prompt or --stdin)";
+    pub const summary = "Set a password on the watchdog";
     pub const details =
-        \\grafana: Grafana's admin password, handed to Grafana's CLI on stdin.
-        \\phone: the ntfy login of the operator's phone (user 'phone', read-only
-        \\on the alert topic); only its bcrypt hash, made here, reaches the VM.
-        \\artoo never stores, prints or logs either.
+        \\Sets one of the watchdog's passwords, read from a hidden prompt or
+        \\--stdin. artoo never stores, prints or logs it.
+        \\
+        \\Kinds:
+        \\  grafana  Grafana's admin password, handed to Grafana's CLI on stdin
+        \\  phone    the ntfy login of your phone (user 'phone', read-only on
+        \\           the alert topic); only its bcrypt hash, made on this
+        \\           workstation, reaches the VM
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "KIND", .help = "grafana | phone" }};
+    pub const positionals = [_]cli.Positional{.{ .name = "KIND", .help = "Which password: grafana or phone" }};
     pub const flags = [_]cli.Flag{.{ .long = "stdin", .help = "Read the password from standard input" }};
     pub const examples = [_][]const u8{ "artoo watch secret grafana", "artoo watch secret phone" };
 
@@ -1052,12 +1075,16 @@ fn age(a: std.mem.Allocator, seconds: f64) ![]const u8 {
 
 pub const status = struct {
     pub const name = "status";
-    pub const summary = "The watchdog's health and whether every guest reports (read-only)";
+    pub const summary = "Show the watchdog's health and which guests report (read-only)";
     pub const details =
-        \\Blocked telemetry and outbound attempts first, then both firewalls, the
-        \\pinned versions, services, configuration as rendered (every telemetry
-        \\switch), the ntfy phone user, Proxmox's metric export, and per guest the
-        \\age of its latest metrics and whether its journal arrives.
+        \\Checks the watchdog VM, most important first: blocked telemetry and
+        \\outbound attempts, then both firewalls, the pinned versions, the
+        \\services, the configuration as rendered (every telemetry switch), the
+        \\ntfy phone user and Proxmox's metric export. Then, per guest, the age
+        \\of its latest metrics and whether its journal arrives.
+        \\
+        \\A guest that does not report can be repaired with 'artoo watch
+        \\enroll VM'; one that no longer exists with 'artoo watch forget'.
     ;
     pub const examples = [_][]const u8{ "artoo watch status", "artoo watch status -o json" };
 
@@ -1251,15 +1278,17 @@ pub const forget = struct {
     pub const name = "forget";
     pub const summary = "Delete a removed guest's metrics so its alerts resolve";
     pub const details =
-        \\For a guest that no longer exists (removed before 'vm rm' did this, or by
-        \\hand): deletes every series with host=HOST from VictoriaMetrics on the
-        \\watchdog, so 'Guest silent' and other alerts about it resolve. Refused
-        \\while a VM of that name exists. Type HOST to confirm, or --yes --confirm
-        \\HOST.
+        \\Deletes every series with host=HOST from VictoriaMetrics on the
+        \\watchdog, so 'Guest silent' and other alerts about a gone guest
+        \\resolve. 'artoo vm rm' does this itself; use it for a guest removed
+        \\by hand or by an older artoo.
+        \\
+        \\Refused while a VM of that name exists. Interactively, type HOST to
+        \\confirm. Without a terminal, pass --yes --confirm HOST.
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "HOST", .help = "The removed guest's name (the host label)" }};
+    pub const positionals = [_]cli.Positional{.{ .name = "HOST", .help = "The removed guest's name (its host label)" }};
     pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "HOST", .help = "Non-interactive confirmation (with --yes)" }};
-    pub const examples = [_][]const u8{ "artoo watch forget eadu", "artoo watch forget eadu --yes --confirm eadu" };
+    pub const examples = [_][]const u8{ "artoo watch forget web-01 -n", "artoo watch forget web-01", "artoo watch forget web-01 --yes --confirm web-01" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const host = args.pos("HOST");
@@ -1271,7 +1300,7 @@ pub const forget = struct {
     }
 };
 
-pub const group = cli.group("watch", "The watchdog VM: metrics, logs, alerts to the phone", &.{
+pub const group = cli.group("watch", "The watchdog VM: metrics, logs and alerts to your phone", &.{
     cli.leaf(setup),
     cli.leaf(status),
     cli.leaf(enroll),

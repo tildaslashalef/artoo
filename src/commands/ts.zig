@@ -172,11 +172,15 @@ fn labText(own: tn.Ownership, d: tn.Device) []const u8 {
 
 pub const devices_ls = struct {
     pub const name = "ls";
-    pub const summary = "List the tailnet's devices; LAB marks the ones artoo may change";
+    pub const summary = "List the tailnet's devices";
     pub const details =
-        \\A lab device carries one of artoo's tags (tag:lab-router) or has the
-        \\machine name of a Proxmox VM tagged artoo; the operator's own devices
-        \\are listed but never changed. Without Proxmox, LAB is known by tag only.
+        \\Shows every device on the tailnet. The LAB column marks lab devices,
+        \\the only ones artoo changes: a device with one of artoo's tags
+        \\(tag:lab-router or one of tailscale.guest_tags), or one named after a
+        \\Proxmox VM tagged artoo. Your own devices are listed but never
+        \\changed.
+        \\
+        \\When Proxmox cannot be reached, LAB is known by tag only.
     ;
     pub const examples = [_][]const u8{ "artoo ts devices ls", "artoo ts devices ls -o json" };
 
@@ -226,7 +230,13 @@ const device_arg = [_]cli.Positional{.{ .name = "NAME", .help = "Machine name, M
 
 pub const device_show = struct {
     pub const name = "show";
-    pub const summary = "One device: addresses, tags, key expiry, routes, ownership";
+    pub const summary = "Show one device on the tailnet";
+    pub const details =
+        \\Shows a device's names, node ID, OS and Tailscale version, addresses,
+        \\tags and whether it is a lab device, then its connection: last seen,
+        \\key expiry, authorization and routes. Read-only; any device can be
+        \\shown, yours included.
+    ;
     pub const positionals = device_arg;
     pub const examples = [_][]const u8{ "artoo ts device show dagobah", "artoo ts device show naboo -o json" };
 
@@ -262,7 +272,13 @@ pub const device_show = struct {
 
 pub const dns_show = struct {
     pub const name = "show";
-    pub const summary = "Nameservers, MagicDNS, search paths and split DNS";
+    pub const summary = "Show the tailnet's DNS settings";
+    pub const details =
+        \\Shows the global nameservers and whether they override the devices'
+        \\local DNS, MagicDNS, the search paths and every split DNS domain with
+        \\its nameservers. Read-only; point a lab domain at the gateway with
+        \\'artoo ts dns split set'.
+    ;
     pub const examples = [_][]const u8{ "artoo ts dns show", "artoo ts dns show -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -294,8 +310,15 @@ fn yesNo(b: ?bool) []const u8 {
 
 pub const keys_ls = struct {
     pub const name = "ls";
-    pub const summary = "Key metadata the OAuth client may see (never a key's value)";
-    pub const details = "ID, type, description, tags, flags, created and expiry. A key's secret is sent by Tailscale only when it is created and is never shown.";
+    pub const summary = "List the tailnet's auth keys (metadata only)";
+    pub const details =
+        \\Shows the keys the OAuth client may see: ID, type, description, tags,
+        \\flags, when each was created and when it expires. Useful to spot a
+        \\join key a failed run left behind.
+        \\
+        \\A key's secret value is never shown: Tailscale sends it only once,
+        \\when the key is created.
+    ;
     pub const examples = [_][]const u8{ "artoo ts keys ls", "artoo ts keys ls -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -339,10 +362,15 @@ const policy_limit = 1 << 20;
 
 pub const policy_show = struct {
     pub const name = "show";
-    pub const summary = "The tailnet policy as stored (HuJSON), or as JSON";
-    pub const details = "Read-only; artoo never changes the policy with this client.";
-    pub const flags = [_]cli.Flag{.{ .long = "json", .help = "The policy as JSON instead of HuJSON" }};
-    pub const examples = [_][]const u8{ "artoo ts policy show", "artoo ts policy show --json" };
+    pub const summary = "Show the tailnet policy";
+    pub const details =
+        \\Prints the tailnet policy as Tailscale stores it (HuJSON, comments
+        \\included), or as plain JSON. Read-only, with the main Tailscale
+        \\credential; only 'artoo ts policy apply' changes the policy, with a
+        \\credential of its own.
+    ;
+    pub const flags = [_]cli.Flag{.{ .long = "json", .help = "Print the policy as JSON instead of HuJSON" }};
+    pub const examples = [_][]const u8{ "artoo ts policy show", "artoo ts policy show --json", "artoo ts policy show > policy.hujson" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try ts.Client.open(ctx, .main);
@@ -434,9 +462,19 @@ fn stringList(v: Value) bool {
 
 pub const policy_validate = struct {
     pub const name = "validate";
-    pub const summary = "Check a policy file with Tailscale (its tests run too); changes nothing";
+    pub const summary = "Check a policy file with Tailscale; changes nothing";
+    pub const details =
+        \\Sends FILE to Tailscale to be validated, and runs the tests it
+        \\contains, without changing the live policy. Prints each error and
+        \\warning, and ends with an error when the file does not validate. Use
+        \\it while editing a policy, before 'artoo ts policy apply'.
+        \\
+        \\FILE must be a whole policy (an object); a file holding only a list of
+        \\tests is refused, since Tailscale would run it against the live policy
+        \\instead.
+    ;
     pub const positionals = [_]cli.Positional{.{ .name = "FILE", .help = "HuJSON policy file", .complete = .file }};
-    pub const examples = [_][]const u8{"artoo ts policy validate policy.hujson"};
+    pub const examples = [_][]const u8{ "artoo ts policy validate policy.hujson", "artoo ts policy validate policy.hujson -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const text = try readPolicyFile(ctx, args.pos("FILE"));
@@ -475,7 +513,13 @@ pub const policy_validate = struct {
 
 pub const policy_preview = struct {
     pub const name = "preview";
-    pub const summary = "Which rules of the live policy match a user or IP:PORT";
+    pub const summary = "Show which rules of the live policy match a user or IP:PORT";
+    pub const details =
+        \\Asks Tailscale which access rules of the live policy apply: for a
+        \\user's email, the rules that let that user reach something; for
+        \\IP:PORT, the rules that allow traffic to it. Lists each match with its
+        \\line in the policy, its sources and its destinations. Read-only.
+    ;
     pub const positionals = [_]cli.Positional{.{ .name = "FOR", .help = "A user's email, or IP:PORT (100.64.0.1:22)" }};
     pub const examples = [_][]const u8{ "artoo ts policy preview user@example.com", "artoo ts policy preview 192.168.1.10:8006" };
 
@@ -590,13 +634,21 @@ const RenameOp = struct {
 
 pub const device_rename = struct {
     pub const name = "rename";
-    pub const summary = "Rename a lab device on the tailnet (its MagicDNS name)";
-    pub const details = "Lab devices only. For a guest, 'artoo vm rename' renames everything at once.";
+    pub const summary = "Rename a lab device on the tailnet";
+    pub const details =
+        \\Changes a lab device's machine name, and with it its MagicDNS name.
+        \\Only the tailnet changes: to rename a guest everywhere its name lives
+        \\(VM, DNS records, tailnet and more), use 'artoo vm rename' instead.
+        \\
+        \\Refused for devices that are not lab devices, when another device
+        \\already has the name, and when a device that is a lab device only by
+        \\its VM's name would get a name that is no artoo VM.
+    ;
     pub const positionals = [_]cli.Positional{
         device_arg[0],
         .{ .name = "NEW", .help = "New machine name (one DNS label)" },
     };
-    pub const examples = [_][]const u8{"artoo ts device rename naboo-1 naboo"};
+    pub const examples = [_][]const u8{ "artoo ts device rename naboo-1 naboo -n", "artoo ts device rename naboo-1 naboo" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const new = args.pos("NEW");
@@ -675,13 +727,21 @@ fn sameTags(have: []const []const u8, want: []const []const u8) bool {
 
 pub const device_tag = struct {
     pub const name = "tag";
-    pub const summary = "Set a lab device's tags on the tailnet (each one of tailscale.guest_tags)";
+    pub const summary = "Set a lab device's tags on the tailnet";
     pub const details =
-        \\Replaces the device's whole tag list. Every tag must be listed in
-        \\tailscale.guest_tags, so to move a device to a new tag: name the tag
-        \\in the policy's tagOwners ('ts policy apply'), give it to the OAuth
-        \\client, add it to tailscale.guest_tags, then run this. The subnet
-        \\router is refused: its tag belongs to 'router setup'.
+        \\Replaces a lab device's whole tag list with TAGS. Every tag must be
+        \\listed in tailscale.guest_tags. The subnet router is refused: its tag
+        \\belongs to 'artoo router setup'.
+        \\
+        \\To give devices a tag that is new to the tailnet:
+        \\  add it to the policy's tagOwners ('artoo ts policy apply')
+        \\  give it to the OAuth client in the Tailscale console
+        \\  add it to tailscale.guest_tags
+        \\  run this command
+        \\
+        \\Tailscale keeps the tags a device advertises itself; only logging in
+        \\again changes those. For an artoo guest, 'artoo ts join VM --tag TAG'
+        \\does that.
     ;
     pub const positionals = [_]cli.Positional{
         device_arg[0],
@@ -765,8 +825,13 @@ pub const device_rm = struct {
     pub const name = "rm";
     pub const summary = "Remove a lab device from the tailnet (destructive)";
     pub const details =
-        \\Lab devices only. Interactive: type the machine name to confirm.
-        \\Non-interactive: --yes --confirm NAME.
+        \\Deletes a lab device from the tailnet; it must join again to come
+        \\back. Devices that are not lab devices are refused. With the Tailscale
+        \\credential, 'artoo vm rm' already removes a guest's device; this is
+        \\for what is left over.
+        \\
+        \\Interactively, type the machine name to confirm. Without a terminal,
+        \\pass --yes --confirm NAME.
     ;
     pub const positionals = device_arg;
     pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "NAME", .help = "Non-interactive confirmation (with --yes)" }};
@@ -840,10 +905,18 @@ pub const ApproveOp = struct {
 
 pub const routes_approve = struct {
     pub const name = "approve";
-    pub const summary = "Approve the LAN route a lab router advertises (only the LAN)";
-    pub const details = "Reads what the device advertises; refused when it does not advertise the LAN of guests.gateway. Exactly that route is approved — never an exit node or another subnet.";
+    pub const summary = "Approve the LAN route the subnet router advertises";
+    pub const details =
+        \\Approves the LAN (the network of guests.gateway) on the subnet router,
+        \\so tailnet devices can reach it. 'artoo router setup' does this
+        \\itself; use it when setup ended before the route was advertised.
+        \\
+        \\Exactly the LAN is approved, never an exit node or another subnet;
+        \\any other approved route is withdrawn. Refused for a device that is
+        \\not the subnet router, or that does not advertise the LAN.
+    ;
     pub const positionals = [_]cli.Positional{.{ .name = "ROUTER", .help = "The router's machine name or node ID" }};
-    pub const examples = [_][]const u8{"artoo ts routes approve dagobah"};
+    pub const examples = [_][]const u8{ "artoo ts routes approve dagobah -n", "artoo ts routes approve dagobah" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const lan = try router.lan(ctx);
@@ -912,13 +985,20 @@ const SplitOp = struct {
 
 pub const dns_split_set = struct {
     pub const name = "set";
-    pub const summary = "Point a lab domain (guests.domain or home.arpa) at the gateway on the tailnet";
-    pub const details = "Split DNS for guests.domain and home.arpa only, and only to the gateway (guests.gateway's address); other domains are untouched.";
+    pub const summary = "Point a lab domain at the gateway for tailnet devices";
+    pub const details =
+        \\Sets split DNS so tailnet devices resolve lab names through the
+        \\gateway: queries for DOMAIN go to NAMESERVER. Use it so names like
+        \\naboo.lab.example.com work away from home.
+        \\
+        \\Only guests.domain and home.arpa can be set, and only to the
+        \\gateway's address (guests.gateway); other domains are untouched.
+    ;
     pub const positionals = [_]cli.Positional{
         .{ .name = "DOMAIN", .help = "guests.domain or home.arpa" },
         .{ .name = "NAMESERVER", .help = "The gateway's address", .variadic = true },
     };
-    pub const examples = [_][]const u8{ "artoo ts dns split set lab.example.com 192.168.1.1", "artoo ts dns split set home.arpa 192.168.1.1" };
+    pub const examples = [_][]const u8{ "artoo ts dns split set lab.example.com 192.168.1.1 -n", "artoo ts dns split set lab.example.com 192.168.1.1", "artoo ts dns split set home.arpa 192.168.1.1" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const cfg = try ctx.config();
@@ -1148,22 +1228,30 @@ const JoinOp = struct {
 
 pub const join = struct {
     pub const name = "join";
-    pub const summary = "Join a guest tagged tailnet to the tailnet with a key artoo creates";
+    pub const summary = "Join a guest to the tailnet";
     pub const details =
-        \\The guest becomes a tagged node with --tag, one of
-        \\tailscale.guest_tags (default: the first): it accepts no
-        \\routes, advertises none, runs no Tailscale SSH and keeps its own DNS.
-        \\artoo creates a single-use, preauthorized key (10 min),
-        \\hands it to the guest over the agent's stdin and never shows it; a key
-        \\left unused by a failed run is deleted. Refused for guests without the
-        \\tailnet tag, role-edge, role-watch and role-router. A guest already
-        \\on the tailnet is only reported, unless --tag names another tag:
-        \\then it moves to that tag, logging in again with a new key (a
-        \\node's advertised tags change only that way).
+        \\Puts a running guest on the tailnet as a tagged device, so it is
+        \\reachable from your devices. The guest must carry the Proxmox tag
+        \\'tailnet' ('artoo vm set VM tags=…;tailnet').
+        \\
+        \\The guest joins with --tag, one of tailscale.guest_tags (default: the
+        \\first). It accepts no routes, advertises none, runs no Tailscale SSH
+        \\and keeps its own DNS.
+        \\
+        \\artoo creates a single-use, preauthorized key valid for 10 minutes,
+        \\hands it to the guest over the guest agent and never shows it; a key
+        \\a failed run leaves unused is deleted.
+        \\
+        \\A guest already on the tailnet is only reported, unless --tag names
+        \\another tag: then it logs in again with a new key and moves to that
+        \\tag, the only way a device's own tags change.
+        \\
+        \\Refused for guests without the 'tailnet' tag and for the edge,
+        \\watchdog and router VMs.
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "A running guest tagged tailnet", .complete = .vm }};
+    pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "A running guest tagged tailnet (VMID or name)", .complete = .vm }};
     pub const flags = [_]cli.Flag{.{ .long = "tag", .kind = .string, .metavar = "TAG", .help = "One of tailscale.guest_tags (default: the first)" }};
-    pub const examples = [_][]const u8{ "artoo ts join naboo -n", "artoo ts join naboo --tag tag:lab-guest", "artoo ts join naboo --tag tag:lab-app  # moves a joined guest" };
+    pub const examples = [_][]const u8{ "artoo ts join naboo -n", "artoo ts join naboo", "artoo ts join naboo --tag tag:lab-app" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const cfg = try ctx.config();
@@ -1294,20 +1382,31 @@ const ApplyOp = struct {
 
 pub const policy_apply = struct {
     pub const name = "apply";
-    pub const summary = "Replace the tailnet policy with a HuJSON file (high impact; the policy credential)";
+    pub const summary = "Replace the tailnet policy with a file (high impact)";
     pub const details =
-        \\Uses the separate tailscale-policy credential, never the main one:
-        \\create it for the change and revoke it afterwards. Refused before any
-        \\request when the file grants Funnel. Tailscale validates the file and
-        \\runs its tests; the plan shows the diff live → file; the write is sent
-        \\once with If-Match (the ETag read), so a policy changed meanwhile is
-        \\refused; a fresh read verifies it. -n stops after validation and the
-        \\diff. Interactive: type the tailnet's name to confirm.
-        \\Non-interactive: --yes --confirm TAILNET.
+        \\Replaces the whole tailnet policy with FILE (HuJSON). This changes who
+        \\may reach what for every device at once.
+        \\
+        \\It uses the separate tailscale-policy credential, never the main one:
+        \\create that OAuth client for the change, store it with 'artoo auth set
+        \\tailscale-policy', and revoke it afterwards.
+        \\
+        \\Steps:
+        \\  refuse a file that grants Funnel, before any request (no override)
+        \\  have Tailscale validate the file and run its tests
+        \\  show the plan with the diff from the live policy to FILE
+        \\  send the write once, only if the live policy has not changed since
+        \\    it was read
+        \\  read the policy again to verify it
+        \\
+        \\-n stops after validation and the diff. Interactively, type the
+        \\tailnet's name to confirm. Without a terminal, pass --yes --confirm
+        \\TAILNET. Keep the old policy first ('artoo ts policy show >
+        \\before.hujson') to be able to apply it again.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "FILE", .help = "HuJSON policy file", .complete = .file }};
     pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "TAILNET", .help = "Non-interactive confirmation (with --yes)" }};
-    pub const examples = [_][]const u8{ "artoo ts policy apply policy.hujson -n", "artoo ts policy apply policy.hujson" };
+    pub const examples = [_][]const u8{ "artoo ts policy apply policy.hujson -n", "artoo ts policy apply policy.hujson", "artoo ts policy apply policy.hujson --yes --confirm example.com" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const word = args.pos("FILE");
@@ -1320,14 +1419,14 @@ pub const policy_apply = struct {
     }
 };
 
-pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, split DNS and keys on the tailnet", &.{
+pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, DNS and keys on the tailnet", &.{
     cli.leaf(join),
     cli.group("devices", "Devices on the tailnet", &.{cli.leaf(devices_ls)}),
-    cli.group("device", "One device", &.{ cli.leaf(device_show), cli.leaf(device_rename), cli.leaf(device_tag), cli.leaf(device_rm) }),
-    cli.group("routes", "Subnet routes", &.{cli.leaf(routes_approve)}),
-    cli.group("dns", "Tailnet DNS", &.{ cli.leaf(dns_show), cli.group("split", "Split DNS for the lab's domains", &.{cli.leaf(dns_split_set)}) }),
-    cli.group("keys", "Auth key metadata", &.{cli.leaf(keys_ls)}),
-    cli.group("policy", "The tailnet policy", &.{ cli.leaf(policy_show), cli.leaf(policy_validate), cli.leaf(policy_preview), cli.leaf(policy_apply) }),
+    cli.group("device", "Show or change one device on the tailnet", &.{ cli.leaf(device_show), cli.leaf(device_rename), cli.leaf(device_tag), cli.leaf(device_rm) }),
+    cli.group("routes", "The subnet router's LAN route", &.{cli.leaf(routes_approve)}),
+    cli.group("dns", "The tailnet's DNS settings and split DNS", &.{ cli.leaf(dns_show), cli.group("split", "Split DNS for the lab's domains", &.{cli.leaf(dns_split_set)}) }),
+    cli.group("keys", "Auth keys on the tailnet (metadata only)", &.{cli.leaf(keys_ls)}),
+    cli.group("policy", "The tailnet policy: show, check, preview, apply", &.{ cli.leaf(policy_show), cli.leaf(policy_validate), cli.leaf(policy_preview), cli.leaf(policy_apply) }),
 });
 
 // ---------------------------------------------------------------- tests

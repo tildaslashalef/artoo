@@ -95,7 +95,16 @@ fn soft(ctx: *Context, err: anyerror) !Public {
 
 pub const ls = struct {
     pub const name = "ls";
-    pub const summary = "The account's tunnels and the lab tunnel's public routes";
+    pub const summary = "List the account's tunnels and the lab tunnel's routes";
+    pub const details =
+        \\Shows every Cloudflare Tunnel in the account with its status and
+        \\connections, then the public routes of the lab's tunnel
+        \\(cloudflare.tunnel): each public host, the service it reaches, and
+        \\whether its CNAME record points at the tunnel. Read-only.
+        \\
+        \\Create the lab's tunnel with 'artoo edge tunnel'; publish a service
+        \\with 'artoo cf tunnel route add'.
+    ;
     pub const examples = [_][]const u8{ "artoo cf tunnel ls", "artoo cf tunnel ls -o json" };
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
@@ -307,13 +316,21 @@ fn publicHost(ctx: *Context, word: []const u8) ![]const u8 {
 
 pub const route_add = struct {
     pub const name = "add";
-    pub const summary = "Publish HOST through the tunnel to an existing service";
+    pub const summary = "Publish a lab service on a public host name";
     pub const details =
-        \\HOST is a name in cloudflare.zone (a short name gets it appended);
-        \\SERVICE an existing 'artoo svc' service. Adds an ingress rule (Caddy on
-        \\the edge VM, TLS verified as SERVICE.apps.<guests.domain>) and a marked,
-        \\proxied CNAME to the tunnel. Refused: Proxmox or UniFi names, private
-        \\names, the zone apex, a host that already has a record or another route.
+        \\Makes an existing 'artoo svc' service reachable from the internet at
+        \\HOST, a name in cloudflare.zone (a short name gets the zone appended).
+        \\Traffic enters through the lab's Cloudflare Tunnel and reaches the
+        \\service through Caddy on the edge VM, with TLS verified as
+        \\SERVICE.apps.<guests.domain>.
+        \\
+        \\Changes:
+        \\  an ingress rule HOST → SERVICE on the lab's tunnel
+        \\  a proxied CNAME HOST → the tunnel, marked as artoo's
+        \\
+        \\Refused: the Proxmox host or the UniFi gateway by name, private guest
+        \\names, the zone apex, and a HOST that already has a record or another
+        \\route.
     ;
     pub const positionals = [_]cli.Positional{
         .{ .name = "HOST", .help = "Public host name in the zone" },
@@ -425,11 +442,14 @@ const RmOp = struct {
 
 pub const route_rm = struct {
     pub const name = "rm";
-    pub const summary = "Unpublish HOST: record, then route (destructive)";
+    pub const summary = "Unpublish a public host name (destructive)";
     pub const details =
-        \\Removes the marked CNAME and the tunnel's ingress rule for HOST; the
-        \\service itself stays on the LAN. Type the full host name to confirm, or
-        \\--yes --confirm HOST.
+        \\Takes HOST off the internet: deletes its marked CNAME first, then the
+        \\tunnel's ingress rule for it. The service itself keeps working on the
+        \\LAN; remove it with 'artoo svc rm'.
+        \\
+        \\Interactively, type the full host name to confirm. Without a terminal,
+        \\pass --yes --confirm HOST.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "HOST", .help = "Public host name in the zone" }};
     pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "HOST", .help = "Non-interactive confirmation (with --yes)" }};
@@ -446,7 +466,7 @@ pub const route_rm = struct {
 
 pub const group = cli.group("tunnel", "The lab's Cloudflare Tunnel and its public routes", &.{
     cli.leaf(ls),
-    cli.group("route", "Public hosts → services", &.{
+    cli.group("route", "Publish a lab service on a public host name, or unpublish it", &.{
         cli.leaf(route_add),
         cli.leaf(route_rm),
     }),

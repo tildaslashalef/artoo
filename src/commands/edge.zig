@@ -606,17 +606,27 @@ const SetupOp = struct {
 
 pub const setup = struct {
     pub const name = "setup";
-    pub const summary = "Harden and configure the edge VM (idempotent)";
+    pub const summary = "Harden and configure the edge VM";
     pub const details =
-        \\Brings the VM tagged role-edge to its hardened layout: kernel hardening, the
-        \\nftables policy (SSH only from Proxmox; no route to Proxmox or UniFi's
-        \\other ports or the LAN beyond the guest pool), Tailscale removed,
-        \\cloudflared from Cloudflare's signed repository, Caddy built from
-        \\pinned sources with the Cloudflare DNS module, its sandboxed service
-        \\and Caddyfile, and the same policy as the VM's Proxmox firewall on Proxmox
-        \\(rules, source-address and MAC filter, NIC firewall=1) — which root
-        \\inside the VM cannot change. Only the steps the observed state needs are
+        \\Turns the VM tagged role-edge into the lab's hardened HTTPS entry
+        \\point: Caddy serves the service names, cloudflared carries the public
+        \\routes. Idempotent: only the steps the observed state still needs are
         \\planned.
+        \\
+        \\Steps:
+        \\  kernel hardening
+        \\  an nftables policy: SSH only from Proxmox; no way to Proxmox, UniFi
+        \\    or the LAN beyond what the edge needs (the guest pool)
+        \\  Tailscale removed
+        \\  cloudflared from Cloudflare's signed package repository
+        \\  Caddy built from pinned sources with the Cloudflare DNS module, with
+        \\    a sandboxed service and its Caddyfile
+        \\  the same policy as the VM's Proxmox firewall (rules, source address
+        \\    and MAC filter, firewall=1 on the NIC), which root inside the VM
+        \\    cannot change
+        \\
+        \\Next: 'artoo edge secret dns' for the wildcard certificate, then
+        \\'artoo edge tunnel'. Check with 'artoo edge status'.
     ;
     pub const flags = [_]cli.Flag{snapguard.flag};
     pub const examples = [_][]const u8{ "artoo edge setup -n", "artoo edge setup --snapshot -y" };
@@ -687,16 +697,23 @@ const SecretOp = struct {
 
 pub const secret = struct {
     pub const name = "secret";
-    pub const summary = "Store a token on the edge VM only (hidden prompt or --stdin)";
+    pub const summary = "Store a token on the edge VM only";
     pub const details =
-        \\dns: the edge's own Cloudflare account token (Specified Domains →
-        \\example.com; DNS Edit + Zone Read) for the *.apps wildcard via DNS-01.
-        \\The value goes over the guest agent's stdin into a root-only file;
-        \\artoo never stores, prints or logs it.
+        \\Hands a token to the edge VM without keeping it anywhere else. The
+        \\value is read from a hidden prompt or --stdin and goes over the guest
+        \\agent into a root-only file on the VM; artoo never stores, prints or
+        \\logs it.
+        \\
+        \\Kinds:
+        \\  dns  a Cloudflare API token of its own for the edge, limited to the
+        \\       zone (DNS Edit and Zone Read), so Caddy can get the *.apps
+        \\       wildcard certificate through DNS-01
+        \\
+        \\The tunnel's token needs no command: 'artoo edge tunnel' fetches it.
     ;
-    pub const positionals = [_]cli.Positional{.{ .name = "KIND", .help = "dns" }};
+    pub const positionals = [_]cli.Positional{.{ .name = "KIND", .help = "Which token: dns" }};
     pub const flags = [_]cli.Flag{.{ .long = "stdin", .help = "Read the token from standard input" }};
-    pub const examples = [_][]const u8{"artoo edge secret dns"};
+    pub const examples = [_][]const u8{ "artoo edge secret dns", "pbpaste | artoo edge secret dns --stdin -y" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         if (!std.mem.eql(u8, args.pos("KIND"), "dns")) return ctx.fail(error.Usage, "KIND must be dns (the tunnel token arrives with the tunnel)", .{});
@@ -824,13 +841,21 @@ const TunnelOp = struct {
 
 pub const tunnel = struct {
     pub const name = "tunnel";
-    pub const summary = "Create the lab's Cloudflare Tunnel and connect the edge VM (idempotent)";
+    pub const summary = "Create the lab's Cloudflare Tunnel and connect the edge VM";
     pub const details =
-        \\Creates the remotely managed tunnel cloudflare.tunnel when it does not
-        \\exist, fetches its token from Cloudflare and writes it through the guest
-        \\agent into a root-only file on the edge VM, then starts cloudflared
-        \\under artoo's sandboxed unit. The token is never displayed, logged or
-        \\stored on this Mac. Needs 'artoo edge setup' first.
+        \\Connects the edge VM to Cloudflare so services can be published with
+        \\'artoo cf tunnel route add'. Run 'artoo edge setup' first. Idempotent:
+        \\only the missing steps are planned.
+        \\
+        \\Steps:
+        \\  create the remotely managed tunnel cloudflare.tunnel, if missing
+        \\  fetch its token and write it over the guest agent into a root-only
+        \\    file on the edge VM
+        \\  start cloudflared under artoo's sandboxed service
+        \\
+        \\The token is never displayed, logged or stored on this workstation.
+        \\Creating the tunnel publishes nothing; each public host is a route of
+        \\its own.
     ;
     pub const examples = [_][]const u8{ "artoo edge tunnel -n", "artoo edge tunnel -y" };
 
@@ -874,11 +899,13 @@ pub fn counter(a: std.mem.Allocator, json: []const u8, want: []const u8) ?i64 {
 
 pub const status = struct {
     pub const name = "status";
-    pub const summary = "The edge VM's health and signs of compromise (read-only)";
+    pub const summary = "Show the edge VM's health and signs of compromise (read-only)";
     pub const details =
-        \\Drop counters towards Proxmox and UniFi first (any hit is a sign of
-        \\compromise), then the firewall, Caddy and its module, the wildcard
-        \\certificate, cloudflared, failed SSH logins (24 h) and pending reboot.
+        \\Checks the edge VM, most important first: the firewall's drop counters
+        \\towards Proxmox and UniFi (any hit is a sign of compromise), then the
+        \\firewall itself, Caddy and its DNS module, the wildcard certificate,
+        \\cloudflared, failed SSH logins in the last 24 hours and a pending
+        \\reboot.
     ;
     pub const examples = [_][]const u8{ "artoo edge status", "artoo edge status -o json" };
 
@@ -935,7 +962,7 @@ pub fn healthOf(ctx: *Context, c: *pve.Client, v: vms.Vm) !Health {
     return .{ .vm = v.name, .checks = checks.items };
 }
 
-pub const group = cli.group("edge", "The edge VM: hardened HTTPS and tunnel endpoint", &.{
+pub const group = cli.group("edge", "The edge VM: hardened HTTPS and the Cloudflare Tunnel's endpoint", &.{
     cli.leaf(setup),
     cli.leaf(secret),
     cli.leaf(tunnel),

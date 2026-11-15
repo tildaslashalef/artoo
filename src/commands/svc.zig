@@ -460,12 +460,15 @@ fn hasName(names: []const []const u8, want: []const u8) bool {
 
 pub const ls = struct {
     pub const name = "ls";
-    pub const summary = "List service names: URL, upstream, record and route";
+    pub const summary = "List service names with their upstream, record and route";
     pub const details =
-        \\Joins the route files on the edge VM with the A records under
-        \\apps.<guests.domain> on UniFi and reports drift: a record without
-        \\a route, a route without a record, a record pointing elsewhere, a route
-        \\edited by hand or to a VM that no longer exists.
+        \\Shows each service name: its URL, the guest and port it reaches, its
+        \\UniFi record and its route on the edge VM. Read-only.
+        \\
+        \\Also reports drift between the two halves:
+        \\  a record without a route, or a route without a record
+        \\  a record pointing somewhere other than the edge VM
+        \\  a route edited by hand, or to a VM that no longer exists
     ;
     pub const examples = [_][]const u8{ "artoo svc ls", "artoo svc ls -o json" };
 
@@ -738,26 +741,34 @@ const put_positionals = [_]cli.Positional{
 };
 
 const put_flags = [_]cli.Flag{
-    .{ .long = "health", .kind = .string, .metavar = "PATH", .help = "Path the edge probe and the watchdog request (2xx = up); replaces the down text too" },
+    .{ .long = "health", .kind = .string, .metavar = "PATH", .help = "Health path the probes request (2xx = up); replaces the down text too" },
     .{ .long = "health-down", .kind = .string, .metavar = "TEXT", .help = "Literal text that means down in the health answer (with --health)" },
 };
 
 pub const add = struct {
     pub const name = "add";
-    pub const summary = "Add a service name: edge route + UniFi record";
+    pub const summary = "Add a service name on the edge VM";
     pub const details =
-        \\NAME.apps.<guests.domain> gets a route on the edge VM to the guest's
-        \\machine name and port (plain HTTP), then an A record on UniFi to
-        \\the edge's address. The guest must be an artoo guest in the address
-        \\pool. Caddy validates the configuration before it reloads; a probe
-        \\from the edge shows whether the service answers (a 502 is a warning:
-        \\the service may not run yet). A half that already exists and matches
-        \\is kept.
+        \\Gives a guest's web service a LAN name with HTTPS:
+        \\NAME.apps.<guests.domain>, served by Caddy on the edge VM with the
+        \\wildcard certificate. The guest must be an artoo guest in the address
+        \\pool. The name stays private; publish it with 'artoo cf tunnel route
+        \\add'.
         \\
-        \\--health names the path that reports the service's health (default /),
-        \\and --health-down a text that means down in its answer; both live in
-        \\the route file and are what the edge probe and the watchdog's probe
-        \\request ('artoo watch setup' picks up a change). Without --health an
+        \\Steps:
+        \\  a route on the edge VM to the guest's machine name and port (plain
+        \\    HTTP); Caddy validates the configuration before it reloads
+        \\  an A record on UniFi pointing NAME at the edge VM
+        \\  a probe from the edge (a 502 is only a warning: the service may not
+        \\    run yet)
+        \\
+        \\A half that already exists and matches is kept, so a rerun completes
+        \\a half-done add.
+        \\
+        \\Health: --health names the path that reports the service's health
+        \\(default /) and --health-down a text that means down in its answer.
+        \\Both are kept in the route and used by the edge probe and the
+        \\watchdog ('artoo watch setup' picks up a change). Without --health an
         \\existing route keeps its health; an existing route to the same VM:PORT
         \\with other health is rewritten.
     ;
@@ -766,7 +777,7 @@ pub const add = struct {
     pub const examples = [_][]const u8{
         "artoo svc add grafana naboo:3000 -n",
         "artoo svc add grafana naboo:3000 -y",
-        "artoo svc add search holocron:8080 --health /v1/health --health-down '\"down\"'",
+        "artoo svc add search hoth:8080 --health /v1/health --health-down '\"down\"'",
     };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
@@ -776,15 +787,18 @@ pub const add = struct {
 
 pub const set = struct {
     pub const name = "set";
-    pub const summary = "Move a service to another guest or port (route only)";
+    pub const summary = "Move a service name to another guest or port";
     pub const details =
-        \\The name and its DNS record stay; only the edge route changes. The
-        \\health path and down text stay unless --health replaces them
-        \\(--health / alone resets them).
+        \\Points an existing service name at a new VM:PORT. Only the route on
+        \\the edge VM changes; the name, its UniFi record and any public route
+        \\stay as they are.
+        \\
+        \\The health path and down text are kept unless --health replaces them;
+        \\--health / alone resets both.
     ;
     pub const positionals = put_positionals;
     pub const flags = put_flags;
-    pub const examples = [_][]const u8{ "artoo svc set grafana hoth:3000", "artoo svc set search holocron:8080 --health /" };
+    pub const examples = [_][]const u8{ "artoo svc set grafana hoth:3000 -n", "artoo svc set grafana hoth:3000", "artoo svc set search hoth:8080 --health /" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         try put(ctx, .set, args.pos("NAME"), args.pos("VM:PORT"), args.string("health"), args.string("health-down"));
@@ -965,11 +979,18 @@ fn fencesConverged(c: *pve.Client, fences: []const vm_fence.Follow) !bool {
 
 pub const rm = struct {
     pub const name = "rm";
-    pub const summary = "Remove a service name: record, then route (destructive)";
+    pub const summary = "Remove a service name (destructive)";
     pub const details =
-        \\Removes the UniFi record (only when it points at the edge VM), then
-        \\the route on the edge, and reloads Caddy. The guest is untouched. Type
-        \\the service name to confirm, or --yes --confirm NAME.
+        \\Deletes the service name's UniFi record (only when it points at the
+        \\edge VM), then its route on the edge VM, and reloads Caddy. The guest
+        \\and its service are untouched.
+        \\
+        \\Refused while a public host still reaches the service: unpublish it
+        \\first with 'artoo cf tunnel route rm HOST'. A route file not written
+        \\by artoo is left for you to remove by hand.
+        \\
+        \\Interactively, type the service name to confirm. Without a terminal,
+        \\pass --yes --confirm NAME.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "NAME", .help = "Service name" }};
     pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "NAME", .help = "Non-interactive confirmation (with --yes)" }};
@@ -987,7 +1008,7 @@ pub const rm = struct {
     }
 };
 
-pub const group = cli.group("svc", "Service names <name>.apps.<guests.domain> on the edge VM", &.{
+pub const group = cli.group("svc", "Service names NAME.apps.<guests.domain> on the edge VM", &.{
     cli.leaf(ls),
     cli.leaf(add),
     cli.leaf(set),
