@@ -206,6 +206,15 @@ pub fn hasBlock(ctx: *Context, name: []const u8) !bool {
     return ssh_config.hasBlock(ctx.arena, try readFile(ctx, try path(ctx)), name);
 }
 
+/// The block `vm ssh-config` writes for a guest named `name`: its static
+/// address, else the agent's first IPv4; null when neither is usable.
+pub fn blockFor(c: *pve.Client, name: []const u8, v: vms.Vm, cfg: Value) !?ssh_config.Block {
+    if (blockOf(name, cfg)) |b| return b;
+    const address = try addressOf(c, v, cfg) orelse return null;
+    if (!ssh_config.validName(name) or !ssh_config.validAddress(address)) return null;
+    return .{ .name = name, .address = address, .jump = known_hosts.wantsJump(pve.str(cfg, "tags") orelse v.tags) };
+}
+
 /// The block for a guest from its config (for `vm new` and `vm set`).
 pub fn blockOf(name: []const u8, cfg: Value) ?ssh_config.Block {
     const address = life.staticAddress(cfg) orelse return null;
