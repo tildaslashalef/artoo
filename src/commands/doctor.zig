@@ -277,10 +277,27 @@ fn probeTailscale(r: *Report) !void {
     for (ts_scopes) |s| if (!ts.grants(have, s[0])) try missing.print(ctx.arena, "{s}{s} ({s})", .{ if (missing.items.len > 0) ", " else "", s[0], s[1] });
     const granted = if (c.scopes.len > 0) c.scopes else "none reported";
     const cfg = try ctx.config();
-    // The token response names scopes, not tags: the client's tags are
-    // checked when a key is created (an unowned tag is refused then).
-    const tags = try std.fmt.allocPrint(ctx.arena, "tags not reported by Tailscale; the client needs {s} and {s}", .{ @import("../tailscale/tailnet.zig").router_tag, cfg.tailscale.guest_tag });
-    if (missing.items.len > 0) return r.add("tailscale", .warning, "token granted: {s}; missing: {s} (SPEC §19); {s}", .{ granted, missing.items, tags });
+    // The router's tag and every guest tag `ts join` may use.
+    var want: std.ArrayList([]const u8) = .empty;
+    try want.append(ctx.arena, @import("../tailscale/tailnet.zig").router_tag);
+    try want.appendSlice(ctx.arena, try config.tsTags(ctx.arena, cfg.tailscale.guest_tags));
+    const want_text = try std.mem.join(ctx.arena, ", ", want.items);
+    // The documented token response names scopes, not tags: then the
+    // client's tags are checked when a key is created (an unowned tag is
+    // refused there, before anything reaches a guest).
+    var tags_missing: std.ArrayList(u8) = .empty;
+    const tags = if (c.tags) |owned| blk: {
+        for (want.items) |t| {
+            var has = false;
+            for (owned) |o| has = has or std.mem.eql(u8, o, t);
+            if (!has) try tags_missing.print(ctx.arena, "{s}{s}", .{ if (tags_missing.items.len > 0) ", " else "", t });
+        }
+        break :blk if (tags_missing.items.len > 0)
+            try std.fmt.allocPrint(ctx.arena, "tags missing: {s}", .{tags_missing.items})
+        else
+            try std.fmt.allocPrint(ctx.arena, "tags granted: {s}", .{want_text});
+    } else try std.fmt.allocPrint(ctx.arena, "tags not reported by Tailscale; the client needs {s}", .{want_text});
+    if (missing.items.len > 0 or tags_missing.items.len > 0) return r.add("tailscale", .warning, "token granted: {s}{s}{s} (SPEC §19); {s}", .{ granted, if (missing.items.len > 0) "; missing: " else "", missing.items, tags });
     try r.add("tailscale", .ok, "token granted: {s}; tailnet {s}; {s}", .{ granted, c.tailnet, tags });
 }
 
@@ -393,7 +410,7 @@ test "doctor --connect: the Tailscale token exchange reports granted and missing
     try f.tailscaleConfig("");
     _ = f.h.run(&root, "doctor --connect");
     const out = f.h.stdout();
-    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns; missing: policy_file:read (policy) (SPEC §19); tags not reported by Tailscale; the client needs tag:lab-router and tag:lab-guest") == null or
+    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns; missing: policy_file:read (policy) (SPEC §19); tags not reported by Tailscale; the client needs tag:lab-router, tag:lab-guest") == null or
         std.mem.find(u8, out, "not stored (created only to change the policy, SPEC §19)") == null)
     {
         std.debug.print("--- output:\n{s}\n", .{out});
@@ -408,6 +425,26 @@ test "doctor --connect: the Tailscale token exchange reports granted and missing
     try testing.expect(std.mem.endsWith(u8, exchange, "grant_type=client_credentials&client_id=kTEST1CNTRL&client_secret=tskey-client-test-secret"));
     try testing.expect(std.mem.find(u8, out, "tskey-") == null);
     try testing.expect(std.mem.find(u8, f.h.stderr(), "tskey-") == null);
+}
+
+test "doctor --connect: tags the token response names are compared with tag:lab-router and tailscale.guest_tags" {
+    var f: @import("../testkit.zig").Gateway = undefined;
+    try f.initRoutes(&.{
+        .{ .match = "/v1/info", .behavior = .{ .respond = .{ .body = "{\"applicationVersion\":\"10.6.106\"}" } } },
+        .{ .match = "/version", .behavior = .{ .respond = .{ .body = "{\"data\":{\"version\":\"9.2.21\"}}" } } },
+        .{ .match = "/zones", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":[{\"id\":\"Z1\",\"name\":\"example.com\",\"account\":{\"id\":\"A1\"}}],\"result_info\":{\"page\":1,\"per_page\":100,\"count\":1,\"total_count\":1}}" } } },
+        .{ .match = "/tokens/verify", .behavior = .{ .respond = .{ .body = "{\"success\":true,\"errors\":[],\"messages\":[],\"result\":{\"id\":\"T1\",\"status\":\"active\"}}" } } },
+        .{ .match = "POST /oauth/token", .behavior = .{ .respond = .{ .body = "{\"access_token\":\"a1\",\"scope\":\"devices:core devices:routes auth_keys dns policy_file:read\",\"tags\":\"tag:lab-router tag:lab-guest\"}" } } },
+    });
+    defer f.deinit();
+    try f.tmp.dir.createDirPath(testing.io, ".artoo");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kMAIN\",\"guest_tags\":\"tag:lab-guest,tag:lab-app\"}}\n" });
+    _ = f.h.run(&root, "doctor --connect");
+    const out = f.h.stdout();
+    if (std.mem.find(u8, out, "token granted: devices:core devices:routes auth_keys dns policy_file:read (SPEC §19); tags missing: tag:lab-app") == null) {
+        std.debug.print("--- output:\n{s}\n", .{out});
+        return error.TestUnexpectedResult;
+    }
 }
 
 test "doctor --connect: a stored policy client is exchanged with its own ID and secret" {
