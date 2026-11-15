@@ -206,7 +206,7 @@ fn configField(ctx: *Context, d: Detail, label: []const u8, key: []const u8) !?u
 /// `sshkeys` as `N key(s)`.
 fn keyCount(ctx: *Context, keys: ?Value) !?[]const u8 {
     const t = (try valueText(ctx, keys orelse return null)) orelse return null;
-    return try std.fmt.allocPrint(ctx.arena, "{d} key(s)", .{std.mem.count(u8, t, "ssh-")});
+    return try std.fmt.allocPrint(ctx.arena, "{f}", .{ui.values.count(std.mem.count(u8, t, "ssh-"), "key")});
 }
 
 /// A count key after the next start: the pending value, `default` when
@@ -359,9 +359,9 @@ fn pendingWord(v: vms.Vm) []const u8 {
 pub fn pendingHint(ctx: *Context, v: vms.Vm, n: usize) ![]const u8 {
     const name = try k.clean(ctx, v.name);
     return if (v.running())
-        std.fmt.allocPrint(ctx.arena, "{d} change(s) wait for a restart: 'artoo vm reboot {s}'", .{ n, name })
+        std.fmt.allocPrint(ctx.arena, "{f} wait for a restart: 'artoo vm reboot {s}'", .{ ui.values.count(n, "change"), name })
     else
-        std.fmt.allocPrint(ctx.arena, "{d} change(s) wait for the next start: 'artoo vm start {s}'", .{ n, name });
+        std.fmt.allocPrint(ctx.arena, "{f} wait for the next start: 'artoo vm start {s}'", .{ ui.values.count(n, "change"), name });
 }
 
 /// `memory 4096 → 2048, cores 2 → 4`: the waiting keys in one line.
@@ -551,7 +551,7 @@ test "vm show: sections; agent addresses; hidden password" {
         "VM web-01\n",
         "  Addresses   192.168.1.200/24 (eth0)\n",
         "  cipassword  set (hidden)\n",
-        "  sshkeys     1 key(s)\n",
+        "  sshkeys     1 key\n",
         "  Names       pre-upgrade\n",
         "  Memory      488.3 MiB / 1.9 GiB (25.0%)",
         "  Cache       976.6 MiB  reclaimable\n",
@@ -619,7 +619,7 @@ test "vm show and vm config: pending values marked (SPEC §9.13)" {
         "  cores       2 → 4  pending restart\n",
         "  memory      4096 → 2048  pending restart\n",
         "  net0        virtio=BC:24:11:00:00:01,bridge=vmbr0\n",
-        "\n4 change(s) wait for a restart: 'artoo vm reboot web-01'\n",
+        "\n4 changes wait for a restart: 'artoo vm reboot web-01'\n",
     });
     // JSON: the `/pending` list, the password masked.
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "vm config web-01 -o json"));

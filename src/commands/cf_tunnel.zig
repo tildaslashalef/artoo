@@ -614,5 +614,5 @@ test "svc rm refuses while a public host reaches the service" {
     defer g.deinit();
     const svc_root = cli.group("artoo", "t", &.{svc.group});
     try testing.expectEqual(testkit.Exit.refused, g.h.run(&svc_root, "svc rm grafana -n"));
-    try testing.expect(std.mem.find(u8, g.h.stderr(), "public host(s) blog.example.com reach service grafana") != null);
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "public host blog.example.com reaches service grafana") != null);
 }

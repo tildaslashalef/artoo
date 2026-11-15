@@ -491,7 +491,7 @@ pub const status = struct {
         try k.header(ctx, &c);
         try vm_new.renderChecks(ctx, h.checks);
         const failed = vm_new.failures(h.checks);
-        if (failed > 0) return ctx.fail(error.Partial, "{d} check(s) failed on {s}", .{ failed, h.vm });
+        if (failed > 0) return ctx.fail(error.Partial, "{f} failed on {s}", .{ ui.values.count(failed, "check"), h.vm });
     }
 };
 
