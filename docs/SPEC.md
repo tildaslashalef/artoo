@@ -129,6 +129,7 @@ artoo ts policy show [--json] | validate FILE | preview USER|IP:PORT   the polic
 artoo ts device rename NAME NEW | device rm NAME   lab devices only (rm: typed confirmation)
 artoo ts routes approve ROUTER        approve exactly the LAN route a lab router advertises
 artoo ts dns split set DOMAIN NAMESERVER…   guests.domain or home.arpa → the gateway only
+artoo ts join VM                     enroll a guest tagged tailnet with a key artoo creates (never shown)
 artoo svc ls | add NAME VM:PORT [--health PATH [--health-down TEXT]] | set NAME VM:PORT [--health …] | rm NAME
                                       service names on the edge VM (§9.6)
 artoo watch setup | status | enroll VM…|--all | secret grafana|phone | forget HOST
@@ -900,7 +901,8 @@ reservations; the classic calls live in `src/unifi/classic.zig` only.
   `tailnet` (`vm set NAME tags=…,tailnet`), for a program that identifies
   callers by their tailnet login: a tagged node, `--accept-routes=false`,
   no advertised routes, no Tailscale SSH, reachable only on the ports
-  the tailnet policy grants. Every other guest stays installed but not
+  the tailnet policy grants; `ts join VM` enrolls it with a single-use
+  key artoo creates and never shows (§19). Every other guest stays installed but not
   enrolled (§9.1), and `vm verify` holds both (§9.4). Never the edge or
   the watchdog (§9.7, §9.9).
 - **Public access is per service** (decided 2026-10-11): `vm new` → `svc add` → `cf tunnel route add HOST
@@ -3101,11 +3103,16 @@ an access token valid one hour, held in memory for that invocation only.
 
 | Scope | Needed for |
 | --- | --- |
-| `devices:core` (write), tag `tag:lab-router` | read, rename and remove devices, set tags; auth keys it creates are limited to its tags |
+| `devices:core` (write), tags `tag:lab-router` and `tailscale.guest_tag` | read, rename and remove devices, set tags; auth keys it creates are limited to its tags |
 | `devices:routes` (write) | read and approve the router's advertised route |
-| `auth_keys` (write) | create and delete the router's single-use join key |
+| `auth_keys` (write), the same two tags | create and delete the single-use join keys of the router and of `ts join` |
 | `dns` (write) | read and set split DNS |
 | `policy_file:read` (+ `devices:core:read`, `devices:posture_attributes:read`, which it requires) | show, validate and preview the policy |
+
+The token response names the granted scopes, not tags, so `doctor
+--connect` reports the scopes and says which tags the client needs; a
+tag it does not own is refused by Tailscale when a key is created (400,
+before anything reaches a guest).
 
 Protection model: a leaked secret can add tagged devices, approve routes
 and rename or remove devices, but cannot change who may reach what (no
@@ -3121,7 +3128,8 @@ no pooling, no write retries (§8.1). Errors are an HTTP status with
 limited, never retried by a write. No pagination: lists arrive whole.
 
 **Ownership.** Writes touch **lab devices only**: a device tagged
-`tag:lab-router`, or one whose name is a VM on Proxmox tagged `artoo`.
+`tag:lab-router` or `tailscale.guest_tag`, or one whose name is a VM on
+Proxmox tagged `artoo`.
 The operator's own devices (workstation, phone) are listed, never
 renamed, retagged or removed. The router's routes may be set only to
 the LAN (`guests.gateway`'s subnet): never an exit node, never another
@@ -3151,6 +3159,23 @@ both pointing at the gateway.
   does not advertise it.
 - `ts dns split set DOMAIN NAMESERVER…` — `PATCH …/dns/split-dns` with
   that one domain (others untouched), verified by a fresh read.
+- `ts join VM` — enrolls a running guest tagged `tailnet` (§9.6) as a
+  tagged node: `tailscale up --advertise-tags=<tailscale.guest_tag>
+  --hostname=<vm> --accept-routes=false --advertise-routes=
+  --accept-dns=false --ssh=false`. The key path is the router's: artoo
+  creates a single-use, preauthorized, non-ephemeral key with the guest
+  tag, an expiry of 10 minutes and the description `artoo join <vm>`,
+  hands it over the guest agent's stdin into a 0600 file under `/run`
+  (passed as `file:`, removed whatever happens), never displays it, and
+  deletes it when a failed run left it unused. Refused (exit 5) for a
+  template, a guest not tagged `artoo` or not tagged `tailnet`,
+  `role-edge`, `role-watch` and `role-router` (which joins with `router
+  setup`), a stopped guest or a silent agent; a guest whose
+  `tailscale status` already says `Running` is only reported (exit 5,
+  nothing created). Verified by the guest's `tailscale status --json`
+  (`Running`, the tag) and the device appearing in the API with the tag.
+  No command prints a key for a machine that is not a guest: other
+  machines join from the console.
 
 **Into existing commands** (each only when the `tailscale` credential is
 stored; without it they behave as today):
@@ -3158,7 +3183,8 @@ stored; without it they behave as today):
 - `router setup` (§9.8) creates the join key itself — `POST
   …/keys` with single use, preauthorized, not ephemeral, tag
   `tag:lab-router`, an expiry of 10 minutes and the description
-  `artoo: router <vm>` — and passes it to the guest exactly as an
+  `artoo router <vm>` (the OpenAPI document allows only letters, digits,
+  hyphens and spaces, at most 50) — and passes it to the guest exactly as an
   entered key (0600 file under `/run`, removed whatever happens). It is
   never displayed. A run that fails before the key is used deletes the
   key. Then it approves the route as `ts routes approve` does and checks
