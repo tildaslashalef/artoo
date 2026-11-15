@@ -53,6 +53,10 @@ const guest_script =
     \\
 ;
 
+/// How often (every 5 s, so up to 2 min) the watchdog is asked for NEW's
+/// samples before OLD's series may be deleted.
+const watch_polls = 24;
+
 /// After `tailscale set --hostname`, how often (every 2 s, so about 30 s)
 /// the device is read before artoo renames it through the API.
 const tailnet_polls = 15;
@@ -95,9 +99,18 @@ const Observed = struct {
     device: ?tn.Device,
     /// Why the Tailscale API is left out (a broken credential).
     ts_note: ?[]const u8,
+    /// The VM tagged `role-watch`, in any state.
     watch_vm: ?vms.Vm,
+    /// It runs and its agent answers.
+    watch_ready: bool,
+    /// Why the watchdog step does not apply (no-watch, never enrolled, no
+    /// watchdog); null when it does.
+    watch_skip: ?[]const u8,
+    /// The `host` label the guest's Alloy reports with ("" never enrolled).
+    label: []const u8,
     old_series: usize,
-    watch_note: ?[]const u8,
+    /// The watchdog's probes still name OLD as a service's upstream.
+    probes_old: bool,
 };
 
 /// Which steps still have work.
@@ -342,24 +355,33 @@ const RenameOp = struct {
             }
         }
 
-        // Watchdog.
+        // Watchdog: the guest's Alloy names it by the label 'watch enroll'
+        // rendered; the watchdog keeps OLD's series and probes naming OLD.
         var watch_vm: ?vms.Vm = null;
+        var watch_ready = false;
+        var watch_skip: ?[]const u8 = null;
+        var label: []const u8 = "";
         var old_series: usize = 0;
-        var watch_note: ?[]const u8 = null;
-        if (!watch.unwatched(v.tags)) if (try watch.findWatchVm(op.c)) |w| if (w.vmid != v.vmid) {
-            if (!w.running()) {
-                watch_note = try std.fmt.allocPrint(a, "Watchdog {s} is {s}: run 'artoo watch enroll {s}' and 'artoo watch forget {s}' once it runs", .{ w.name, w.status, op.new, op.old });
-            } else {
-                watch_vm = w;
+        var probes_old = false;
+        if (watch.unwatched(v.tags)) {
+            watch_skip = "tagged no-watch";
+        } else if (try watch.findWatchVm(op.c)) |w| {
+            watch_vm = w;
+            label = try watch.guestLabel(op.c, v);
+            watch_ready = w.running() and try agent.ping(op.c, w.vmid);
+            if (watch_ready) {
                 old_series = try watch.hostSeries(op.c, w, op.old);
+                probes_old = try watch.probesName(op.c, w, op.old);
             }
-        };
+            if (label.len == 0 and old_series == 0 and !probes_old) watch_skip = "never enrolled";
+        } else watch_skip = "no VM tagged role-watch";
 
         if (continuation and op.check_trace) {
             const traced = std.ascii.eqlIgnoreCase(hostname, op.old) or hosts_old or
                 (record != null and std.ascii.eqlIgnoreCase(record.?.name, op.old)) or dns_old != null or
                 (ts_state != null and std.ascii.eqlIgnoreCase(ts_state.?.hostname, op.old)) or
-                (device != null and std.ascii.eqlIgnoreCase(device.?.machine, op.old));
+                (device != null and std.ascii.eqlIgnoreCase(device.?.machine, op.old)) or
+                std.ascii.eqlIgnoreCase(label, op.old);
             if (!traced) return ctx.fail(error.Refused, "no VM is named {s}, and {s} carries no trace of it (hostname, /etc/hosts, UniFi record, {s}'s DNS record at its address, tailnet name): nothing to continue — a finished rename, or another guest", .{ op.old, v.name, op.old });
         }
 
@@ -392,8 +414,11 @@ const RenameOp = struct {
             .device = device,
             .ts_note = ts_note,
             .watch_vm = watch_vm,
+            .watch_ready = watch_ready,
+            .watch_skip = watch_skip,
+            .label = label,
             .old_series = old_series,
-            .watch_note = watch_note,
+            .probes_old = probes_old,
         };
     }
 
@@ -428,13 +453,11 @@ const RenameOp = struct {
                 if (o.device) |d| break :blk !std.ascii.eqlIgnoreCase(d.machine, op.new);
                 break :blk false;
             },
-            .watch = o.watch_vm != null and o.old_series > 0,
+            // A stopped watchdog leaves the step pending, never skipped.
+            .watch = o.watch_skip == null and (!o.watch_ready or !std.ascii.eqlIgnoreCase(o.label, op.new) or o.old_series > 0 or o.probes_old),
         };
-        // Follow-ups that are no-ops alone: a fence re-derived and the
-        // guest enrolled again, both only alongside another step.
-        const other = p.any();
-        if (other and o.fenced.len > 0) p.fence = true;
-        if (other and o.watch_vm != null) p.watch = true;
+        // A fence re-derived is a no-op alone: only alongside another step.
+        if (p.any() and o.fenced.len > 0) p.fence = true;
         return p;
     }
 
@@ -474,13 +497,20 @@ const RenameOp = struct {
         try ch.append(a, if (o.fence_entries > 0) .{ .field = "fence", .from = try std.fmt.allocPrint(a, "{d} guests.fence_allow_out entr{s} naming {s}", .{ o.fence_entries, if (o.fence_entries == 1) "y" else "ies", op.old }), .to = try std.fmt.allocPrint(a, "naming {s}; fences re-derived ({s})", .{ op.new, if (o.fenced.len > 0) try std.mem.join(a, ", ", o.fenced) else "none fenced" }) } else if (p.fence) .{ .field = "fence", .from = "unchanged entries", .to = try std.fmt.allocPrint(a, "fences re-derived ({s}), applied where they differ", .{try std.mem.join(a, ", ", o.fenced)}) } else .{ .field = "fence", .from = none, .to = "nothing to change" });
         try op.fenceDiffs(ctx, &ch);
         try ch.append(a, if (o.ts_state) |s| .{ .field = "tailnet", .from = if (p.tailnet) try std.fmt.allocPrint(a, "{s}{s}", .{ if (s.running()) try k.clean(ctx, s.hostname) else "not joined", if (o.device) |d| try std.fmt.allocPrint(a, " (device {s})", .{try k.clean(ctx, d.name)}) else "" }) else try same(a, "tailnet name"), .to = try std.fmt.allocPrint(a, "{s} (tailscale set --hostname{s})", .{ op.new, if (op.tsc != null) ", checked with the API" else "" }) } else .{ .field = "tailnet", .from = none, .to = "nothing to change" });
-        try ch.append(a, if (o.watch_vm) |w| .{ .field = "watchdog", .from = try std.fmt.allocPrint(a, "{d} series of {s} on {s}", .{ o.old_series, op.old, w.name }), .to = try std.fmt.allocPrint(a, "watch enroll {s}, then {s}'s series deleted", .{ op.new, op.old }) } else .{ .field = "watchdog", .from = none, .to = "nothing to change" });
+        try ch.append(a, try op.watchChange(ctx));
         try ch.append(a, .{ .field = "guest", .from = if (p.guest) try std.fmt.allocPrint(a, "hostname {s}{s}", .{ try k.clean(ctx, o.hostname), if (o.hosts_old) ", /etc/hosts" else "" }) else try same(a, "hostname"), .to = try std.fmt.allocPrint(a, "hostname {s} and /etc/hosts (agent)", .{op.new}) });
         try ch.append(a, if (o.record) |r| .{ .field = "UniFi", .from = if (p.unifi) try std.fmt.allocPrint(a, "client {s} ({s})", .{ try k.clean(ctx, r.name), r.mac }) else try same(a, "client record"), .to = try std.fmt.allocPrint(a, "client {s} (PUT rest/user, matched by MAC)", .{op.new}) } else .{ .field = "UniFi", .from = none, .to = "nothing to change" });
         var notes: std.ArrayList([]const u8) = .empty;
         if (!p.proxmox) try notes.append(a, try std.fmt.allocPrint(a, "{s} is already {s} on Proxmox: this run continues a rename that stopped.", .{ op.old, op.new }));
         if (o.dns_note) |n| try notes.append(a, n);
-        if (o.watch_note) |n| try notes.append(a, n);
+        if (p.watch) if (o.watch_vm) |w| {
+            if (!o.watch_ready) {
+                try notes.append(a, try std.fmt.allocPrint(a, "The watchdog {s} is {s}: its step stays pending and the run ends with exit 8; start {s}, then run 'artoo vm rename {s} {s}' again.", .{ w.name, if (w.running()) "not answering (guest agent)" else w.status, w.name, op.old, op.new }));
+            } else {
+                try notes.append(a, try std.fmt.allocPrint(a, "Alerts active for {s} (a pending reboot, the root filesystem, …) resolve when its series are deleted, and fire again under {s} while still true.", .{ op.old, op.new }));
+                try notes.append(a, try std.fmt.allocPrint(a, "Loki keeps {s}'s logs under host={s} until retention removes them; they are not carried over.", .{ op.old, op.old }));
+            }
+        };
         if (o.ts_note) |n| try notes.append(a, n);
         try notes.append(a, "Steps run in this order, each checking observed state first; after a failure run the same command again to continue.");
         try notes.append(a, "The UniFi rename uses PUT rest/user/{_id} with the name alone: expected from the classic API, not yet verified live.");
@@ -492,7 +522,7 @@ const RenameOp = struct {
             .changes = ch.items,
             .impact = try a.dupe([]const u8, &.{
                 try std.fmt.allocPrint(a, "Other machines keep {s} in their known_hosts, ssh_config and password copies until they run 'artoo vm ssh-config' and receive the password again", .{op.old}),
-                try std.fmt.allocPrint(a, "Metrics history stays under {s} in Loki; it is not carried over", .{op.old}),
+                try std.fmt.allocPrint(a, "{s}'s metric history on the watchdog is deleted once {s} reports; its logs stay under {s} in Loki", .{ op.old, op.new, op.old }),
             }),
             .recovery = try std.fmt.allocPrint(a, "artoo vm rename {s} {s}", .{ op.new, op.old }),
             .notes = notes.items,
@@ -541,6 +571,22 @@ const RenameOp = struct {
             if (!changed) try ch.append(a, .{ .field = try std.fmt.allocPrint(a, "fence {s}", .{x.name}), .from = try std.fmt.allocPrint(a, "{d} rules", .{have.len}), .to = "rules unchanged" });
         }
         op.fence_want = wants.items;
+    }
+
+    /// The watchdog's plan line.
+    fn watchChange(op: *const RenameOp, ctx: *Context) !ui.blocks.Change {
+        const a = ctx.arena;
+        const o = op.o;
+        const field = "watchdog";
+        if (o.watch_skip) |why| return .{ .field = field, .from = "skipped", .to = why };
+        const w = o.watch_vm.?;
+        if (!o.watch_ready) return .{ .field = field, .from = try std.fmt.allocPrint(a, "{s} is {s}", .{ w.name, if (w.running()) "not answering" else w.status }), .to = "pending until it runs (exit 8; run this command again)" };
+        if (!op.p.watch) return .{ .field = field, .from = "watchdog (done)", .to = try std.fmt.allocPrint(a, "Alloy reports as {s}", .{op.new}) };
+        return .{
+            .field = field,
+            .from = try std.fmt.allocPrint(a, "Alloy reports as {s}; {d} series of {s} on {s}{s}", .{ if (o.label.len > 0) try k.clean(ctx, o.label) else "-", o.old_series, op.old, w.name, if (o.probes_old) try std.fmt.allocPrint(a, "; probes name {s}", .{op.old}) else "" }),
+            .to = try std.fmt.allocPrint(a, "{s}re-enrolled as {s}, then (once {s}'s samples arrive, up to 2 min) {s}'s series deleted", .{ if (o.probes_old or o.routes.len > 0) "probes re-rendered, " else "", op.new, op.new, op.old }),
+        };
     }
 
     pub fn fingerprint(op: *RenameOp) []const u8 {
@@ -709,12 +755,19 @@ const RenameOp = struct {
             };
             l.set(i, .done, detail);
         }
+        // A stopped watchdog: the step stays pending; the other steps run
+        // and the run ends with exit 8 (the guest's Alloy label, still
+        // OLD, lets the re-run continue).
+        var watch_blocked = false;
         if (s_watch) |i| {
             const w = o.watch_vm.?;
-            l.set(i, .unknown, "");
-            _ = try watch.enrollNew(ctx, op.c, try vms.resolve(op.c, op.new));
-            const n = try watch.forgetHost(op.c, w, op.old);
-            l.set(i, .done, try std.fmt.allocPrint(a, "enrolled on {s}, {d} old series deleted", .{ w.name, n }));
+            if (!o.watch_ready) {
+                watch_blocked = true;
+                l.set(i, .failed, try std.fmt.allocPrint(a, "pending: {s} is {s}", .{ w.name, if (w.running()) "not answering" else w.status }));
+            } else {
+                l.set(i, .unknown, "");
+                try op.moveWatch(ctx, i, w);
+            }
         }
         if (s_guest) |i| {
             l.set(i, .unknown, "");
@@ -735,6 +788,56 @@ const RenameOp = struct {
             try dns.delete(op.u, o.dns_old.?.id);
             l.set(i, .done, try k.clean(ctx, o.dns_old.?.domain));
         }
+        if (watch_blocked) {
+            const w = o.watch_vm.?;
+            return ctx.fail(error.Partial, "the watchdog {s} is {s}, so its step is pending ({s}'s Alloy still reports as {s}); start {s}", .{ w.name, if (w.running()) "not answering" else w.status, op.new, if (o.label.len > 0) try k.clean(ctx, o.label) else op.old, w.name });
+        }
+    }
+
+    /// The watchdog step (SPEC §9.18): the probes re-rendered for the
+    /// services that moved, the guest re-enrolled under NEW, then — only
+    /// once NEW's samples arrive — OLD's series deleted as 'watch forget'.
+    fn moveWatch(op: *RenameOp, ctx: *Context, i: usize, w: vms.Vm) !void {
+        const a = ctx.arena;
+        const o = op.o;
+        const l = &op.ledger;
+        var what: std.ArrayList(u8) = .empty;
+        if ((o.probes_old or o.routes.len > 0) and o.edge_vm != null) {
+            l.note(i, "re-rendering the probes");
+            if (try watch.refreshProbes(ctx, op.c, w)) try what.appendSlice(a, "probes re-rendered, ");
+        }
+        if (!std.ascii.eqlIgnoreCase(o.label, op.new)) {
+            l.note(i, try std.fmt.allocPrint(a, "re-enrolling as {s}", .{op.new}));
+            _ = try watch.enrollNew(ctx, op.c, try vms.resolve(op.c, op.new));
+            try what.print(a, "re-enrolled as {s}", .{op.new});
+        } else try what.print(a, "enrolled as {s}", .{op.new});
+        if (o.old_series > 0) {
+            // Never forget OLD before NEW reports: until then OLD's series
+            // are all the watchdog has of this guest.
+            var tries: usize = 0;
+            while (true) : (tries += 1) {
+                const n = watch.hostSeriesSince(op.c, w, op.new, "-5m") catch |err| return op.forgetLater(ctx, i, w, err);
+                if (n > 0) break;
+                if (tries >= watch_polls) {
+                    l.set(i, .failed, try std.fmt.allocPrint(a, "no samples from {s} yet", .{op.new}));
+                    return ctx.fail(error.Partial, "{s} sent no samples to {s} within 2 minutes; {s}'s series are kept — once {s} reports, 'artoo watch forget {s}' deletes them", .{ op.new, w.name, op.old, op.new, op.old });
+                }
+                l.note(i, try std.fmt.allocPrint(a, "waiting for {s}'s samples", .{op.new}));
+                try ctx.io.sleep(.fromMilliseconds(@intCast(ctx.test_hooks.poll_ms orelse 5000)), .awake);
+            }
+            const n = watch.forgetHost(op.c, w, op.old) catch |err| return op.forgetLater(ctx, i, w, err);
+            try what.print(a, ", {d} series of {s} deleted", .{ n, op.old });
+        }
+        l.set(i, .done, try std.fmt.allocPrint(a, "{s} on {s}", .{ what.items, w.name }));
+    }
+
+    /// A failure between the re-enrollment and the forget: OLD's series
+    /// stay, and 'watch forget OLD' (or the re-run) deletes them.
+    fn forgetLater(op: *RenameOp, ctx: *Context, i: usize, w: vms.Vm, err: anyerror) anyerror {
+        if (err == error.OutOfMemory or err == error.Canceled) return err;
+        const why = ctx.diag orelse @errorName(err);
+        op.ledger.set(i, .failed, why);
+        return ctx.fail(error.Partial, "{s}; {s}'s series may remain on {s} — 'artoo watch forget {s}' deletes them", .{ why, op.old, w.name, op.old });
     }
 
     pub fn verify(op: *RenameOp, ctx: *Context) !bool {
@@ -1221,6 +1324,181 @@ test "vm rename: the plan shows the rule diff of every fence it re-applies" {
     // A dry run: the configuration still names naboo.
     const cfg = try g.tmp.dir.readFileAlloc(testing.io, ".artoo/config.json", a, .limited(1 << 16));
     try testing.expect(std.mem.find(u8, cfg, "endor naboo tcp 5432") != null);
+}
+
+const list_w_old = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":205,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"}]}";
+const list_w_new = "{\"data\":[{\"vmid\":201,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":205,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"}]}";
+
+fn onVm(a: std.mem.Allocator, vmid: u32, out: []const u8) ![2]R {
+    return .{
+        rt(try std.fmt.allocPrint(a, "POST /api2/json/nodes/pve/qemu/{d}/agent/exec HTTP", .{vmid}), "{\"data\":{\"pid\":60}}"),
+        rt(try std.fmt.allocPrint(a, "qemu/{d}/agent/exec-status", .{vmid}), try agentOut(a, 0, out)),
+    };
+}
+
+fn series(n: usize) []const u8 {
+    return switch (n) {
+        0 => "{\"status\":\"success\",\"data\":[]}",
+        else => "{\"status\":\"success\",\"data\":[{},{},{}]}",
+    };
+}
+
+/// The watchdog's part of a read: the guest's Alloy label, then (the
+/// watchdog answering) OLD's series and the probes.
+fn watchReads(a: std.mem.Allocator, out: *std.ArrayList(R), label: []const u8, old_series: usize) !void {
+    try out.appendSlice(a, &try onVm(a, 201, label));
+    try out.append(a, rt("qemu/205/agent/ping", "{\"data\":{\"result\":{}}}"));
+    try out.appendSlice(a, &try onVm(a, 205, series(old_series)));
+    try out.appendSlice(a, &try onVm(a, 205, ""));
+}
+
+/// Re-enrolling the guest under NEW: the lookups, its Alloy probe (no file
+/// in place), every file written, the install and the start.
+fn reenrollRoutes(a: std.mem.Allocator, out: *std.ArrayList(R)) !void {
+    try out.appendSlice(a, &.{
+        rt("GET /api2/json/nodes/pve/qemu HTTP", list_w_new),
+        rt("GET /api2/json/nodes/pve/qemu HTTP", list_w_new),
+    });
+    const wfiles = @import("../watch/files.zig");
+    const n = (try wfiles.guestFiles(a, .{ .name = "hoth", .watch_host = "scarif.lab.example.com" }, .{ .pve = "192.168.1.10", .gateway = "192.168.1.1", .lan = "192.168.1.0/24", .pool = "", .edge = "", .domain = "lab.example.com" })).len;
+    for (0..n + 3) |_| try out.appendSlice(a, &try onVm(a, 201, ""));
+}
+
+fn writesTo(g: *testkit.Gateway, what: []const u8) usize {
+    var n: usize = 0;
+    for (g.srv.received) |req| if (req) |q| {
+        if (std.mem.find(u8, q, what) != null) n += 1;
+    };
+    return n;
+}
+
+fn firstIndex(g: *testkit.Gateway, what: []const u8) ?usize {
+    for (g.srv.received, 0..) |req, i| if (req) |q| if (std.mem.find(u8, q, what) != null) return i;
+    return null;
+}
+
+test "vm rename: the watchdog re-enrolls NEW, waits for NEW's samples, only then forgets OLD" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try renameReads(a, list_w_old, users_old, dns_old_body, "naboo", true));
+    try watchReads(a, &routes, "naboo", 3);
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("POST /v1/sites/S1/dns/policies", "{}"),
+    });
+    try reenrollRoutes(a, &routes);
+    // NEW's samples: none yet, then some; then OLD's series deleted.
+    try routes.appendSlice(a, &try onVm(a, 205, series(0)));
+    try routes.appendSlice(a, &try onVm(a, 205, series(3)));
+    try routes.appendSlice(a, &try onVm(a, 205, series(3)));
+    try routes.appendSlice(a, &try onVm(a, 205, ""));
+    try routes.appendSlice(a, &try onVm(a, 205, series(0)));
+    try routes.appendSlice(a, &.{
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+        rt("PUT /proxy/network/api/s/default/rest/user/U1", users_new),
+        rt("DELETE /v1/sites/S1/dns/policies/R1", ""),
+    });
+    try routes.appendSlice(a, try renameReads(a, list_w_new, users_new, dns_new_body, "hoth", false));
+    try watchReads(a, &routes, "hoth", 0);
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    const code = g.h.run(&root, "vm rename naboo hoth -y --confirm naboo");
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    const out = g.h.stdout();
+    for ([_][]const u8{
+        "Alloy reports as naboo; 3 series of naboo on scarif",
+        "re-enrolled as hoth, then (once hoth's samples arrive, up to 2 min) naboo's series deleted",
+        "Alerts active for naboo",
+        "Loki keeps naboo's logs under host=naboo",
+        "re-enrolled as hoth, 3 series of naboo deleted on scarif",
+    }) |line| if (std.mem.find(u8, out, line) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+        return error.TestUnexpectedResult;
+    };
+    // The order: enrolled (Alloy started), NEW asked twice, then the delete.
+    const start = firstIndex(&g, "systemctl%20restart%20alloy") orelse firstIndex(&g, "systemctl+restart+alloy");
+    const asked = firstIndex(&g, "start%3D-5m").?;
+    const delete = firstIndex(&g, "delete_series").?;
+    if (start) |s| try testing.expect(s < asked);
+    try testing.expect(asked < delete);
+    try testing.expectEqual(@as(usize, 2), writesTo(&g, "start%3D-5m"));
+}
+
+test "vm rename: no samples from NEW within the wait keeps OLD's series and names watch forget" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try renameReads(a, list_w_old, users_old, dns_old_body, "naboo", true));
+    try watchReads(a, &routes, "naboo", 3);
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("POST /v1/sites/S1/dns/policies", "{}"),
+    });
+    try reenrollRoutes(a, &routes);
+    for (0..watch_polls + 1) |_| try routes.appendSlice(a, &try onVm(a, 205, series(0)));
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    const err = g.h.stderr();
+    try testing.expect(std.mem.find(u8, err, "hoth sent no samples to scarif within 2 minutes") != null);
+    try testing.expect(std.mem.find(u8, err, "'artoo watch forget naboo' deletes them") != null);
+    try testing.expect(std.mem.find(u8, err, "run 'artoo vm rename naboo hoth' again to continue") != null);
+    try testing.expectEqual(@as(usize, 0), writesTo(&g, "delete_series"));
+}
+
+test "vm rename: a no-watch guest skips the watchdog step; a stopped watchdog leaves it pending" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    {
+        const list = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;no-watch\"},{\"vmid\":205,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"}]}";
+        const reads = try renameReads(a, list, users_old, dns_old_body, "naboo", true);
+        var g: testkit.Gateway = undefined;
+        // No watchdog lookup at all.
+        try g.initRoutes(reads[0 .. reads.len - 1]);
+        defer g.deinit();
+        try testing.expectEqual(Exit.ok, g.h.run(&root, "vm rename naboo hoth -n"));
+        try testing.expectEqual(@as(usize, 0), g.srv.unused());
+        try testing.expect(std.mem.find(u8, g.h.stdout(), "tagged no-watch") != null);
+        try testing.expectEqual(@as(usize, 0), writesTo(&g, "qemu/205"));
+    }
+    {
+        const stopped_old = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":205,\"name\":\"scarif\",\"status\":\"stopped\",\"tags\":\"artoo;role-watch\"}]}";
+        var routes: std.ArrayList(R) = .empty;
+        try routes.appendSlice(a, try renameReads(a, stopped_old, users_old, dns_old_body, "naboo", true));
+        try routes.appendSlice(a, &try onVm(a, 201, "naboo"));
+        try routes.appendSlice(a, &.{
+            rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+            rt("POST /v1/sites/S1/dns/policies", "{}"),
+            rt("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+            rt("exec-status", try agentOut(a, 0, "")),
+            rt("PUT /proxy/network/api/s/default/rest/user/U1", users_new),
+            rt("DELETE /v1/sites/S1/dns/policies/R1", ""),
+        });
+        var g: testkit.Gateway = undefined;
+        try g.initRoutes(routes.items);
+        defer g.deinit();
+        try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
+        try testing.expectEqual(@as(usize, 0), g.srv.unused());
+        const out = g.h.stdout();
+        try testing.expect(std.mem.find(u8, out, "scarif is stopped") != null);
+        try testing.expect(std.mem.find(u8, out, "its step stays pending and the run ends with exit 8") != null);
+        try testing.expect(std.mem.find(u8, out, "pending: scarif is stopped") != null);
+        const err = g.h.stderr();
+        try testing.expect(std.mem.find(u8, err, "the watchdog scarif is stopped, so its step is pending") != null);
+        try testing.expect(std.mem.find(u8, err, "run 'artoo vm rename naboo hoth' again to continue") != null);
+        // Nothing was asked of the stopped watchdog.
+        try testing.expectEqual(@as(usize, 0), writesTo(&g, "qemu/205"));
+    }
 }
 
 test "vm rename: a broken Tailscale credential is a note; the guest's own tailscale set still runs" {

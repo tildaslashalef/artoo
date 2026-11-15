@@ -2223,7 +2223,8 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
   and foreign VMs refuse. A VM found only under NEW is a stopped rename
   only if it still carries a trace of OLD — its hostname, an
   `/etc/hosts` line, its UniFi record named OLD, OLD's DNS record at its
-  address, or its tailnet hostname — else refused. Before a rename began
+  address, its tailnet hostname, or its Alloy `host` label — else
+  refused. Before a rename began
   (the VM still under OLD), leftovers under NEW refuse: a pinned key
   under NEW, `guest/NEW`, a `guests.fence_allow_out` entry naming NEW
   (in a stopped rename: `guest/OLD` and `guest/NEW` must match, and an
@@ -2239,7 +2240,7 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
   | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
   | Fence | `guests.fence_allow_out` entries naming OLD, and the fences that render them; the plan shows each re-applied fence's rule diff as the renamed lab derives it, and the step applies only those rules (a fresh derivation that differs fails the step) |
   | Tailnet | for a guest on the tailnet (tag `tailnet`, `role-router`): `tailscale set --hostname=NEW` through the agent, the name read back from `tailscale status --json`; with a Tailscale credential the device (by the node ID the guest reports) is read every 2 s for up to about 30 s until the control plane shows NEW, and renamed through the API only if it still keeps the old (hand-set) name; another tailnet device already named NEW refuses at read time (§19) |
-  | Watchdog | `watch enroll NEW`, then OLD's series deleted as `watch forget` does (§9.9) |
+  | Watchdog | see **Watchdog step** below (§9.9) |
   | Guest | hostname (`hostnamectl set-hostname`) and the `/etc/hosts` line, through the agent |
   | UniFi | the client record's `name` (§9.5), matched by MAC |
   | DNS (remove) | OLD's machine-name A record, last |
@@ -2252,8 +2253,37 @@ impact: typed confirmation of OLD (or `--confirm OLD`).
 
   Impact: other machines keep OLD in their `known_hosts`, `ssh_config`
   and password copies until they run `vm ssh-config` and receive the
-  password again (§6.1, §9.17) — the plan names this; metrics history
-  stays under OLD in Loki and is not carried over.
+  password again (§6.1, §9.17) — the plan names this; OLD's metric
+  history is deleted once NEW reports, and Loki keeps OLD's logs under
+  `host=OLD` (neither is carried over).
+- **Watchdog step.** Every enrolled guest's Alloy configuration carries
+  `host = "<vm>"`, rendered by `watch enroll` from the VM's name — not
+  from the hostname — so the guest reports as OLD until it is
+  re-enrolled, and once it is, OLD's series go quiet and
+  `artoo-guest-silent` would fire for OLD unless they are deleted. Read
+  time: the guest's label, and on a running watchdog whose agent
+  answers, OLD's series and whether its probes still name OLD as a
+  service's `vm`. Inside the step, in order: the watchdog's own Alloy
+  configuration re-rendered as `watch setup` renders it (that file
+  alone, Alloy restarted when it changed) when services moved or a probe
+  names OLD, so no probe keeps `vm="OLD"`; the guest re-enrolled under
+  NEW (the `watch enroll` path: files rendered, Alloy restarted); a
+  bounded wait (every 5 s, up to 2 min) until the watchdog's metrics
+  store, queried through its guest agent as `watch forget` does, has
+  samples with `host="NEW"`; only then OLD's series deleted exactly as
+  `watch forget OLD` deletes them, counted before and after. A wait that
+  runs out, or any failure between the re-enrollment and the delete,
+  stops with exit 8 naming `artoo watch forget OLD`; a re-run finishes
+  it. Skipped (the plan says why) for a guest tagged `no-watch`, one
+  never enrolled (no label, no series, no probe naming it), and without
+  a `role-watch` VM. A stopped or unreachable watchdog leaves the step
+  pending — a plan note, the other steps run, exit 8 with the re-run —
+  never silently skipped (the guest's label, still OLD, is the trace the
+  re-run continues from). Plan notes: alerts active for OLD (a pending
+  reboot, the root filesystem) resolve when OLD's series are deleted
+  and fire again under NEW while still true; Loki keeps OLD's logs under
+  OLD. The watchdog itself (`role-watch`) stays refused: every guest's
+  Alloy pushes to its name.
 - **Send** in the table's order, each step its own ledger entry. Every
   step checks observed state first, so running `vm rename OLD NEW` again
   after a failure finds the VM under either name and continues; a
@@ -2274,9 +2304,9 @@ only. As built: OLD and NEW are matched by name (the VM is found under
 either, so a stopped run continues); the fence step rewrites
 `guests.fence_allow_out` in `~/.artoo/config.json` and re-derives the
 fences of the guest and of the fenced guests whose exceptions name it,
-applying only those that differ; the fence and watchdog steps run only
-alongside another step (alone they are no-ops), so a finished rename is
-exit 5. A DNS record of OLD that points elsewhere is kept and named in
+applying only those that differ; the fence step runs only alongside
+another step (alone it is a no-op), and a finished rename (no trace of
+OLD left) is exit 5. A DNS record of OLD that points elsewhere is kept and named in
 the plan; a hand-edited service route, both `guest/OLD` and
 `guest/NEW` holding different passwords, or another pinned key under
 NEW refuse. Verify re-reads every place (each must carry NEW, none
