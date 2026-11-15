@@ -86,7 +86,7 @@ fn joinClean(ctx: *Context, list: []const []const u8) ![]const u8 {
 }
 
 fn header(ctx: *Context, c: *const ts.Client) !void {
-    try ui.blocks.header(ctx.out, &ctx.ui, ctx.path, try std.fmt.allocPrint(ctx.arena, "tailscale {s} tailnet {s} {s} {f}", .{
+    try ui.blocks.header(ctx.out, &ctx.ui, ctx.subject, try std.fmt.allocPrint(ctx.arena, "tailscale {s} {s} {s} {f}", .{
         ctx.ui.glyphs.dot, try clean(ctx, c.shownName()), ctx.ui.glyphs.dot, ui.values.clock(ctx.ui.now, &ctx.ui.zone),
     }));
 }

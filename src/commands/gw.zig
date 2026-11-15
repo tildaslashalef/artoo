@@ -467,7 +467,7 @@ pub const spec_cmd = struct {
                 try headerRight(ctx, c)
             else
                 try std.fmt.allocPrint(ctx.arena, "file {s} {s}", .{ ctx.ui.glyphs.dot, source });
-            try ui.blocks.header(ctx.out, &ctx.ui, ctx.path, right);
+            try ui.blocks.header(ctx.out, &ctx.ui, ctx.subject, right);
             try renderSpec(ctx, report, source, save);
         }
         const n = report.driftCount();
@@ -565,9 +565,9 @@ fn opRow(ctx: *Context, change: []const u8, role: ui.style.Role, method: []const
 
 // ---------------------------------------------------------------- rendering
 
-/// `ARTOO · gw <path>` left, `unifi · <site> · <clock>` right.
+/// `ARTOO` left, `unifi · <site> · <clock>` right.
 pub fn header(ctx: *Context, c: *const unifi.Client) !void {
-    try ui.blocks.header(ctx.out, &ctx.ui, ctx.path, try headerRight(ctx, c));
+    try ui.blocks.header(ctx.out, &ctx.ui, ctx.subject, try headerRight(ctx, c));
 }
 
 fn headerRight(ctx: *Context, c: *const unifi.Client) ![]const u8 {
@@ -679,7 +679,7 @@ test "gw sites ls: table, pagination footer, request shape" {
     try testing.expectEqualStrings("GET /v1/sites?offset=0&limit=1 HTTP/1.1", f.request(0));
     try testing.expect(std.ascii.findIgnoreCase(f.srv.received[0].?, "x-api-key: test-key\r\n") != null);
     const out = f.h.stdout();
-    try testing.expect(std.mem.startsWith(u8, out, "ARTOO · gw sites ls  unifi · default · "));
+    try testing.expect(std.mem.startsWith(u8, out, "ARTOO  unifi · default · "));
     try testing.expect(std.mem.find(u8, out,
         \\NAME     REFERENCE  ID
         \\Default  default    51e00001-0000-4000-8000-00000000000d
@@ -704,7 +704,7 @@ test "gw devices show NAME: site, list, then detail by ID" {
     try testing.expectEqualStrings("GET /v1/sites/51e00001-0000-4000-8000-00000000000d/devices?offset=0&limit=200 HTTP/1.1", f.request(1));
     try testing.expectEqualStrings("GET /v1/sites/51e00001-0000-4000-8000-00000000000d/devices/c0de0001-0000-4000-8000-00000000000c HTTP/1.1", f.request(2));
     const out = f.h.stdout();
-    try testing.expect(std.mem.startsWith(u8, out, "ARTOO · gw devices show  unifi · Default · "));
+    try testing.expect(std.mem.startsWith(u8, out, "ARTOO  unifi · Default · "));
     try testing.expect(std.mem.find(u8, out, "Device Beacon\n  id     c0de0001") != null);
 }
 

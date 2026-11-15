@@ -346,7 +346,7 @@ fn render(ctx: *Context, checks: []const Check) !void {
         try ui.json.envelope(ctx.out, .local, list, .{ .version = version, .ok = ok, .warnings = warned, .failed = failed });
     } else {
         const u = &ctx.ui;
-        try ui.blocks.header(ctx.out, u, "doctor", "artoo " ++ version);
+        try ui.blocks.header(ctx.out, u, null, "artoo " ++ version);
         const rows = try ctx.arena.alloc([]const ui.table.Cell, checks.len);
         for (checks, rows) |c, *row| {
             const cells = try ctx.arena.alloc(ui.table.Cell, 3);

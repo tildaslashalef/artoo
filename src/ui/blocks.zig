@@ -7,12 +7,16 @@ const text = @import("text.zig");
 const style = @import("style.zig");
 const Ui = @import("Ui.zig");
 
-/// `ARTOO · <context>` left, `<right>` (target · time) right-aligned when the
-/// terminal width is known.
-pub fn header(w: *Io.Writer, ui: *const Ui, context: []const u8, right: []const u8) Io.Writer.Error!void {
+/// `ARTOO` left — `ARTOO · <subject>` for a view of one object (a VM, a
+/// device) — and `<right>` (service · scope · time) right-aligned when the
+/// terminal width is known. The command itself is not echoed.
+pub fn header(w: *Io.Writer, ui: *const Ui, subject: ?[]const u8, right: []const u8) Io.Writer.Error!void {
     const p = ui.palette;
-    try w.print("{s}ARTOO {s} {s}{s}", .{ p.on(.title), ui.glyphs.dot, context, p.off(.title) });
-    const left_w = "ARTOO ".len + text.width(ui.glyphs.dot) + 1 + text.width(context);
+    var left_w: usize = "ARTOO".len;
+    if (subject) |s| {
+        try w.print("{s}ARTOO {s} {s}{s}", .{ p.on(.title), ui.glyphs.dot, s, p.off(.title) });
+        left_w += 1 + text.width(ui.glyphs.dot) + 1 + text.width(s);
+    } else try w.print("{s}ARTOO{s}", .{ p.on(.title), p.off(.title) });
     const right_w = text.width(right);
     const gap = if (ui.width) |cols| (if (cols > left_w + right_w + 2) cols - left_w - right_w else 2) else 2;
     try w.splatByteAll(' ', gap);
@@ -138,12 +142,15 @@ test "header: padded to terminal width, two spaces otherwise" {
     var buf: Io.Writer.Allocating = .init(testing.allocator);
     defer buf.deinit();
     const ui: Ui = .{ .width = 40 };
-    try header(&buf.writer, &ui, "devices", "unifi · 14:32");
-    try testing.expectEqualStrings("ARTOO · devices            unifi · 14:32\n\n", buf.written());
+    try header(&buf.writer, &ui, null, "unifi · 14:32");
+    try testing.expectEqualStrings("ARTOO                      unifi · 14:32\n\n", buf.written());
+    buf.clearRetainingCapacity();
+    try header(&buf.writer, &ui, "web-01", "pve · 14:32");
+    try testing.expectEqualStrings("ARTOO · web-01               pve · 14:32\n\n", buf.written());
     buf.clearRetainingCapacity();
     const piped: Ui = .{ .glyphs = &style.ascii };
-    try header(&buf.writer, &piped, "devices", "unifi");
-    try testing.expectEqualStrings("ARTOO - devices  unifi\n\n", buf.written());
+    try header(&buf.writer, &piped, "web-01", "unifi");
+    try testing.expectEqualStrings("ARTOO - web-01  unifi\n\n", buf.written());
 }
 
 test "detail: aligned keys across sections, multi-line values" {

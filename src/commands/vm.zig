@@ -322,6 +322,7 @@ pub const config = struct {
         const v = try vms.resolve(&c, args.pos("VM"));
         const raw = try vms.pendingRaw(&c, v.vmid);
         if (ctx.json()) return ui.json.envelope(ctx.out, .pve, raw, .{ .collected_at = ctx.ui.now, .node = c.node, .vmid = v.vmid });
+        ctx.subject = try k.clean(ctx, v.name);
         try k.header(ctx, &c);
         const a = ctx.arena;
         const ks = try vms.keys(a, raw);
@@ -427,6 +428,7 @@ pub const urls = struct {
         if (ctx.json()) {
             try ui.json.envelope(ctx.out, .pve, .{ .vm = v.name, .vmid = v.vmid, .services = rows.items }, .{ .collected_at = ctx.ui.now, .node = c.node, .notes = notes.items });
         } else {
+            ctx.subject = try k.clean(ctx, v.name);
             try k.header(ctx, &c);
             const label = try k.clean(ctx, v.name);
             if (rows.items.len == 0) {
