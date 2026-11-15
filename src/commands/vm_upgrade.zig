@@ -70,13 +70,13 @@ const UpgradeOp = struct {
             try std.fmt.allocPrint(a, "Package lists from {f} ago (apt's daily refresh); artoo does not refresh them.", .{ui.values.duration(age)})
         else
             "Package lists of unknown age (no update-success stamp); artoo does not refresh them.");
-        if (p.deferred > 0) try notes.append(a, try std.fmt.allocPrint(a, "{d} update(s) deferred by Ubuntu's phased rollout stay for now.", .{p.deferred}));
-        if (p.kept_back > 0) try notes.append(a, try std.fmt.allocPrint(a, "{d} package(s) kept back (they would need a removal) are not touched.", .{p.kept_back}));
+        if (p.deferred > 0) try notes.append(a, try std.fmt.allocPrint(a, "{f} deferred by Ubuntu's phased rollout stay for now.", .{ui.values.count(p.deferred, "update")}));
+        if (p.kept_back > 0) try notes.append(a, try std.fmt.allocPrint(a, "{f} kept back (they would need a removal) are not touched.", .{ui.values.count(p.kept_back, "package")}));
         try notes.append(a, "Pinned packages (Alloy, the watchdog's stack) stay at their pins.");
         const sec = p.security();
         const pl: exec.Plan = .{
-            .action = try std.fmt.allocPrint(a, "Upgrade {d} package(s) on {s} ({d}){s}", .{
-                p.packages.len,                                                           op.target, v.vmid,
+            .action = try std.fmt.allocPrint(a, "Upgrade {f} on {s} ({d}){s}", .{
+                ui.values.count(p.packages.len, "package"),                               op.target, v.vmid,
                 if (sec > 0) try std.fmt.allocPrint(a, ", {d} security", .{sec}) else "",
             }),
             .target = try std.fmt.allocPrint(a, "the guest agent of {s} on {s}", .{ op.target, try k.nodeTarget(ctx, op.c) }),
@@ -128,7 +128,7 @@ const UpgradeOp = struct {
             l.set(i, .failed, if (r.code) |c| try std.fmt.allocPrint(a, "exit {d}", .{c}) else "");
             return ctx.fail(error.TaskFailed, "apt-get upgrade failed on {s} (exit {?d}): {s} (log: {s})", .{ op.target, r.code, try k.clean(ctx, lastLine(r.err)), log_file });
         }
-        l.set(i, .done, try std.fmt.allocPrint(a, "{d} package(s)", .{op.pending.packages.len}));
+        l.set(i, .done, try std.fmt.allocPrint(a, "{f}", .{ui.values.count(op.pending.packages.len, "package")}));
     }
 
     pub fn verify(op: *UpgradeOp, ctx: *Context) !bool {
@@ -139,7 +139,7 @@ const UpgradeOp = struct {
         const now = try simulate(ctx, op.c, vmid, op.target);
         var left: std.ArrayList([]const u8) = .empty;
         for (op.pending.packages) |pk| if (now.has(pk)) try left.append(a, try k.clean(ctx, pk.name));
-        if (left.items.len > 0) return ctx.fail(error.Partial, "{d} planned package(s) still pending on {s}: {s} (log: {s})", .{ left.items.len, op.target, try std.mem.join(a, ", ", left.items), log_file });
+        if (left.items.len > 0) return ctx.fail(error.Partial, "{f} still pending on {s}: {s} (log: {s})", .{ ui.values.count(left.items.len, "planned package"), op.target, try std.mem.join(a, ", ", left.items), log_file });
         const r = try agent.sh(op.c, vmid, vm_new.scripts.reboot, 60_000);
         var lines = std.mem.tokenizeAny(u8, r.out, "\r\n");
         if (std.mem.eql(u8, lines.next() orelse "no", "yes")) {
@@ -166,7 +166,7 @@ const UpgradeOp = struct {
             }) catch "; reboot pending";
         } else "; no reboot needed";
         const snap = if (op.guard) |*g| g.doneSuffix(a) else "";
-        return std.fmt.allocPrint(a, "{d} package(s) upgraded on {s}{s}{s}", .{ n, op.target, rest, snap }) catch "upgraded";
+        return std.fmt.allocPrint(a, "{f} upgraded on {s}{s}{s}", .{ ui.values.count(n, "package"), op.target, rest, snap }) catch "upgraded";
     }
 };
 
@@ -248,15 +248,15 @@ test "vm upgrade: plan from the simulation, apt once with its live stage, verifi
     try testing.expect(std.mem.startsWith(u8, g.body(4), "command=sh&command=-c&command=export%20DEBIAN_FRONTEND%3Dnoninteractive%20NEEDRESTART_MODE%3Da"));
     try testing.expect(std.mem.find(u8, g.request(6), "file-read?file=%2Frun%2Fartoo-upgrade.stage") != null);
     try expectAll(g.h.stdout(), &.{
-        "Plan · Upgrade 3 package(s) on naboo (205), 1 security\n",
+        "Plan · Upgrade 3 packages on naboo (205), 1 security\n",
         "libssl3t64                    3.5.3-1ubuntu1 → 3.5.3-1ubuntu1.1 (security)\n",
         "linux-image-7.0.0-40-generic  (none) → 7.0.0-40.40\n",
         "Package lists from 1h ago (apt's daily refresh); artoo does not refresh them.",
-        "4 update(s) deferred by Ubuntu's phased rollout stay for now.",
-        "1 package(s) kept back",
+        "4 updates deferred by Ubuntu's phased rollout stay for now.",
+        "1 package kept back",
         "✓ apt-get upgrade  done",
         // tmux has a newer version now: the planned one is installed.
-        "✓ 3 package(s) upgraded on naboo; reboot pending (linux-image-7.0.0-40-generic, linux-base) — 'artoo vm reboot naboo' when convenient\n",
+        "✓ 3 packages upgraded on naboo; reboot pending (linux-image-7.0.0-40-generic, linux-base) — 'artoo vm reboot naboo' when convenient\n",
     });
     // Not a terminal: the stage is one dated line while apt runs.
     try expectAll(g.h.stderr(), &.{"  · apt-get upgrade  42% Unpacking tmux (amd64)\n"});
@@ -290,7 +290,7 @@ test "vm upgrade: nothing pending, dry run, refusals, apt failing, a package lef
     try testing.expectEqual(Exit.task_failed, g.h.run(&root, "vm upgrade naboo -y"));
     try expectAll(g.h.stderr(), &.{"artoo: apt-get upgrade failed on naboo (exit 100): E: Sub-process /usr/bin/dpkg returned an error code (1) (log: /var/log/artoo-upgrade.log)\n"});
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm upgrade naboo -y"));
-    try expectAll(g.h.stderr(), &.{"artoo: 1 planned package(s) still pending on naboo: tmux (log: /var/log/artoo-upgrade.log)\n"});
+    try expectAll(g.h.stderr(), &.{"artoo: 1 planned package still pending on naboo: tmux (log: /var/log/artoo-upgrade.log)\n"});
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
 
@@ -353,7 +353,7 @@ test "vm upgrade --snapshot: refused at the cap and above the storage headroom, 
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
     try testing.expectEqual(Exit.refused, g.h.run(&root, "vm upgrade naboo --snapshot -y"));
-    try testing.expectEqualStrings("artoo: naboo holds 2 artoo snapshot(s) (keep 2): 'artoo vm snap prune naboo' first, or run without --snapshot\n", g.h.stderr());
+    try testing.expectEqualStrings("artoo: naboo holds 2 artoo snapshots (keep 2): 'artoo vm snap prune naboo' first, or run without --snapshot\n", g.h.stderr());
     try testing.expectEqual(Exit.refused, g.h.run(&root, "vm upgrade naboo --snapshot -y"));
     try testing.expectEqualStrings("artoo: storage local-zfs is 90% used (above 80%): no snapshot is taken there; free space first, or run without --snapshot\n", g.h.stderr());
     try testing.expectEqual(@as(usize, 0), g.srv.unused());

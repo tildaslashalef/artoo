@@ -126,7 +126,7 @@ pub const show = struct {
         var volumes: std.ArrayList(ui.blocks.Field) = .empty;
         for (groups.items) |g| try volumes.append(ctx.arena, .{
             .key = try k.clean(ctx, g.content),
-            .value = try std.fmt.allocPrint(ctx.arena, "{d} volume(s), {f}", .{ g.count, ui.values.bytes(g.size) }),
+            .value = try std.fmt.allocPrint(ctx.arena, "{f}, {f}", .{ ui.values.count(g.count, "volume"), ui.values.bytes(g.size) }),
         });
         if (volumes.items.len == 0) try volumes.append(ctx.arena, .{ .key = "(empty)", .value = "", .role = .muted });
         try ui.blocks.detail(ctx.out, &ctx.ui, &.{
@@ -175,6 +175,6 @@ test "storage ls and show" {
     try testing.expect(std.mem.find(u8, out, "20.0 GiB / 1.8 TiB (1.1%)") != null);
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "storage show local-zfs"));
     try testing.expectEqualStrings("GET /api2/json/nodes/pve/storage/local-zfs/content HTTP/1.1", g.request(2));
-    try testing.expect(std.mem.find(u8, g.h.stdout(), "  images     2 volume(s), 20.0 GiB\n") != null);
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "  images     2 volumes, 20.0 GiB\n") != null);
     try testing.expectEqual(testkit.Exit.usage, g.h.run(&root, "storage show nope"));
 }

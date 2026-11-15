@@ -15,6 +15,21 @@ pub fn alloc(arena: Allocator, v: anytype) Allocator.Error![]const u8 {
     return std.fmt.allocPrint(arena, "{f}", .{v});
 }
 
+/// `1 file`, `3 files`: the count and its noun, plural with a trailing
+/// `s` unless the count is 1 (`count(n, "first-boot message")`).
+pub const Count = struct {
+    n: u64,
+    noun: []const u8,
+
+    pub fn format(c: Count, w: *Io.Writer) Io.Writer.Error!void {
+        try w.print("{d} {s}{s}", .{ c.n, c.noun, if (c.n == 1) "" else "s" });
+    }
+};
+
+pub fn count(n: anytype, noun: []const u8) Count {
+    return .{ .n = @intCast(n), .noun = noun };
+}
+
 /// IEC size with one decimal (`1.8 TiB`); bytes below 1 KiB are exact.
 pub const Bytes = struct {
     n: ?u64,
@@ -289,4 +304,11 @@ test "zone file parses (system zone when present)" {
     const z = Zone.loadLocal(testing.io, a.allocator());
     // Any offset is valid; it must be within ±14h.
     try testing.expect(@abs(z.offsetAt(1791635525)) <= 14 * 3600);
+}
+
+test "count: singular for one, plural otherwise" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("1 file", try std.fmt.bufPrint(&buf, "{f}", .{count(1, "file")}));
+    try std.testing.expectEqualStrings("0 files", try std.fmt.bufPrint(&buf, "{f}", .{count(0, "file")}));
+    try std.testing.expectEqualStrings("3 first-boot messages", try std.fmt.bufPrint(&buf, "{f}", .{count(@as(usize, 3), "first-boot message")}));
 }

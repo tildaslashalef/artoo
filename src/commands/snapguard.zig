@@ -187,7 +187,7 @@ pub const Guard = struct {
         const keep = (try ctx.config()).guests.snapshot_keep;
         const snaps = try read_(c, vm.vmid);
         const n = ownedCount(snaps);
-        if (n >= keep) return ctx.fail(error.Refused, "{s} holds {d} artoo snapshot(s) (keep {d}): 'artoo vm snap prune {s}' first, or run without --snapshot", .{ g.label, n, keep, g.label });
+        if (n >= keep) return ctx.fail(error.Refused, "{s} holds {f} (keep {d}): 'artoo vm snap prune {s}' first, or run without --snapshot", .{ g.label, ui.values.count(n, "artoo snapshot"), keep, g.label });
         for (try vmStorages(c, try vms.config(c, vm.vmid))) |s| {
             const used = s.used orelse continue;
             const total = s.total orelse continue;

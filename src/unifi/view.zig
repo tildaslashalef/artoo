@@ -236,7 +236,7 @@ fn flatten(arena: Allocator, u: *const ui.Ui, out: *std.ArrayList(ui.blocks.Fiel
                 try out.append(arena, .{ .key = key, .value = "(empty)", .role = .muted });
             } else try flatten(arena, u, out, key, val);
         } else if (val == .array and hasObjects(val)) {
-            try out.append(arena, .{ .key = key, .value = try std.fmt.allocPrint(arena, "{d} item(s); see -o json", .{val.array.items.len}), .role = .muted });
+            try out.append(arena, .{ .key = key, .value = try std.fmt.allocPrint(arena, "{f}; see -o json", .{ui.values.count(val.array.items.len, "item")}), .role = .muted });
         } else {
             try out.append(arena, try field(arena, u, key, val));
         }

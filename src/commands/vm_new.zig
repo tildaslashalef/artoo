@@ -1036,10 +1036,10 @@ fn judgeCloudInit(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) 
     const st: ui.style.Status = if (!std.mem.eql(u8, status, "done") or errors > 0) .failed else if (warnings > 0) .warning else .ok;
     var detail: std.ArrayList(u8) = .empty;
     try detail.print(a, "{s}", .{try k.clean(ctx, status)});
-    if (errors > 0) try detail.print(a, ", {d} error(s)", .{errors});
-    if (warnings > 0) try detail.print(a, ", {d} warning(s)", .{warnings});
-    if (handled_n > 0) try detail.print(a, ", {d} first-boot network message(s) handled", .{handled_n});
-    if (deprecated > 0) try detail.print(a, ", {d} deprecation(s)", .{deprecated});
+    if (errors > 0) try detail.print(a, ", {f}", .{ui.values.count(errors, "error")});
+    if (warnings > 0) try detail.print(a, ", {f}", .{ui.values.count(warnings, "warning")});
+    if (handled_n > 0) try detail.print(a, ", {f} handled", .{ui.values.count(handled_n, "first-boot network message")});
+    if (deprecated > 0) try detail.print(a, ", {f}", .{ui.values.count(deprecated, "deprecation")});
     if (first.len > 0) try detail.print(a, ": {s}", .{try k.clean(ctx, firstLine(first)[0..@min(firstLine(first).len, 120)])});
     return .{ .name = "", .status = st, .detail = detail.items };
 }
@@ -1430,7 +1430,7 @@ fn verifyAll(ctx: *Context, no_dns: bool) !void {
                 try ctx.out.print("  {s}{s} {s}{s}\n", .{ ctx.ui.palette.on(.fail), ctx.ui.glyphs.fail, try k.clean(ctx, m), ctx.ui.palette.off(.fail) });
             } else try renderChecks(ctx, s.checks);
         }
-        if (slots.items.len > 0) try ctx.out.print("\n{d} guest(s): {d} ok, {d} with warnings, {d} failed\n", .{ slots.items.len, slots.items.len - failed_guests - warned_guests, warned_guests, failed_guests });
+        if (slots.items.len > 0) try ctx.out.print("\n{f}: {d} ok, {d} with warnings, {d} failed\n", .{ ui.values.count(slots.items.len, "guest"), slots.items.len - failed_guests - warned_guests, warned_guests, failed_guests });
     }
     if (failed_guests > 0) return ctx.fail(error.Partial, "{d} guest{s} failed verification", .{ failed_guests, if (failed_guests == 1) "" else "s" });
 }
@@ -1560,13 +1560,13 @@ test "judges" {
     var ctx: Context = .{ .arena = h.arena.allocator(), .gpa = testing.allocator, .io = testing.io, .out = &h.out.writer, .err = &h.err.writer, .env = &h.env };
     ctx.loaded = .{ .ok = .{ .path = "", .exists = false, .config = .{}, .tree = .empty } };
     try testing.expectEqual(ui.style.Status.ok, (try judgeCloudInit(&ctx, .{ .code = 2, .out = ci_deprecated, .err = "" }, "", "")).status);
-    try testing.expectEqualStrings("done, 2 deprecation(s)", (try judgeCloudInit(&ctx, .{ .code = 2, .out = ci_deprecated, .err = "" }, "", "")).detail);
+    try testing.expectEqualStrings("done, 2 deprecations", (try judgeCloudInit(&ctx, .{ .code = 2, .out = ci_deprecated, .err = "" }, "", "")).detail);
     const handled_ci = try judgeCloudInit(&ctx, .{ .code = 2, .out = ci_first_boot, .err = "" }, "", "");
     try testing.expectEqual(ui.style.Status.ok, handled_ci.status);
-    try testing.expectEqualStrings("done, 2 first-boot network message(s) handled, 2 deprecation(s)", handled_ci.detail);
+    try testing.expectEqualStrings("done, 2 first-boot network messages handled, 2 deprecations", handled_ci.detail);
     const real = try judgeCloudInit(&ctx, .{ .code = 1, .out = ci_error, .err = "" }, "", "");
     try testing.expectEqual(ui.style.Status.failed, real.status);
-    try testing.expectEqualStrings("done, 1 error(s), 1 warning(s), 1 first-boot network message(s) handled: Failed to run module apt-configure", real.detail);
+    try testing.expectEqualStrings("done, 1 error, 1 warning, 1 first-boot network message handled: Failed to run module apt-configure", real.detail);
     try testing.expectEqual(ui.style.Status.failed, (try judgeCloudInit(&ctx, .{ .code = 0, .out = "{\"status\":\"running\"}", .err = "" }, "", "")).status);
     try testing.expectEqual(ui.style.Status.ok, (try judgeSudo(&ctx, .{ .code = 1, .out = "", .err = "sudo: interactive authentication is required\n" }, "", "")).status);
     try testing.expectEqual(ui.style.Status.ok, (try judgeNames(&ctx, .{ .code = 0, .out = "web-01\nweb-01.lab.example.com\n", .err = "" }, "web-01", "web-01.lab.example.com")).status);
@@ -1751,7 +1751,7 @@ test "vm new: address from the pool, clone, cloud-init config, waits, pinned hos
         "Plan · Create guest test-01 (200)\n",
         "address        (none) → 192.168.1.204/24 via 192.168.1.1 (static)\n",
         "more SSH keys  (none) → root@pve-guests\n",
-        "✓ wait for cloud-init   done  done, 2 deprecation(s)",
+        "✓ wait for cloud-init   done  done, 2 deprecations",
         "✓ reboot for updates    done  kernel 7.0.0-38-generic",
         "✓ pin SSH host key      done",
         "✓ reserve address       done  bc:24:11:ab:cd:ef → 192.168.1.204",
@@ -1908,7 +1908,7 @@ test "vm verify --all: every artoo guest, concurrently; templates and foreign VM
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm verify --all --no-dns"));
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     const out = g.h.stdout();
-    for ([_][]const u8{ "naboo (100)\n", "hoth (101)\n", "VM running", "config pending          ▲ warning      cores 1 → 2 — 'artoo vm start naboo'\n", "config pending          ✓ ok           none\n", "snapshots               ▲ warning      artoo-upgrade-20200101T0000Z is ", " old — 'artoo vm snap prune naboo'\n", "snapshots               ✓ ok           none\n", "\n2 guest(s): 0 ok, 0 with warnings, 2 failed\n" }) |want| {
+    for ([_][]const u8{ "naboo (100)\n", "hoth (101)\n", "VM running", "config pending          ▲ warning      cores 1 → 2 — 'artoo vm start naboo'\n", "config pending          ✓ ok           none\n", "snapshots               ▲ warning      artoo-upgrade-20200101T0000Z is ", " old — 'artoo vm snap prune naboo'\n", "snapshots               ✓ ok           none\n", "\n2 guests: 0 ok, 0 with warnings, 2 failed\n" }) |want| {
         if (std.mem.find(u8, out, want) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out });
             return error.TestUnexpectedResult;

@@ -763,7 +763,7 @@ pub const cp_cmd = struct {
             const want = copy.hashTree(copy.src, src_path) catch |err| return notVerified(ctx, shown, err);
             const have = copy.hashTree(copy.dst, target) catch |err| return notVerified(ctx, shown, err);
             const bad = try compare(a, want, have);
-            if (bad.len > 0) return ctx.fail(error.Partial, "copied to {s}, but {d} file(s) do not match: {s}", .{ shown, bad.len, try std.mem.join(a, ", ", bad) });
+            if (bad.len > 0) return ctx.fail(error.Partial, "copied to {s}, but {f} do not match: {s}", .{ shown, ui.values.count(bad.len, "file"), try std.mem.join(a, ", ", bad) });
             sums = want;
         } else {
             const want = copy.hashOne(copy.src, src_path) catch |err| return notVerified(ctx, shown, err);

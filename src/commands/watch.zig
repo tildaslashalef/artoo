@@ -443,7 +443,7 @@ const SetupOp = struct {
         if (s.secrets) try changes.append(a, .{ .field = "secrets", .from = null, .to = "random Grafana admin password and Grafana's ntfy token, made on the VM" });
         if (s.auth) try changes.append(a, .{ .field = "ntfy users", .from = null, .to = "grafana (write-only on '" ++ files.topic ++ "'); the phone follows with 'artoo watch secret phone'" });
         if (s.restart.len > 0) try changes.append(a, .{ .field = "services", .from = null, .to = try std.fmt.allocPrint(a, "{s} (re)started", .{try std.mem.join(a, ", ", s.restart)}) });
-        if (s.alloy) try changes.append(a, .{ .field = "alloy", .from = null, .to = try std.fmt.allocPrint(a, "pushes {s}'s metrics and journal, probes {d} service(s)", .{ op.vm.name, op.lab.services.len }) });
+        if (s.alloy) try changes.append(a, .{ .field = "alloy", .from = null, .to = try std.fmt.allocPrint(a, "pushes {s}'s metrics and journal, probes {f}", .{ op.vm.name, ui.values.count(op.lab.services.len, "service") }) });
         if (h.any()) try changes.append(a, .{
             .field = "host firewall",
             .from = if (op.host.options_ok and op.host.nic_ok) "differs" else null,
@@ -505,7 +505,7 @@ const SetupOp = struct {
         if (s_write) |i| {
             l.set(i, .unknown, "");
             for (s.write) |f| try edge.writeFile(c, id, f);
-            l.set(i, .done, try std.fmt.allocPrint(a, "{d} file(s)", .{s.write.len}));
+            l.set(i, .done, try std.fmt.allocPrint(a, "{f}", .{ui.values.count(s.write.len, "file")}));
         }
         if (s_prune) |i| {
             var script: std.ArrayList(u8) = .empty;
@@ -517,7 +517,7 @@ const SetupOp = struct {
                 try script.print(a, " '{s}'", .{d});
             }
             try edge.run(c, id, "removing old dashboards", script.items, step_timeout_ms);
-            l.set(i, .done, try std.fmt.allocPrint(a, "{d} file(s)", .{s.prune.len}));
+            l.set(i, .done, try std.fmt.allocPrint(a, "{f}", .{ui.values.count(s.prune.len, "file")}));
         }
         if (s_fw) |i| {
             l.set(i, .unknown, "");
@@ -787,13 +787,13 @@ const EnrollOp = struct {
         for (op.todo) |e| try changes.append(a, .{
             .field = e.vm.name,
             .from = e.from,
-            .to = try std.fmt.allocPrint(a, "alloy {s} → {s}, {d} file(s) written", .{ files.alloy_version, op.watch.name, e.write.len }),
+            .to = try std.fmt.allocPrint(a, "alloy {s} → {s}, {f} written", .{ files.alloy_version, op.watch.name, ui.values.count(e.write.len, "file") }),
         });
         var notes: std.ArrayList([]const u8) = .empty;
         for (op.skipped) |s| try notes.append(a, try std.fmt.allocPrint(a, "Skipped: {s}.", .{s}));
         try notes.append(a, "Alloy reports nothing to Grafana Labs and reaches only private networks (systemd IPAddressDeny).");
         return .{
-            .action = try std.fmt.allocPrint(a, "Enroll {d} guest(s) with {s}", .{ op.todo.len, op.watch.name }),
+            .action = try std.fmt.allocPrint(a, "Enroll {f} with {s}", .{ ui.values.count(op.todo.len, "guest"), op.watch.name }),
             .target = try k.nodeTarget(ctx, op.c),
             .changes = changes.items,
             .impact = try a.dupe([]const u8, &.{"Each guest runs Alloy and a facts timer, pushing metrics and its journal to the watchdog; nothing listens on the guests"}),
@@ -817,7 +817,7 @@ const EnrollOp = struct {
         for (op.todo, first..) |e, i| {
             l.set(i, .unknown, "");
             try apply(op.c, e);
-            l.set(i, .done, try std.fmt.allocPrint(a, "{d} file(s)", .{e.write.len}));
+            l.set(i, .done, try std.fmt.allocPrint(a, "{f}", .{ui.values.count(e.write.len, "file")}));
         }
     }
 
@@ -833,7 +833,7 @@ const EnrollOp = struct {
     }
 
     pub fn done(op: *EnrollOp) []const u8 {
-        return std.fmt.allocPrint(op.c.ctx.arena, "{d} guest(s) push to {s} — 'artoo watch status' shows them within a few minutes", .{ op.todo.len, op.watch.name }) catch "done";
+        return std.fmt.allocPrint(op.c.ctx.arena, "{f} push to {s} — 'artoo watch status' shows them within a few minutes", .{ ui.values.count(op.todo.len, "guest"), op.watch.name }) catch "done";
     }
 };
 
@@ -1082,7 +1082,7 @@ pub const status = struct {
             try checks.append(a, if (n) |hits| .{
                 .name = p[0],
                 .status = if (hits == 0) .ok else .failed,
-                .detail = if (hits == 0) "none" else try std.fmt.allocPrint(a, "{d} packet(s) — investigate", .{hits}),
+                .detail = if (hits == 0) "none" else try std.fmt.allocPrint(a, "{f} — investigate", .{ui.values.count(hits, "packet")}),
             } else .{ .name = p[0], .status = .failed, .detail = "counter missing (firewall not loaded?)" });
         }
         const hs = try edge.readHost(&c, v);
@@ -1104,7 +1104,7 @@ pub const status = struct {
         try checks.append(a, .{
             .name = "configuration",
             .status = if (drift.items.len == 0) .ok else .failed,
-            .detail = if (drift.items.len == 0) "as rendered: every telemetry switch off, retention 90 d metrics / 31 d logs" else try std.fmt.allocPrint(a, "{d} file(s) differ (first {s}) — run 'artoo watch setup'", .{ drift.items.len, drift.items[0] }),
+            .detail = if (drift.items.len == 0) "as rendered: every telemetry switch off, retention 90 d metrics / 31 d logs" else try std.fmt.allocPrint(a, "{f} differ (first {s}) — run 'artoo watch setup'", .{ ui.values.count(drift.items.len, "file"), drift.items[0] }),
         });
         try checks.append(a, .{ .name = "phone user", .status = if (st.phone) .ok else .warning, .detail = if (st.phone) "set" else "not set — 'artoo watch secret phone'" });
         if (l.services.len < 2) try checks.append(a, .{ .name = "service names", .status = .warning, .detail = "add 'svc add grafana <watch>:3000' and 'svc add ntfy <watch>:2586'" });
@@ -1145,7 +1145,7 @@ pub const status = struct {
         try vm_new.renderChecks(ctx, checks.items);
         var failed: usize = 0;
         for (checks.items) |ch| failed += @intFromBool(ch.status == .failed);
-        if (failed > 0) return ctx.fail(error.Partial, "{d} check(s) failed on {s}", .{ failed, v.name });
+        if (failed > 0) return ctx.fail(error.Partial, "{f} failed on {s}", .{ ui.values.count(failed, "check"), v.name });
     }
 };
 
@@ -1446,7 +1446,7 @@ test "watch setup -n: finds the role-watch VM, plans every step, writes nothing"
         "packages",
         "grafana 13.2.3, loki 3.7.8, alloy 1.20.1-1, ntfy 2.29.0 (held by apt pins)",
         "victoriametrics  (none) → v1.153.0 from its release tarball, SHA-256 checked",
-        "alloy            (none) → pushes scarif's metrics and journal, probes 1 service(s)",
+        "alloy            (none) → pushes scarif's metrics and journal, probes 1 service",
         "host firewall    (none) → Proxmox VM firewall: 16 rules, only source 192.168.1.202",
         "Dry run: nothing was sent.",
     }) |line| {

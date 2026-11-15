@@ -202,7 +202,7 @@ pub const log = struct {
         const shown = if (args.has("all") or lines.items.len <= 50) lines.items else lines.items[lines.items.len - 50 ..];
         if (ctx.json()) return ui.json.envelope(ctx.out, .pve, shown, .{ .collected_at = ctx.ui.now, .total_lines = lines.items.len, .upid = upid });
         if (shown.len < lines.items.len) {
-            try ctx.err.print("{s}… {d} earlier line(s); --all prints everything{s}\n", .{ ctx.err_ui.palette.on(.muted), lines.items.len - shown.len, ctx.err_ui.palette.off(.muted) });
+            try ctx.err.print("{s}… {f}; --all prints everything{s}\n", .{ ctx.err_ui.palette.on(.muted), ui.values.count(lines.items.len - shown.len, "earlier line"), ctx.err_ui.palette.off(.muted) });
         }
         for (shown) |l| try ctx.out.print("{s}\n", .{l});
     }
@@ -289,5 +289,5 @@ test "task log: tail by default" {
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "task log " ++ upid_ok));
     try testing.expect(std.mem.startsWith(u8, g.h.stdout(), "line 11\n"));
     try testing.expect(std.mem.endsWith(u8, g.h.stdout(), "line 60\n"));
-    try testing.expect(std.mem.find(u8, g.h.stderr(), "10 earlier line(s)") != null);
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "10 earlier lines") != null);
 }

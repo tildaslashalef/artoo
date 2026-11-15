@@ -835,7 +835,7 @@ const RmOp = struct {
         }
         op.fp = try std.fmt.allocPrint(a, "{s}|{s}", .{ view.raw, if (op.record) |r| r.id else "absent" });
         const public = try @import("cf_tunnel.zig").routesTo(ctx, op.name);
-        if (public.names.len > 0) return ctx.fail(error.Refused, "public host(s) {s} reach service {s}; unpublish them first ('artoo cf tunnel route rm HOST')", .{ try std.mem.join(a, ", ", public.names), op.name });
+        if (public.names.len > 0) return ctx.fail(error.Refused, "public {s} {s} reach{s} service {s}; unpublish {s} first ('artoo cf tunnel route rm HOST')", .{ if (public.names.len == 1) "host" else "hosts", try std.mem.join(a, ", ", public.names), if (public.names.len == 1) "es" else "", op.name, if (public.names.len == 1) "it" else "them" });
         op.public_note = public.note;
     }
 
@@ -1328,7 +1328,7 @@ test "vm rm refuses while a service points at the VM" {
     defer g.deinit();
     const vm_root = cli.group("artoo", "t", &.{@import("vm.zig").group});
     try testing.expectEqual(testkit.Exit.refused, g.h.run(&vm_root, "vm rm web-01 -n"));
-    try testing.expect(std.mem.find(u8, g.h.stderr(), "service(s) grafana point at web-01") != null);
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "service grafana points at web-01") != null);
     try testing.expectEqual(@as(usize, 5), g.sent());
 }
 

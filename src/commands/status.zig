@@ -495,7 +495,7 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
     if (r.guests) |gs| {
         var running: usize = 0;
         for (gs) |g| running += @intFromBool(std.mem.eql(u8, g.status, "running"));
-        try ctx.out.print("  {d} running, {d} stopped, {d} template(s)\n", .{ running, gs.len - running, r.templates });
+        try ctx.out.print("  {d} running, {d} stopped, {f}\n", .{ running, gs.len - running, ui.values.count(r.templates, "template") });
         if (gs.len > 0) {
             const rows = try a.alloc([]const ui.table.Cell, gs.len);
             for (gs, rows) |g, *row| {
@@ -551,8 +551,8 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
             n_vms += 1;
             if (g.oldest_snap) |t| oldest = if (oldest) |o| @min(o, t) else t;
         };
-        if (n_snaps > 0) try fields.append(a, .{ .key = "  snapshots", .value = try std.fmt.allocPrint(a, "{d} on {d} VM(s){s}", .{
-            n_snaps, n_vms, if (oldest) |t| try std.fmt.allocPrint(a, ", oldest {f}", .{ui.values.duration(@intCast(@max(ctx.ui.now - t, 0)))}) else "",
+        if (n_snaps > 0) try fields.append(a, .{ .key = "  snapshots", .value = try std.fmt.allocPrint(a, "{d} on {f}{s}", .{
+            n_snaps, ui.values.count(n_vms, "VM"), if (oldest) |t| try std.fmt.allocPrint(a, ", oldest {f}", .{ui.values.duration(@intCast(@max(ctx.ui.now - t, 0)))}) else "",
         }) });
         try ui.blocks.detail(ctx.out, u, &.{.{ .fields = fields.items }});
         if (r.guests) |gs| for (gs) |g| for (g.stale_snaps) |s| {
@@ -573,7 +573,7 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
             .warning => warned += 1,
             else => {},
         };
-        try ctx.out.print("  {d} running, {d} recent failure(s), {d} with warnings\n", .{ r.running_tasks.?, failed, warned });
+        try ctx.out.print("  {d} running, {f}, {d} with warnings\n", .{ r.running_tasks.?, ui.values.count(failed, "recent failure"), warned });
         var shown: usize = 0;
         for (recent) |t| {
             if (shown == 3) break;
@@ -613,7 +613,7 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
             try muted(ctx, try std.fmt.allocPrint(a, "none (no tunnel '{s}')", .{try k.clean(ctx, t.name)}));
         } else {
             const healthy = std.mem.eql(u8, t.status, "healthy");
-            try ctx.out.print("  {s}{s}: {s}, {d} connection(s), {d} public route(s){s}\n", .{ u.palette.on(if (healthy) .text else .warn), try k.clean(ctx, t.name), try k.clean(ctx, t.status), t.connections, t.routes.len, u.palette.off(if (healthy) .text else .warn) });
+            try ctx.out.print("  {s}{s}: {s}, {f}, {f}{s}\n", .{ u.palette.on(if (healthy) .text else .warn), try k.clean(ctx, t.name), try k.clean(ctx, t.status), ui.values.count(t.connections, "connection"), ui.values.count(t.routes.len, "public route"), u.palette.off(if (healthy) .text else .warn) });
             for (t.routes) |pr| {
                 const target = if (pr.service) |s| try std.fmt.allocPrint(a, "service {s}", .{try k.clean(ctx, s)}) else "not an artoo service";
                 if (pr.missing) {
@@ -734,7 +734,7 @@ test "status: Proxmox and UniFi sections; a failed section exits 8" {
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     const out = g.h.stdout();
     for ([_][]const u8{
-        "  0 running, 1 stopped, 1 template(s)\n",
+        "  0 running, 1 stopped, 1 template\n",
         "  local-zfs  ",
         "✗ unavailable: Proxmox refused GET /nodes/pve/tasks?limit=20&source=all&errors=1 (500): boom",
         "  Devices  1 online / 1\n",
@@ -850,12 +850,12 @@ test "status: the whole lab — edge drops first, no router, tunnel and service 
         "488.3 MiB / 1.9 GiB",
         "  * incl. page cache: the guest agent did not answer\n",
         "  ▲ reboot pending: scarif (linux-image-7.0.0-39-generic, linux-base) — 'artoo vm reboot VM'\n",
-        "  snapshots  2 on 1 VM(s), oldest ",
+        "  snapshots  2 on 1 VM, oldest ",
         "  ▲ old snapshot: scarif@artoo-watch-20200102T0000Z (",
         ") — 'artoo vm snap prune scarif'\n",
-        "Edge (bespin)\n  ✗ drops to Proxmox  3 packet(s) blocked — investigate\n",
+        "Edge (bespin)\n  ✗ drops to Proxmox  3 packets blocked — investigate\n",
         "Router\n  none (no VM tagged role-router)\n",
-        "Tunnel\n  lab: healthy, 2 connection(s), 1 public route(s)\n  ▲ blog.example.com → service blog: the service does not exist\n",
+        "Tunnel\n  lab: healthy, 2 connections, 1 public route\n  ▲ blog.example.com → service blog: the service does not exist\n",
         "Services\n  1 ok: grafana\n  ▲ ntfy: no route on the edge\n",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {

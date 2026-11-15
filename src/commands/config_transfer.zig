@@ -156,9 +156,9 @@ pub const export_cmd = struct {
             return ctx.fail(error.Partial, "{s} was written but does not open again; do not rely on it", .{ctx.tilde(out)});
         if (!std.mem.eql(u8, reopened, plain))
             return ctx.fail(error.Partial, "{s} was written but reads back differently; do not rely on it", .{ctx.tilde(out)});
-        try ctx.out.print("Wrote {s}: config, {d} CA bundle(s), {d} credential(s){s}; checked.\nOn the other machine: 'artoo config import {s}'.\n", .{
-            ctx.tilde(out),                                                                           bundle.ca.len,  bundle.secrets.len - guests,
-            if (with_guests) try std.fmt.allocPrint(a, ", {d} guest password(s)", .{guests}) else "", ctx.tilde(out),
+        try ctx.out.print("Wrote {s}: config, {f}, {f}{s}; checked.\nOn the other machine: 'artoo config import {s}'.\n", .{
+            ctx.tilde(out),                                                                                            ui.values.count(bundle.ca.len, "CA bundle"), ui.values.count(bundle.secrets.len - guests, "credential"),
+            if (with_guests) try std.fmt.allocPrint(a, ", {f}", .{ui.values.count(guests, "guest password")}) else "", ctx.tilde(out),
         });
     }
 };
@@ -255,13 +255,13 @@ pub const import_cmd = struct {
             store.set(ctx.io, a, s.name, s.value) catch |err| return storeError(ctx, err, where);
         }
         try ctx.out.print(
-            \\Installed {d} item(s).
+            \\Installed {f}.
             \\Next on this machine: an SSH key of its own (guests.ssh_public_key,
             \\pve.ssh_identity), added to root's authorized_keys on Proxmox and to
             \\guests.extra_ssh_keys on your main machine; then 'artoo doctor --connect'.
             \\Delete {s} once you no longer need it.
             \\
-        , .{ changes, ctx.tilde(in) });
+        , .{ ui.values.count(changes, "item"), ctx.tilde(in) });
     }
 };
 
@@ -508,7 +508,7 @@ test "config export then import on another machine: rehomed, same skipped, diffe
     try testing.expectEqual(.refused, h1.run(&root, "config export ~/setup.txt --stdin"));
     try testing.expectEqual(.ok, h1.run(&root, "config export ~/setup.txt --stdin -y"));
     const out1 = h1.stdout();
-    for ([_][]const u8{ "config      ~/.artoo/config.json", "pve         credential", "cloudflare  not stored", "Wrote ~/setup.txt: config, 1 CA bundle(s), 2 credential(s); checked." }) |want| {
+    for ([_][]const u8{ "config      ~/.artoo/config.json", "pve         credential", "cloudflare  not stored", "Wrote ~/setup.txt: config, 1 CA bundle, 2 credentials; checked." }) |want| {
         if (std.mem.find(u8, out1, want) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out1 });
             return error.TestUnexpectedResult;
@@ -555,7 +555,7 @@ test "config export then import on another machine: rehomed, same skipped, diffe
     try testing.expect(std.mem.find(u8, cfg2, "\"~/.artoo/tls/rootCA.pem\"") != null);
     try testing.expect(std.mem.find(u8, cfg2, if (builtin.os.tag.isDarwin()) "\"keychain\"" else "\"auto\"") != null);
     try testing.expect(std.mem.find(u8, h2.stdout(), "pve.ca_bundle: ") != null);
-    try testing.expect(std.mem.find(u8, h2.stdout(), "Installed 4 item(s).") != null);
+    try testing.expect(std.mem.find(u8, h2.stdout(), "Installed 4 items.") != null);
 
     // Again: all the same.
     s2 = .{ .interactive = false, .piped = pass };
@@ -604,7 +604,7 @@ test "config export --guest-passwords carries the stored passwords of Proxmox's 
         "no password stored here, not included: hoth",
         "name artoo stores no password under, not included: Kessel",
         "Not included: SSH keys.",
-        "Wrote ~/setup.txt: config, 0 CA bundle(s), 4 credential(s), 1 guest password(s); checked.",
+        "Wrote ~/setup.txt: config, 0 CA bundles, 4 credentials, 1 guest password; checked.",
     }) |want| if (std.mem.find(u8, out1, want) == null) {
         std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ want, out1 });
         return error.TestUnexpectedResult;
