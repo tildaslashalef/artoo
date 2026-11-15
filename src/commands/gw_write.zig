@@ -45,17 +45,21 @@ fn fileUse(w: catalog.Write) FileUse {
     };
 }
 
-/// `prefix a, b, c` wrapped at 76 columns with a hanging indent.
-fn wrapList(comptime prefix: []const u8, comptime items: []const []const u8) []const u8 {
+/// `items` as an indented, comma-separated list wrapped at 76 columns;
+/// names in `marked` get a trailing `*`.
+fn wrapList(comptime items: []const []const u8, comptime marked: []const []const u8) []const u8 {
     comptime {
-        var s: []const u8 = prefix;
-        var col = prefix.len;
+        var s: []const u8 = "  ";
+        var col = 2;
         for (items, 0..) |it, i| {
-            const piece = it ++ (if (i + 1 < items.len) "," else ".");
-            if (col + 1 + piece.len > 76) {
+            const star = for (marked) |m| {
+                if (std.mem.eql(u8, m, it)) break "*";
+            } else "";
+            const piece = it ++ star ++ (if (i + 1 < items.len) "," else "");
+            if (i > 0 and col + 1 + piece.len > 76) {
                 s = s ++ "\n  ";
                 col = 2;
-            } else if (i > 0 or prefix.len > 0) {
+            } else if (i > 0) {
                 s = s ++ " ";
                 col += 1;
             }
@@ -66,28 +70,169 @@ fn wrapList(comptime prefix: []const u8, comptime items: []const []const u8) []c
     }
 }
 
-fn detailsFor(comptime r: *const catalog.Resource, comptime w: catalog.Write) []const u8 {
+fn article(comptime word: []const u8) []const u8 {
+    return if (std.mem.findScalar(u8, "aeiouAEIO", word[0]) != null) "an " else "a ";
+}
+
+/// "firewall policy" → "firewall-policy.json".
+fn sampleFile(comptime r: *const catalog.Resource) []const u8 {
     comptime {
-        @setEvalBranchQuota(50_000);
-        var s: []const u8 = @tagName(w.method) ++ " " ++ w.op.path ++ (if (w.kind == .purge) "?filter=EXPR" else "") ++ "\n" ++ switch (w.kind) {
-            .create => "The body comes from --from FILE.",
-            .replace => "Replaces the whole object: fields missing from the file revert to\nserver defaults (the preview lists them). Start from\n'artoo -o json gw " ++ r.name ++ " show ID > FILE' and edit it; read-only fields\n(id, metadata, …) are dropped and named in the plan. Secrets appear as\n<redacted> in that output: put the real value back.",
-            .patch => "Only the fields in the file change.",
-            .delete => "Deletes the object.",
-            .action, .port_action => "Action " ++ w.action.? ++ ". The API offers no read-back: the result is\nreported as accepted, not verified.",
-            .ordering => "The body is the complete order.",
-            .adopt => "See 'artoo gw devices pending'.",
-            .purge => "Deletes every matching voucher.",
-        };
-        if (w.fields.len > 0) s = s ++ "\n\n" ++ wrapList("Body fields:", w.fields);
-        if (w.required.len > 0 and w.kind != .patch) s = s ++ "\n" ++ wrapList("Required:", w.required);
-        if (w.destructive) s = s ++ "\n\nDestructive: type the target to confirm, or --yes --confirm TARGET.";
+        var s: []const u8 = "";
+        for (r.label) |ch| s = s ++ .{if (ch == ' ') '-' else std.ascii.toLower(ch)};
+        return s ++ ".json";
+    }
+}
+
+fn joined(comptime items: []const []const u8) []const u8 {
+    comptime {
+        var s: []const u8 = "";
+        for (items, 0..) |it, i| s = s ++ (if (i > 0) ", " else "") ++ it;
         return s;
     }
 }
 
-const from_flag: cli.Flag = .{ .long = "from", .short = 'f', .kind = .string, .metavar = "FILE", .help = "Request body as JSON (a 'show -o json' document works)" };
-const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "Non-interactive confirmation (with --yes)" };
+/// What the write does, in the operator's words.
+fn intro(comptime r: *const catalog.Resource, comptime w: catalog.Write) []const u8 {
+    const label = r.label;
+    const zones = std.mem.eql(u8, r.name, "fw-policies");
+    return switch (w.kind) {
+        .create => if (std.mem.eql(u8, r.name, "vouchers"))
+            "Creates one or more hotspot vouchers from the JSON body in --from FILE; count sets how many."
+        else
+            "Creates " ++ article(label) ++ label ++ " from the JSON body in --from FILE.",
+        .replace => "Replaces a whole " ++ label ++ " with the JSON body in --from FILE. Fields missing from the file revert to server defaults; the plan lists them as reset." ++
+            "\n\nStart from the current object: 'artoo gw " ++ r.name ++ " show " ++ gw.sample(r) ++ " -o json > FILE', then edit it." ++
+            (if (r.read_only.len > 0) " Read-only fields (" ++ joined(r.read_only) ++ ") are dropped and named in the plan." else "") ++
+            " Secrets show as <redacted> in that output: put the real values back, since a <redacted> value is refused.",
+        .patch => "Changes only the fields in the JSON body in --from FILE; every other field of the " ++ label ++ " stays as it is.",
+        .delete => if (std.mem.eql(u8, r.name, "devices"))
+            "Removes an adopted device: UniFi forgets it, and it must be adopted again to be managed."
+        else
+            "Deletes " ++ article(label) ++ label ++ "; anything that uses it stops working." ++
+                (if (w.force) " --force deletes it even while other objects reference it" ++
+                    (if (std.mem.eql(u8, r.name, "networks")) " (see 'artoo gw networks refs')." else ".") else ""),
+        .action, .port_action => actionIntro(w.action.?) ++
+            (if (w.fields.len > 0) " --from FILE optionally adds the fields listed below." else ""),
+        .ordering => "Sets the order of the user-defined " ++ (if (zones) "firewall policies from one zone to another" else "ACL rules") ++
+            " from the JSON body in --from FILE; the file holds the complete order. Start from 'artoo gw " ++ r.name ++ " order" ++
+            (if (zones) " SRC_ZONE DST_ZONE" else "") ++ " -o json > FILE'.",
+        .adopt => "Adopts a device waiting for adoption, by its MAC address from 'artoo gw devices pending'. Adoption completes in the background: follow it with 'artoo gw devices ls'.",
+        .purge => "Deletes every voucher that matches --filter. The filter is required, so purge never deletes all vouchers by omission; try it first with 'artoo gw vouchers ls --filter EXPR', whose help has the grammar.",
+    };
+}
+
+fn actionIntro(comptime action: []const u8) []const u8 {
+    const texts = .{
+        .{ "RESTART", "Restarts a device. Its clients lose service until it is back online." },
+        .{ "POWER_CYCLE", "Cuts and restores PoE power on one port, so the device it powers reboots. PORT is the port index from 'artoo gw devices show'." },
+        .{ "AUTHORIZE_GUEST_ACCESS", "Gives a client access through the guest network (hotspot), optionally with time, data and rate limits." },
+        .{ "UNAUTHORIZE_GUEST_ACCESS", "Revokes a client's guest network access." },
+    };
+    inline for (texts) |t| {
+        if (comptime std.mem.eql(u8, t[0], action)) return t[1];
+    }
+    @compileError(action ++ ": no help text");
+}
+
+/// The steps the write runs, numbered.
+fn steps(comptime r: *const catalog.Resource, comptime w: catalog.Write) []const u8 {
+    comptime {
+        const label = r.label;
+        var list: []const []const u8 = &.{};
+        switch (fileUse(w)) {
+            .required => list = list ++ .{"Checks the file locally: JSON, known fields" ++
+                (if (w.kind != .patch and w.required.len > 0) ", required fields" else "")},
+            .optional => list = list ++ .{"Checks --from FILE locally, if given"},
+            .none => {},
+        }
+        switch (w.kind) {
+            .replace, .patch, .delete, .action, .port_action => list = list ++ .{"Reads the current " ++ label},
+            .ordering => list = list ++ .{"Reads the current order"},
+            .purge => list = list ++ .{"Reads every voucher the filter matches"},
+            .create, .adopt => {},
+        }
+        list = list ++ .{
+            "Shows the plan" ++ (if (w.kind == .replace or w.kind == .patch or w.kind == .ordering) " with a field diff" else "") ++ "; -n stops here",
+            if (w.destructive) "Asks you to type the target to confirm" else "Asks for confirmation (--yes skips it)",
+            "Sends one request, never retried",
+        };
+        list = list ++ .{switch (w.kind) {
+            .create => "Reads the new object back to verify it, when UniFi returns its ID",
+            .replace, .patch => "Reads the " ++ label ++ " again to verify the change",
+            .ordering => "Reads the order again to verify it",
+            .delete => "Checks the " ++ label ++ " is gone",
+            .purge => "Checks no voucher matches the filter any more",
+            .action, .port_action, .adopt => "Reports the result as accepted: the API offers no read-back",
+        }};
+        var s: []const u8 = "Steps:";
+        for (list, 1..) |step, n| s = s ++ std.fmt.comptimePrint("\n  {d}. ", .{n}) ++ step;
+        return s;
+    }
+}
+
+/// What TARGET is for `--confirm` on this write.
+fn confirmTarget(comptime r: *const catalog.Resource, comptime w: catalog.Write) []const u8 {
+    return switch (w.kind) {
+        .replace, .patch, .delete, .action, .port_action => "the " ++ r.label ++ "'s name",
+        .create => "the new " ++ r.label ++ "'s name",
+        .ordering, .purge => "'" ++ r.name ++ "'",
+        .adopt => "the MAC address",
+    };
+}
+
+fn detailsFor(comptime r: *const catalog.Resource, comptime w: catalog.Write) []const u8 {
+    comptime {
+        @setEvalBranchQuota(100_000);
+        var s: []const u8 = intro(r, w) ++ "\n\n" ++ steps(r, w);
+        if (w.fields.len > 0 and fileUse(w) != .none) {
+            const marked = w.required.len > 0 and w.kind != .patch;
+            s = s ++ "\n\n" ++ (if (marked) "Body fields (* required):\n" else "Body fields:\n") ++
+                wrapList(w.fields, if (marked) w.required else &.{});
+        }
+        if (w.destructive) {
+            s = s ++ "\n\nDestructive: confirm by typing " ++ confirmTarget(r, w) ++ ", or pass --yes --confirm TARGET when there is no terminal.";
+            if (w.kind != .delete and w.kind != .purge and w.kind != .action and w.kind != .port_action)
+                s = s ++ " The change is network-wide: LAN clients can be affected as soon as it applies.";
+        } else s = s ++ "\n\nWithout a terminal, --yes is required.";
+        if (std.mem.eql(u8, r.name, "dns-policies") and fileUse(w) == .required)
+            s = s ++ "\n\nA name outside home.arpa for the Proxmox host or the gateway, by name or address, is refused.";
+        return s;
+    }
+}
+
+const from_flag: cli.Flag = .{ .long = "from", .short = 'f', .kind = .string, .metavar = "FILE", .help = "JSON body file; a 'show -o json' document works" };
+const confirm_flag: cli.Flag = .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "With --yes: the target, to confirm without a prompt" };
+
+/// Examples for one write, simplest first, with a dry run.
+fn examplesFor(comptime r: *const catalog.Resource, comptime w: catalog.Write) []const []const u8 {
+    comptime {
+        const base = "artoo gw " ++ r.name ++ " ";
+        const cmd = base ++ w.verb;
+        const name = gw.sample(r);
+        const file = sampleFile(r);
+        const zones = if (std.mem.eql(u8, r.name, "fw-policies")) " Internal External" else "";
+        return switch (w.kind) {
+            .create => &.{ cmd ++ " --from " ++ file ++ " -n", cmd ++ " --from " ++ file },
+            .replace => &.{ base ++ "show " ++ name ++ " -o json > " ++ file, cmd ++ " " ++ name ++ " --from " ++ file ++ " -n", cmd ++ " " ++ name ++ " --from " ++ file },
+            .patch => &.{ cmd ++ " " ++ name ++ " --from " ++ file ++ " -n", cmd ++ " " ++ name ++ " --from " ++ file },
+            .delete => blk: {
+                var e: []const []const u8 = &.{ cmd ++ " " ++ name ++ " -n", cmd ++ " " ++ name };
+                if (w.force) e = e ++ .{cmd ++ " " ++ name ++ " --force"};
+                break :blk e ++ .{cmd ++ " " ++ name ++ " --yes --confirm " ++ name};
+            },
+            .action => blk: {
+                var e: []const []const u8 = &.{ cmd ++ " " ++ name ++ " -n", cmd ++ " " ++ name };
+                if (std.mem.eql(u8, w.action.?, "AUTHORIZE_GUEST_ACCESS")) e = e ++ .{cmd ++ " " ++ name ++ " --from limits.json"};
+                if (w.destructive) e = e ++ .{cmd ++ " " ++ name ++ " --yes --confirm " ++ name};
+                break :blk e;
+            },
+            .port_action => &.{ base ++ "show " ++ name, cmd ++ " " ++ name ++ " 4 -n", cmd ++ " " ++ name ++ " 4" },
+            .ordering => &.{ base ++ "order" ++ zones ++ " -o json > order.json", cmd ++ zones ++ " --from order.json -n", cmd ++ zones ++ " --from order.json" },
+            .adopt => &.{ base ++ "pending", cmd ++ " aa:bb:cc:dd:ee:ff -n", cmd ++ " aa:bb:cc:dd:ee:ff" },
+            .purge => &.{ base ++ "ls --filter \"expired.eq(true)\"", cmd ++ " --filter \"expired.eq(true)\" -n", cmd ++ " --filter \"expired.eq(true)\" --yes --confirm " ++ r.name },
+        };
+    }
+}
 
 pub fn Verb(comptime r: *const catalog.Resource, comptime w: catalog.Write) type {
     if ((w.kind == .replace or w.kind == .patch or w.kind == .delete or targeted(w.kind)) and r.show == null)
@@ -101,27 +246,21 @@ pub fn Verb(comptime r: *const catalog.Resource, comptime w: catalog.Write) type
         pub const positionals = blk: {
             var p: []const cli.Positional = &.{};
             if (targeted(w.kind)) p = p ++ .{cli.Positional{ .name = "ID|NAME", .help = gw.targetHelp(r) }};
-            if (w.kind == .port_action) p = p ++ .{cli.Positional{ .name = "PORT", .help = "Port index (see 'gw devices show')" }};
-            if (w.kind == .adopt) p = p ++ .{cli.Positional{ .name = "MAC", .help = "MAC address of the pending device" }};
+            if (w.kind == .port_action) p = p ++ .{cli.Positional{ .name = "PORT", .help = "Port index, from 'artoo gw devices show'" }};
+            if (w.kind == .adopt) p = p ++ .{cli.Positional{ .name = "MAC", .help = "MAC address of the pending device (aa:bb:cc:dd:ee:ff)" }};
             if (zones) p = p ++ gw.zone_positionals;
             break :blk p[0..p.len].*;
         };
         pub const flags = blk: {
             var f: []const cli.Flag = &.{};
             if (fileUse(w) != .none) f = f ++ .{from_flag};
-            if (w.force) f = f ++ .{cli.Flag{ .long = "force", .help = "Delete even if other objects reference it (force=true)" }};
-            if (w.kind == .purge) f = f ++ .{cli.Flag{ .long = "filter", .kind = .string, .metavar = "EXPR", .help = "Vouchers to delete (required; see 'gw vouchers ls -h')" }};
+            if (w.force) f = f ++ .{cli.Flag{ .long = "force", .help = "Delete even while other objects reference it" }};
+            if (w.kind == .purge) f = f ++ .{cli.Flag{ .long = "filter", .kind = .string, .metavar = "EXPR", .help = "Which vouchers to delete (required)" }};
             if (w.kind == .adopt) f = f ++ .{cli.Flag{ .long = "ignore-limit", .help = "Adopt even beyond the device limit" }};
             if (w.destructive) f = f ++ .{confirm_flag};
             break :blk f[0..f.len].*;
         };
-        pub const examples = [_][]const u8{"artoo gw " ++ r.name ++ " " ++ w.verb ++
-            (if (targeted(w.kind)) " NAME" else "") ++
-            (if (w.kind == .port_action) " 4" else "") ++
-            (if (w.kind == .adopt) " aa:bb:cc:dd:ee:ff" else "") ++
-            (if (zones) " Internal External" else "") ++
-            (if (w.kind == .purge) " --filter \"expired.eq(true)\"" else "") ++
-            (if (fileUse(w) == .required) " --from FILE" else "") ++ " --dry-run"};
+        pub const examples = examplesFor(r, w)[0..examplesFor(r, w).len].*;
 
         pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
             var op: WriteOp = .{ .r = r, .w = &write, .risk = if (w.destructive) .destructive else .normal };
@@ -508,23 +647,37 @@ fn hasPort(device: Value, idx: u16) bool {
 
 pub const api = struct {
     pub const name = "api";
-    pub const summary = "Generic Integration API request (writes are destructive-confirmed)";
+    pub const summary = "Send any Integration API request; writes need a typed path";
     pub const details =
-        \\PATH starts with /v1/; {siteId} is replaced by the configured site. GET
-        \\prints the response (secrets redacted). POST, PUT, PATCH and DELETE run
-        \\the mutation pipeline with destructive confirmation — type PATH, or
-        \\--yes --confirm PATH — and are reported as accepted: artoo cannot
-        \\validate the body or verify the result of a generic request.
+        \\Sends one request to the UniFi Integration API, for an operation no gw command
+        \\covers. Prefer the typed commands (gw <resource> add, set, rm, ...): they check
+        \\the body, show a field diff and verify the result.
+        \\
+        \\PATH starts with /v1/ and may carry a query string; {siteId} is replaced by the
+        \\configured site's ID. Quote PATH for the shell.
+        \\
+        \\GET prints the response with secrets redacted: a list as a table, anything else
+        \\as a detail view, -o json for the document.
+        \\
+        \\POST, PUT, PATCH and DELETE are always treated as destructive: type PATH to
+        \\confirm, or pass --yes --confirm PATH. The request is sent once, never retried.
+        \\artoo cannot check the body or verify the result of a generic request, so the
+        \\outcome is reported as accepted. A body holding <redacted> values copied from
+        \\artoo output is refused, and so is a DNS policy that would give the Proxmox
+        \\host or the gateway a name outside home.arpa.
     ;
     pub const positionals = [_]cli.Positional{
         .{ .name = "METHOD", .help = "GET, POST, PUT, PATCH or DELETE" },
-        .{ .name = "PATH", .help = "/v1/… (query string allowed)" },
+        .{ .name = "PATH", .help = "/v1/..., query string allowed" },
     };
-    pub const flags = [_]cli.Flag{ from_flag, confirm_flag };
+    pub const flags = [_]cli.Flag{
+        .{ .long = "from", .short = 'f', .kind = .string, .metavar = "FILE", .help = "JSON body file (POST, PUT and PATCH)" },
+        .{ .long = "confirm", .kind = .string, .metavar = "TARGET", .help = "With --yes: PATH as typed, to confirm without a prompt" },
+    };
     pub const examples = [_][]const u8{
         "artoo gw api GET /v1/info",
-        "artoo gw api GET '/v1/sites/{siteId}/wans'",
-        "artoo gw api POST '/v1/sites/{siteId}/traffic-matching-lists' --from list.json --dry-run",
+        "artoo gw api GET '/v1/sites/{siteId}/wans' -o json",
+        "artoo gw api POST '/v1/sites/{siteId}/traffic-matching-lists' --from list.json -n",
     };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {

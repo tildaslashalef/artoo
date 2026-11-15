@@ -176,14 +176,18 @@ fn finish(ctx: *Context, l: Loaded) !void {
 
 pub const ls = struct {
     pub const name = "ls";
-    pub const summary = "List WAN interfaces: role, status, address, ISP, link, availability";
+    pub const summary = "List WANs: role, status, address, ISP, link and availability";
     pub const details =
-        \\Read-only. Names and IDs from the Integration API; state from the
-        \\gateway's classic stat/health and stat/device documents and the v2
-        \\load-balancing status. "shared" marks an address in
-        \\100.64.0.0/10 (the ISP's carrier-grade NAT). A WAN no gateway port
-        \\carries shows as "no port" (role unassigned). A source this firmware
-        \\lacks is named; the command exits 8 when none answers.
+        \\Lists every WAN with its role (active, backup, unassigned), status, public
+        \\address, ISP, link (port, speed, duplex), availability and latency. Use it to
+        \\see which WAN carries traffic and whether it is healthy.
+        \\
+        \\"shared" after an address marks carrier-grade NAT (100.64.0.0/10): the ISP
+        \\shares the public address, so connections from the Internet cannot reach it.
+        \\A WAN no gateway port carries shows as "no port".
+        \\
+        \\Read-only. The state comes from several gateway sources; one this firmware
+        \\lacks is named, and the command exits 8 when none answers.
     ;
     pub const examples = [_][]const u8{ "artoo gw wans ls", "artoo gw wans ls -o json" };
 
@@ -248,15 +252,20 @@ const ShowData = struct {
 
 pub const show = struct {
     pub const name = "show";
-    pub const summary = "Show one WAN in depth: address, next hop, ISP, port, monitors, outages";
+    pub const summary = "Show one WAN in depth: next hop, monitors and recent outages";
     pub const details =
-        \\Read-only. WAN by name (exact, then case-insensitive) or ID. The
-        \\outages are the last 24 hours of the system log, as 'gw wans log'
-        \\shows them. A past outage has no recorded next-hop state, so it is
-        \\never blamed on the ISP's first hop.
+        \\Shows one WAN in depth: address, next hop, ISP, port and link, the gateway's
+        \\health monitors, and the outages of the last 24 hours as 'artoo gw wans log'
+        \\shows them. Use it when 'artoo gw wans ls' shows a WAN in trouble.
+        \\
+        \\Name the WAN by name (exact, then case-insensitive) or by ID. A past outage
+        \\has no recorded next-hop state, so it is never blamed on the ISP's first hop.
+        \\
+        \\Read-only. If the outage search fails, the current state is still shown and
+        \\the command exits 8.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "WAN", .help = "WAN name or ID" }};
-    pub const examples = [_][]const u8{ "artoo gw wans show WAN-NAME", "artoo gw wans show WAN-NAME -o json" };
+    pub const examples = [_][]const u8{ "artoo gw wans show Fiber-Main", "artoo gw wans show Fiber-Main -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try unifi.Client.open(ctx);
@@ -394,26 +403,31 @@ const LogData = struct {
 
 pub const log = struct {
     pub const name = "log";
-    pub const summary = "WAN outages from the system log, with lead-up and likely cause";
+    pub const summary = "List WAN outages from the system log, with lead-up and cause";
     pub const details =
-        \\Read-only. The system log's INTERNET_AND_WAN events in the window,
-        \\every page read (each a POST search that changes nothing, never
-        \\retried), folded into outages: a failure opens one, the next restore
-        \\of that WAN closes it (its DURATION is the outage's length). Packet
-        \\loss, latency and link events in the 10 minutes before a failure are
-        \\its lead-up. The likely cause comes from evidence only:
+        \\Reads the gateway's system log for Internet and WAN events in the window and
+        \\folds them into outages: a failure opens one, the next restore of that WAN
+        \\closes it, and DURATION is its length. A WAN offline since before the window
+        \\is an ongoing outage. Use it to find out when and why a WAN dropped.
+        \\
+        \\Packet loss, latency and link events in the 10 minutes before a failure are
+        \\shown as its lead-up. The likely cause comes from the evidence only:
         \\  link-down event during the outage   link: cable, modem or ONT
         \\  link up, next hop unreachable       ISP access (ongoing only)
         \\  link up, every monitor failing      ISP network beyond the first hop
         \\  only the DNS monitors failing       DNS: resolvers unreachable
         \\  nothing to go on                    unknown
-        \\Other events are shown as they are. WANs without a port are left out.
+        \\
+        \\Other WAN events are listed as they are; WANs without a port are left out.
+        \\
+        \\Read-only: every page of the log is read with a search request that changes
+        \\nothing and is never retried.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "WAN", .help = "WAN name or ID (default: every WAN)", .required = false }};
     pub const flags = [_]cli.Flag{
-        .{ .long = "since", .kind = .choice, .choices = &.{ "24h", "7d", "30d" }, .default = "24h", .help = "Window to read" },
+        .{ .long = "since", .kind = .choice, .choices = &.{ "24h", "7d", "30d" }, .default = "24h", .help = "How far back to read the log" },
     };
-    pub const examples = [_][]const u8{ "artoo gw wans log", "artoo gw wans log --since 7d", "artoo gw wans log WAN-NAME --since 30d -o json" };
+    pub const examples = [_][]const u8{ "artoo gw wans log", "artoo gw wans log --since 7d", "artoo gw wans log Fiber-Main --since 30d -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const since = args.choice("since", wan.Since) orelse .@"24h";
