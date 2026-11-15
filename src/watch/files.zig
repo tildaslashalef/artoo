@@ -117,6 +117,12 @@ fn probeLabels(a: Allocator, out: *std.ArrayList(u8), l: Lab) !void {
     try out.appendSlice(a, "}\n");
 }
 
+/// The text `probeLabels` writes for a probe whose upstream is `vm`: how
+/// `vm rename` finds probes that still name a guest's old name.
+pub fn probeVmLabel(a: Allocator, vm: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "    target_label  = \"vm\"\n    replacement   = \"{s}\"\n", .{vm});
+}
+
 /// The blackbox modules as YAML flow, inside an Alloy string: `https`,
 /// plus `https-<name>` for each service with a down text, which fails on
 /// the text (regex-escaped, then quoted for YAML and for Alloy).
@@ -1072,6 +1078,17 @@ test "alloy: a service's health path and down text (SPEC §9.9)" {
         "name    = \"search\"\n    address = \"https://search.apps.lab.example.com/v1/health\"\n    module  = \"https-search\"\n",
         "address = \"https://odd.apps.lab.example.com/h?x=1\"\n    module  = \"https-odd\"\n",
     });
+}
+
+test "probeVmLabel is the text a probe's vm label renders as" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var l = test_lab;
+    l.services = &.{.{ .name = "grafana", .vm = "naboo" }};
+    const watch = try alloyConfig(a, .{ .name = "scarif", .role = .watch, .watch_host = "scarif.lab.example.com" }, l);
+    try std.testing.expect(std.mem.find(u8, watch, try probeVmLabel(a, "naboo")) != null);
+    try std.testing.expect(std.mem.find(u8, watch, try probeVmLabel(a, "hoth")) == null);
 }
 
 test "alloy: probes named by service, URL and guest for the alerts (golden, SPEC §9.9)" {
