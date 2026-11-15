@@ -458,11 +458,11 @@ pub const policy_preview = struct {
 // ---------------------------------------------------------------- writes
 
 /// The device NAME names, refused unless it is a lab device (SPEC §19).
-fn labDevice(ctx: *Context, c: *ts.Client, word: []const u8) !struct { tn.Device, []const u8 } {
+fn labDevice(ctx: *Context, c: *ts.Client, word: []const u8) !struct { tn.Device, []const u8, tn.Ownership } {
     const d = try resolveDevice(ctx, try tn.devices(c), word);
     const own = try ownership(ctx, true);
     const why = own.reason(d) orelse return ctx.fail(error.Refused, "{s} is not a lab device (no tag {s}, no VM tagged artoo of that name); artoo changes lab devices only (SPEC §19)", .{ try clean(ctx, d.machine), tn.router_tag });
-    return .{ d, why };
+    return .{ d, why, own };
 }
 
 fn deviceTarget(ctx: *Context, c: *const ts.Client) ![]const u8 {
@@ -481,8 +481,16 @@ const RenameOp = struct {
 
     pub fn read(op: *RenameOp, ctx: *Context) !void {
         const list = try tn.devices(op.c);
-        op.dev, _ = try labDevice(ctx, op.c, op.word);
-        op.target = op.dev.machine;
+        op.dev, const why, const own = try labDevice(ctx, op.c, op.word);
+        op.target = try clean(ctx, op.dev.machine);
+        // A device that is a lab device by its VM name alone would leave
+        // the lab under a name that is no artoo VM (and its recovery
+        // rename would then be refused).
+        if (std.mem.eql(u8, why, "vm")) {
+            var kept = false;
+            for (own.artoo_vms) |n| kept = kept or std.ascii.eqlIgnoreCase(n, op.new);
+            if (!kept) return ctx.fail(error.Refused, "{s} is a lab device only by its VM name; {s} is no VM tagged artoo, so the renamed device would leave the lab — rename the guest with 'artoo vm rename' instead", .{ op.target, op.new });
+        }
         for (list) |d| if (!std.mem.eql(u8, d.id, op.dev.id) and std.ascii.eqlIgnoreCase(d.machine, op.new))
             return ctx.fail(error.Refused, "another device is already named {s} ({s})", .{ op.new, try clean(ctx, d.id) });
         op.state = try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ op.dev.id, op.dev.name });
@@ -548,7 +556,7 @@ const RmOp = struct {
     state: []const u8 = "",
 
     pub fn read(op: *RmOp, ctx: *Context) !void {
-        op.dev, _ = try labDevice(ctx, op.c, op.word);
+        op.dev, _, _ = try labDevice(ctx, op.c, op.word);
         op.target = op.dev.machine;
         op.state = op.dev.id;
     }
@@ -615,7 +623,7 @@ pub const ApproveOp = struct {
     state: []const u8 = "",
 
     pub fn read(op: *ApproveOp, ctx: *Context) !void {
-        op.dev, _ = try labDevice(ctx, op.c, op.word);
+        op.dev, _, _ = try labDevice(ctx, op.c, op.word);
         op.target = op.dev.machine;
         op.current = try tn.routes(op.c, op.dev.id);
         if (!tn.contains(op.current.advertised, op.lan))
@@ -1257,6 +1265,8 @@ test "ts policy show, validate and preview: read-only calls with HuJSON" {
     try testing.expectEqual(Exit.usage, f.h.run(&root, "ts policy preview nobody"));
 }
 
+const vms_hoth = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;tailnet\"},{\"vmid\":203,\"name\":\"hoth\",\"status\":\"stopped\",\"tags\":\"artoo\"}]}";
+
 test "ts device rename: lab devices only, POST name, verified by a fresh read" {
     var f: Fixture = undefined;
     try f.initRoutes(&.{
@@ -1268,6 +1278,10 @@ test "ts device rename: lab devices only, POST name, verified by a fresh read" {
         route("GET /tailnet/-/devices?fields=all", devices_body),
         route("GET /tailnet/-/devices?fields=all", devices_body),
         route("/qemu", vms_body),
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("GET /tailnet/-/devices?fields=all", devices_body),
+        route("/qemu", vms_hoth),
         route("POST /device/nNaboo/name", "{}"),
         route("GET /device/nNaboo?fields=all", "{\"nodeId\":\"nNaboo\",\"name\":\"hoth.example.ts.net\"}"),
     });
@@ -1277,6 +1291,12 @@ test "ts device rename: lab devices only, POST name, verified by a fresh read" {
     try testing.expectEqual(Exit.refused, f.h.run(&root, "ts device rename phone hoth -y"));
     try testing.expect(std.mem.find(u8, f.h.stderr(), "not a lab device") != null);
     try testing.expectEqual(Exit.usage, f.h.run(&root, "ts device rename naboo Hoth_1 -y"));
+    // naboo is a lab device by its VM name only: a name that is no artoo
+    // VM would take it out of the lab.
+    try testing.expectEqual(Exit.refused, f.h.run(&root, "ts device rename naboo hoth -y"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "only by its VM name") != null);
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "artoo vm rename") != null);
+    // With an artoo VM hoth, the renamed device stays a lab device.
     try testing.expectEqual(Exit.ok, f.h.run(&root, "ts device rename naboo hoth -y"));
     try expectHas(f.h.stdout(), &.{ "Plan · Rename tailnet device naboo to hoth", "name  naboo.example.ts.net → hoth", "✓ device renamed and verified" });
     for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /device/nNaboo/name")) try testing.expect(std.mem.endsWith(u8, q, "{\"name\":\"hoth\"}"));
