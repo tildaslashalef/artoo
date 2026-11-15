@@ -23,6 +23,7 @@ const vm_new = @import("vm_new.zig");
 const vm_cmd = @import("vm.zig");
 const agent = @import("../pve/agent.zig");
 const edge = @import("edge.zig");
+const ui_diff = @import("../ui/diff.zig");
 
 const Context = app.Context;
 const Value = std.json.Value;
@@ -947,6 +948,142 @@ pub const join = struct {
     }
 };
 
+// ---------------------------------------------------------------- policy apply
+
+/// Refuses, before any request, a policy that is not HuJSON or that
+/// grants Funnel (SPEC §9.6, §19): no override.
+pub fn checkPolicyLocally(ctx: *Context, word: []const u8, text: []const u8) !void {
+    const a = ctx.arena;
+    const json = tn.hujsonToJson(a, text) catch return ctx.fail(error.Refused, "{s} is not valid HuJSON (an unterminated string or comment, or a stray '/')", .{word});
+    const v = std.json.parseFromSliceLeaky(Value, a, json, .{}) catch return ctx.fail(error.Refused, "{s} is not valid HuJSON", .{word});
+    if (v != .object) return ctx.fail(error.Refused, "{s} is not a policy (expected an object)", .{word});
+    const funnel = try tn.funnelAttrs(a, v);
+    if (funnel.len > 0) return ctx.fail(error.Refused, "{s} grants Funnel in nodeAttrs ({s}); artoo never applies a policy that opens tailnet devices to the internet (SPEC §9.6)", .{ word, try joinClean(ctx, funnel) });
+}
+
+/// The tailnet's DNS name for the typed confirmation: `tailscale.tailnet`
+/// when it names one, else the suffix of a device's MagicDNS name.
+fn tailnetName(ctx: *Context, c: *ts.Client) ![]const u8 {
+    if (!std.mem.eql(u8, c.tailnet, "-")) return c.tailnet;
+    for (try tn.devices(c)) |d| if (std.mem.findScalar(u8, d.name, '.')) |dot| {
+        const rest = d.name[dot + 1 ..];
+        if (rest.len > 0) return clean(ctx, rest);
+    };
+    return ctx.fail(error.Refused, "cannot tell the tailnet's name for the confirmation (no device lists one); set it with 'artoo config set tailscale.tailnet NAME'", .{});
+}
+
+fn writeDiff(ctx: *Context, w: *Io.Writer, u: *const ui.Ui, hs: []const ui_diff.Hunk) !void {
+    const p = u.palette;
+    try w.print("{s}--- live policy{s}\n{s}+++ file{s}\n", .{ p.on(.muted), p.off(.muted), p.on(.muted), p.off(.muted) });
+    for (hs) |h| {
+        try w.print("{s}@@ -{d},{d} +{d},{d} @@{s}\n", .{ p.on(.muted), h.old_start, h.old_len, h.new_start, h.new_len, p.off(.muted) });
+        for (h.lines) |l| {
+            const role: ui.style.Role, const mark: u8 = switch (l.kind) {
+                .same => .{ .text, ' ' },
+                .del => .{ .fail, '-' },
+                .add => .{ .ok, '+' },
+            };
+            try w.print("{s}{c}{s}{s}\n", .{ p.on(role), mark, try clean(ctx, l.text), p.off(role) });
+        }
+    }
+    try w.writeAll("\n");
+}
+
+const ApplyOp = struct {
+    c: *ts.Client,
+    word: []const u8,
+    text: []const u8,
+    target: []const u8 = "",
+    risk: ui.blocks.Risk = .destructive,
+    api: ui.json.Target = .tailscale,
+    live: tn.Policy = .{ .text = "", .etag = null },
+    etag: []const u8 = "",
+    validation: Validation = undefined,
+
+    pub fn read(op: *ApplyOp, ctx: *Context) !void {
+        op.target = try tailnetName(ctx, op.c);
+        op.live = try tn.policy(op.c, false);
+        op.etag = op.live.etag orelse return ctx.fail(error.Protocol, "Tailscale answered the policy without an ETag; artoo applies a policy only against the version it read (If-Match)", .{});
+        op.validation = try validate(op.c, op.text);
+        if (!op.validation.ok) {
+            const p = ctx.ui.palette;
+            for (op.validation.errors) |e| try ctx.err.print("{s}{s}{s} {s}\n", .{ p.on(.fail), ctx.ui.glyphs.fail, p.off(.fail), e });
+            return ctx.fail(error.Refused, "{s} did not validate{s}{s}; nothing was applied", .{ op.word, if (op.validation.message.len > 0) ": " else "", op.validation.message });
+        }
+    }
+
+    pub fn plan(op: *ApplyOp, ctx: *Context) !?exec.Plan {
+        const a = ctx.arena;
+        const d = try ui_diff.diff(a, op.live.text, op.text);
+        const hs = try ui_diff.hunks(a, d, 3);
+        if (hs.len == 0) return null;
+        const st = ui_diff.stats(d);
+        const w = if (ctx.json()) ctx.err else ctx.out;
+        try writeDiff(ctx, w, if (ctx.json()) &ctx.err_ui else &ctx.ui, hs);
+        var notes: std.ArrayList([]const u8) = .empty;
+        try notes.append(a, "Tailscale validated the file and ran its tests; it is sent once, only if the live policy is still the version read (If-Match).");
+        for (op.validation.warnings) |wn| try notes.append(a, try std.fmt.allocPrint(a, "warning: {s}", .{wn}));
+        return .{
+            .action = try std.fmt.allocPrint(a, "Replace the tailnet policy with {s}", .{try clean(ctx, op.word)}),
+            .risk = .destructive,
+            .target = try std.fmt.allocPrint(a, "Tailscale policy of {s}", .{op.target}),
+            .changes = try a.dupe(ui.blocks.Change, &.{.{
+                .field = "policy",
+                .from = try std.fmt.allocPrint(a, "live, ETag {s}", .{try clean(ctx, op.etag)}),
+                .to = try std.fmt.allocPrint(a, "{s}: +{d} -{d} lines", .{ try clean(ctx, op.word), st.added, st.removed }),
+            }}),
+            .impact = try a.dupe([]const u8, &.{"Who may reach what on the tailnet changes as the diff shows, for every device at once"}),
+            .recovery = "keep the live policy first ('artoo ts policy show > before.hujson') and apply it again to revert",
+            .notes = notes.items,
+        };
+    }
+
+    pub fn fingerprint(op: *ApplyOp) []const u8 {
+        return op.etag;
+    }
+
+    pub fn send(op: *ApplyOp, _: *Context) !void {
+        try tn.setPolicy(op.c, op.text, op.etag);
+    }
+
+    pub fn verify(op: *ApplyOp, ctx: *Context) !bool {
+        const now = try tn.policy(op.c, false);
+        return tn.samePolicy(ctx.arena, now.text, op.text);
+    }
+
+    pub fn done(_: *ApplyOp) []const u8 {
+        return "policy applied and verified (a fresh read matches the file)";
+    }
+};
+
+pub const policy_apply = struct {
+    pub const name = "apply";
+    pub const summary = "Replace the tailnet policy with a HuJSON file (high impact; the policy credential)";
+    pub const details =
+        \\Uses the separate tailscale-policy credential, never the main one:
+        \\create it for the change and revoke it afterwards. Refused before any
+        \\request when the file grants Funnel. Tailscale validates the file and
+        \\runs its tests; the plan shows the diff live → file; the write is sent
+        \\once with If-Match (the ETag read), so a policy changed meanwhile is
+        \\refused; a fresh read verifies it. -n stops after validation and the
+        \\diff. Interactive: type the tailnet's name to confirm.
+        \\Non-interactive: --yes --confirm TAILNET.
+    ;
+    pub const positionals = [_]cli.Positional{.{ .name = "FILE", .help = "HuJSON policy file", .complete = .file }};
+    pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "TAILNET", .help = "Non-interactive confirmation (with --yes)" }};
+    pub const examples = [_][]const u8{ "artoo ts policy apply policy.hujson -n", "artoo ts policy apply policy.hujson" };
+
+    pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
+        const word = args.pos("FILE");
+        const text = try readPolicyFile(ctx, word);
+        try checkPolicyLocally(ctx, word, text);
+        var c = try ts.Client.open(ctx, .policy);
+        defer c.deinit();
+        var op: ApplyOp = .{ .c = &c, .word = word, .text = text };
+        try exec.run(ctx, &op, .{ .confirm = args.string("confirm") });
+    }
+};
+
 pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, split DNS and keys on the tailnet (SPEC §19)", &.{
     cli.leaf(join),
     cli.group("devices", "Devices on the tailnet", &.{cli.leaf(devices_ls)}),
@@ -954,7 +1091,7 @@ pub const group = cli.group("ts", "Tailscale: the lab's devices, routes, split D
     cli.group("routes", "Subnet routes", &.{cli.leaf(routes_approve)}),
     cli.group("dns", "Tailnet DNS", &.{ cli.leaf(dns_show), cli.group("split", "Split DNS for the lab's domains", &.{cli.leaf(dns_split_set)}) }),
     cli.group("keys", "Auth key metadata", &.{cli.leaf(keys_ls)}),
-    cli.group("policy", "The tailnet policy (read-only)", &.{ cli.leaf(policy_show), cli.leaf(policy_validate), cli.leaf(policy_preview) }),
+    cli.group("policy", "The tailnet policy", &.{ cli.leaf(policy_show), cli.leaf(policy_validate), cli.leaf(policy_preview), cli.leaf(policy_apply) }),
 });
 
 // ---------------------------------------------------------------- tests
@@ -1386,4 +1523,150 @@ test "ts join --tag: a tag outside tailscale.guest_tags is refused before any re
     try testing.expectEqual(Exit.ok, f.h.run(&root, "ts join naboo --tag tag:lab-app -y"));
     for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /tailnet/-/keys"))
         try testing.expect(std.mem.find(u8, q, "\"tags\":[\"tag:lab-app\"]") != null);
+}
+
+const policy_cfg = "{\"schema_version\":1,\"tailscale\":{\"client_id\":\"kTEST1CNTRL\",\"policy_client_id\":\"kPOLICY\"}}\n";
+const policy_token = "{\"access_token\":\"tskey-access-policy\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"policy_file devices:core:read devices:posture_attributes:read\"}";
+const live_policy = "// lab\n{\n  \"grants\": [\n    {\"src\": [\"autogroup:member\"], \"dst\": [\"tag:lab-router\"], \"ip\": [\"*\"]},\n  ],\n}\n";
+const new_policy = "// lab\n{\n  \"grants\": [\n    {\"src\": [\"autogroup:member\"], \"dst\": [\"tag:lab-router\"], \"ip\": [\"*\"]},\n    {\"src\": [\"autogroup:member\"], \"dst\": [\"tag:lab-guest\"], \"ip\": [\"443\"]},\n  ],\n}\n";
+
+fn policyFixture(f: *Fixture, routes: []const Fixture.FakeServer.Route) !void {
+    try f.initRoutes(routes);
+    try f.tmp.dir.createDirPath(testing.io, ".artoo");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = policy_cfg });
+    try f.mem.map.put(f.h.arena.allocator(), "tailscale-policy", "tskey-client-policy-secret");
+}
+
+fn liveAcl(body: []const u8) Fixture.FakeServer.Route {
+    return .{ .match = "GET /tailnet/-/acl HTTP", .behavior = .{ .respond = .{ .body = body, .extra = "etag: \"e0b2816b418\"\r\n" } } };
+}
+
+test "ts policy apply: a policy granting Funnel is refused before any request, without override" {
+    var f: Fixture = undefined;
+    try policyFixture(&f, &.{});
+    defer f.deinit();
+    const p = try f.file("funnel.hujson", "{\n  // open it up\n  \"nodeAttrs\": [{\"target\": [\"tag:lab-guest\"], \"attr\": [\"funnel\"]},],\n}\n");
+    try testing.expectEqual(Exit.refused, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm example.ts.net", .{p})));
+    try testing.expectEqual(@as(usize, 0), f.sent());
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "grants Funnel in nodeAttrs (funnel)") != null);
+}
+
+test "ts policy apply -n: validates and shows the diff, sends no write" {
+    var f: Fixture = undefined;
+    try policyFixture(&f, &.{
+        route("POST /oauth/token", policy_token),
+        route("GET /tailnet/-/devices", devices_body),
+        liveAcl(live_policy),
+        route("POST /tailnet/-/acl/validate", "{}"),
+    });
+    defer f.deinit();
+    const p = try f.file("new.hujson", new_policy);
+    try testing.expectEqual(Exit.ok, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -n", .{p})));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    try expectHas(f.h.stdout(), &.{
+        "@@ -2,5 +2,6 @@",
+        "  \"grants\": [",
+        "+    {\"src\": [\"autogroup:member\"], \"dst\": [\"tag:lab-guest\"], \"ip\": [\"443\"]},",
+        "Tailscale policy of example.ts.net",
+        "new.hujson: +1 -0 lines",
+        "Dry run: nothing was sent.",
+    });
+    // Only the policy client was exchanged, never the main one.
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /oauth/token"))
+        try testing.expect(std.mem.endsWith(u8, q, "client_id=kPOLICY&client_secret=tskey-client-policy-secret"));
+}
+
+test "ts policy apply: sends once with If-Match as read, verified by a fresh read" {
+    var f: Fixture = undefined;
+    try policyFixture(&f, &.{
+        route("POST /oauth/token", policy_token),
+        route("GET /tailnet/-/devices", devices_body),
+        liveAcl(live_policy),
+        route("POST /tailnet/-/acl/validate", "{}"),
+        route("POST /tailnet/-/acl HTTP", new_policy),
+        liveAcl(new_policy),
+    });
+    defer f.deinit();
+    const p = try f.file("new.hujson", new_policy);
+    const code = f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm example.ts.net", .{p}));
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ f.h.stdout(), f.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    try expectHas(f.h.stdout(), &.{"policy applied and verified"});
+    var posts: usize = 0;
+    for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /tailnet/-/acl HTTP")) {
+        posts += 1;
+        try testing.expect(std.ascii.findIgnoreCase(q, "if-match: \"e0b2816b418\"") != null);
+        try testing.expect(std.ascii.findIgnoreCase(q, "content-type: application/hujson") != null);
+        try testing.expect(std.mem.endsWith(u8, q, new_policy));
+    };
+    try testing.expectEqual(@as(usize, 1), posts);
+}
+
+test "ts policy apply: a policy changed since it was read (412) is refused, nothing applied" {
+    var f: Fixture = undefined;
+    try policyFixture(&f, &.{
+        route("POST /oauth/token", policy_token),
+        route("GET /tailnet/-/devices", devices_body),
+        liveAcl(live_policy),
+        route("POST /tailnet/-/acl/validate", "{}"),
+        .{ .match = "POST /tailnet/-/acl HTTP", .behavior = .{ .respond = .{ .status = 412, .body = "{\"message\":\"precondition failed, invalid old hash\"}" } } },
+    });
+    defer f.deinit();
+    const p = try f.file("new.hujson", new_policy);
+    try testing.expectEqual(Exit.refused, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm example.ts.net", .{p})));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "changed since it was read (412)") != null);
+}
+
+test "ts policy apply: a file Tailscale does not validate is refused before the plan" {
+    var f: Fixture = undefined;
+    try policyFixture(&f, &.{
+        route("POST /oauth/token", policy_token),
+        route("GET /tailnet/-/devices", devices_body),
+        liveAcl(live_policy),
+        route("POST /tailnet/-/acl/validate", "{\"message\":\"test(s) failed\",\"data\":[{\"user\":\"me@example.com\",\"errors\":[\"address \\\"tag:lab-guest:443\\\": want: Accept, got: Drop\"]}]}"),
+    });
+    defer f.deinit();
+    const p = try f.file("new.hujson", new_policy);
+    try testing.expectEqual(Exit.refused, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm example.ts.net", .{p})));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
+    try testing.expect(std.mem.find(u8, f.h.stdout(), "Plan") == null);
+}
+
+test "the policy credential: only ts policy apply uses it; it needs its own secret" {
+    // Only the policy client stored: other commands find no credential.
+    {
+        var f: Fixture = undefined;
+        try policyFixture(&f, &.{});
+        defer f.deinit();
+        _ = f.mem.map.swapRemove("tailscale");
+        try testing.expectEqual(Exit.auth, f.h.run(&root, "ts devices ls"));
+        try testing.expectEqual(Exit.auth, f.h.run(&root, "ts policy show"));
+        try testing.expectEqual(@as(usize, 0), f.sent());
+    }
+    // Only the main client stored: apply never falls back to it.
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{});
+    defer f.deinit();
+    try f.tmp.dir.createDirPath(testing.io, ".artoo");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = policy_cfg });
+    const p = try f.file("new.hujson", new_policy);
+    try testing.expectEqual(Exit.auth, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm example.ts.net", .{p})));
+    try testing.expectEqual(@as(usize, 0), f.sent());
+}
+
+test "ts policy apply: the confirmation must name the tailnet; a wrong one sends no write" {
+    var f: Fixture = undefined;
+    try policyFixture(&f, &.{
+        route("POST /oauth/token", policy_token),
+        route("GET /tailnet/-/devices", devices_body),
+        liveAcl(live_policy),
+        route("POST /tailnet/-/acl/validate", "{}"),
+    });
+    defer f.deinit();
+    const p = try f.file("new.hujson", new_policy);
+    try testing.expectEqual(Exit.refused, f.h.run(&root, try std.fmt.allocPrint(f.h.arena.allocator(), "ts policy apply {s} -y --confirm other.ts.net", .{p})));
+    for (f.srv.received) |req| if (req) |q| try testing.expect(!std.mem.startsWith(u8, q, "POST /tailnet/-/acl HTTP"));
+    try testing.expectEqual(@as(usize, 0), f.srv.unused());
 }
