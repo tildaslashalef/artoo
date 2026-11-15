@@ -3199,7 +3199,11 @@ both pointing at the gateway.
   description, tags, created, expires); a key's value is never shown.
 - `ts policy show [--json]` — the policy as stored (HuJSON) or as JSON;
   `ts policy validate FILE`; `ts policy preview USER|IP:PORT` — which
-  rules match. Read-only.
+  rules match. Read-only. `validate` reports a file valid only on the
+  documented answers — `{}`, or `data` entries with warnings and no
+  errors; any other shape counts as invalid (exit 8). A file that is a
+  JSON list (the endpoint's mode that runs tests against the live
+  policy) is refused before anything is sent.
 - `ts device rename NAME NEW` — `POST /device/{id}/name`, verified by a
   fresh read. A device that is a lab device only by its VM name (no lab
   tag) keeps that standing only under an artoo VM's name: NEW must be
