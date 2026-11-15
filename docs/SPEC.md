@@ -3193,7 +3193,10 @@ both pointing at the gateway.
   `ts policy validate FILE`; `ts policy preview USER|IP:PORT` — which
   rules match. Read-only.
 - `ts device rename NAME NEW` — `POST /device/{id}/name`, verified by a
-  fresh read.
+  fresh read. A device that is a lab device only by its VM name (no lab
+  tag) keeps that standing only under an artoo VM's name: NEW must be
+  one, else refused (the guest itself is renamed with `vm rename`,
+  §9.18).
 - `ts device rm NAME` — typed confirmation; `DELETE /device/{id}`,
   verified by a read answering 404.
 - `ts routes approve ROUTER` — `POST /device/{id}/routes` with exactly
