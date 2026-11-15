@@ -115,6 +115,7 @@ artoo vm new NAME [--size S] [--cores N] [--memory SIZE] [--disk SIZE] [--ip ADD
 artoo vm verify VM|--all [--no-dns]   read-only readiness checks (§9.4)
 artoo vm upgrade VM [--snapshot]      install the guest's pending package updates (§9.12, §9.16)
 artoo vm upgrade --all                every ordinary guest in one plan; not edge, router, watchdog (§9.12)
+artoo vm reboot --pending             reboot the guests that want it after updates, one by one (§9.12)
 artoo vm ssh VM [-- CMD…]             exec ssh <user>@<address> (convenience)
 artoo vm ssh-config [--repin VM]      write ~/.artoo/ssh_config: strict plain ssh/scp/rsync; re-pin a changed host key (§9.10)
 artoo vm cp SRC DST [-r] [--force]    copy as <user> to, from or between guests, SHA-256 checked (§9.10)
@@ -2000,6 +2001,34 @@ every running artoo guest in one plan, one confirmation:
   The live progress has ended by then: steps changed while verifying
   are shown in the ledger printed after it. Any unknown step → exit 7; else any failed
   step → exit 8, naming how many of the guests were not upgraded.
+
+**`vm reboot --pending`** (decided 2026-11-15) closes the loop `vm
+upgrade` leaves open ("reboot pending on …"): it reboots, in one plan,
+every running artoo guest whose `/run/reboot-required` exists — the
+check `vm verify` reads (§9.4).
+
+- **Read:** per running artoo guest with an answering agent, the reboot
+  check and its packages. Guests that do not want it are named "not
+  needed"; stopped guests, silent agents and failing checks are named as
+  skipped with the reason. Guests tagged `role-edge`, `role-router` or
+  `role-watch` that want a reboot are named with their packages but left
+  to their own `vm reboot VM`, for the reasons of `vm upgrade --all`
+  (the router's reboot alone cuts a remote operator's path). Nobody to
+  reboot is a no-op (exit 5) whose message names all of these.
+- **Plan:** one change row per guest, `running → rebooted (packages)`.
+  Impact: one guest after another; each must be running again, its
+  agent answering and its reboot request gone before the next starts;
+  the first that is not stops the run.
+- **Send:** per guest, `vm new`'s reboot step (§9.1): the request is
+  read again right before the write (a guest that no longer wants it is
+  skipped, not rebooted), `POST …/status/reboot`, the task tracked, the
+  agent awaited (10 minutes), then `uname -r` and the request read
+  again. Unlike `vm upgrade --all`, a failure stops the run — a failed
+  upgrade leaves a guest running, a failed reboot leaves it down — and
+  the remaining guests stay "not run"; the error names how many. Never a
+  retry. `--no-wait` is refused (usage), as is a VM with `--pending`.
+- **Verify:** every step done or skipped; the result counts the guests
+  rebooted and back.
 
 ### 9.13 Pending configuration
 

@@ -978,7 +978,7 @@ fn dnsAnswer(ctx: *Context, gw: []const u8, fqdn: []const u8, address: ?[]const 
 
 /// SPEC §9.3 step 6: a fresh guest whose first boot installed a newer
 /// kernel reboots once, before it is in service; skipped otherwise.
-fn rebootForUpdates(c: *pve.Client, vmid: u32, l: *exec.Ledger, i: usize) !void {
+pub fn rebootForUpdates(c: *pve.Client, vmid: u32, l: *exec.Ledger, i: usize) !void {
     const ctx = c.ctx;
     const want = try agent.sh(c, vmid, scripts.reboot, 60_000);
     var lines = std.mem.tokenizeAny(u8, want.out, "\r\n");
