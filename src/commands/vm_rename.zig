@@ -876,24 +876,36 @@ fn saveFenceList(ctx: *Context, text: []const u8) !void {
 
 pub const rename = struct {
     pub const name = "rename";
-    pub const summary = "Rename an artoo guest everywhere its name lives (high impact)";
+    pub const summary = "Rename a guest everywhere its name lives (high-impact)";
     pub const details =
-        \\Proxmox, NEW's DNS record, the services and the pinned host key and
-        \\ssh_config, the guest/<name> password, the fence exceptions naming
-        \\it, its tailnet name, the watchdog, the guest's hostname and
-        \\/etc/hosts, the UniFi client record and, last, OLD's DNS record — one
-        \\ledger step each, in that order. Each step checks observed state
-        \\first: after a failure, the same command continues. Refused for
-        \\role-edge and role-watch (rebuild those), templates, foreign VMs and
-        \\stopped guests. Interactive: type OLD to confirm. Non-interactive:
-        \\--yes --confirm OLD.
+        \\An artoo guest's name is also its hostname, DNS and UniFi records,
+        \\pinned key, password entry and more; this command changes all of
+        \\them, one step each, in this order:
+        \\  - the VM's name in Proxmox
+        \\  - the DNS record for NEW
+        \\  - the services routed to it
+        \\  - the pinned host key and ~/.artoo/ssh_config
+        \\  - the stored password guest/NAME
+        \\  - the fence exceptions that name it
+        \\  - its tailnet name and the watchdog
+        \\  - the guest's hostname and /etc/hosts
+        \\  - the UniFi client record
+        \\  - last, the DNS record for OLD is removed
+        \\
+        \\Each step checks the current state first, so after a failure the
+        \\same command picks up where it stopped.
+        \\
+        \\Refused: the edge VM and the watchdog (rebuild those), templates,
+        \\VMs artoo did not create, and stopped guests.
+        \\
+        \\Type OLD to confirm, or pass --yes --confirm OLD.
     ;
     pub const positionals = [_]cli.Positional{
         .{ .name = "OLD", .help = "The guest's current name", .complete = .vm },
-        .{ .name = "NEW", .help = "Its new name (one DNS label, checked as vm new checks it)" },
+        .{ .name = "NEW", .help = "Its new name (one DNS label, as for vm new)" },
     };
-    pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "OLD", .help = "Non-interactive confirmation (with --yes)" }};
-    pub const examples = [_][]const u8{ "artoo vm rename naboo hoth -n", "artoo vm rename naboo hoth --yes --confirm naboo" };
+    pub const flags = [_]cli.Flag{.{ .long = "confirm", .kind = .string, .metavar = "OLD", .help = "The guest's current name, to confirm with --yes" }};
+    pub const examples = [_][]const u8{ "artoo vm rename naboo hoth -n", "artoo vm rename naboo hoth", "artoo vm rename naboo hoth --yes --confirm naboo" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const old = args.pos("OLD");

@@ -630,31 +630,46 @@ pub const new = struct {
     pub const name = "new";
     pub const summary = "Create a ready Ubuntu guest from the template";
     pub const details =
-        \\NAME is one DNS label (e.g. naboo); without it artoo picks a free name
-        \\from its Star Wars / Middle-earth list. --role tags the purpose
-        \\(role-ROLE). Sizes (vCPU/GiB RAM/GiB disk): tiny 1/1/20,
-        \\small 2/2/20 (default), medium 2/4/40, large 4/8/80, xlarge 8/16/160;
-        \\--cores, --memory and --disk override. The
-        \\address is --ip or the lowest free one in guests.address_pool (no VM,
-        \\DNS record, Fixed IP or connected client on it). One confirmation covers the
-        \\workflow: password into the Keychain (guest/NAME, only its SHA-512 hash
-        \\goes to Proxmox), full clone, cloud-init settings (your SSH key plus
-        \\guests.extra_ssh_keys), a UniFi client
-        \\record for the VM's MAC (name, Fixed IP), disk resize, start,
-        \\wait for cloud-init, one reboot if the first boot's updates ask for it,
-        \\host key pinned via the guest agent (and printed as a known_hosts line
-        \\for other machines), DNS record
-        \\NAME.<guests.domain> on UniFi, enrollment with the watchdog when one
-        \\exists, then 'vm verify'. Re-running continues an interrupted run.
-        \\--no-watch keeps a short-lived test guest out of the watchdog (tag
-        \\no-watch): no Alloy, no metrics or journal, no alerts.
+        \\Creates a new Ubuntu VM from the template and sets it up until it is
+        \\ready to log in to: address, DNS name, SSH key, sudo password and
+        \\monitoring. NAME is one DNS label (e.g. naboo); without it artoo
+        \\picks a free name from its curated list.
+        \\
+        \\Sizes (vCPU / GiB RAM / GiB disk):
+        \\  tiny     1 /  1 /  20
+        \\  small    2 /  2 /  20
+        \\  medium   2 /  4 /  40
+        \\  large    4 /  8 /  80
+        \\  xlarge   8 / 16 / 160
+        \\
+        \\--cores, --memory and --disk override the size. The address is --ip,
+        \\or the lowest free one in guests.address_pool (no VM, DNS record,
+        \\Fixed IP or connected client on it).
+        \\
+        \\One confirmation covers every step:
+        \\  - make a sudo password and store it here as guest/NAME (only its
+        \\    hash goes to Proxmox)
+        \\  - full clone of the template, with your SSH key and
+        \\    guests.extra_ssh_keys
+        \\  - a UniFi client record for the VM's MAC (name, Fixed IP)
+        \\  - grow the disk, start, wait for cloud-init, and reboot once if
+        \\    the first boot's updates ask for it
+        \\  - pin the host key through the guest agent (also printed as a
+        \\    known_hosts line for other machines)
+        \\  - the DNS record NAME.<guests.domain> on UniFi
+        \\  - enroll it with the watchdog, when one exists
+        \\  - run 'artoo vm verify'
+        \\
+        \\Re-running the same command continues an interrupted run.
+        \\--no-watch keeps a short-lived test guest out of the watchdog: no
+        \\metrics, no logs, no alerts.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "NAME", .complete = .guest_name, .help = "Guest name (default: a free curated name)", .required = false }};
     pub const flags = [_]cli.Flag{
         .{ .long = "size", .short = 's', .kind = .choice, .choices = &.{ "tiny", "small", "medium", "large", "xlarge" }, .default = "small", .help = "Size preset" },
         .{ .long = "cores", .kind = .int, .metavar = "N", .help = "vCPUs (overrides the size)" },
-        .{ .long = "memory", .kind = .string, .metavar = "SIZE", .help = "RAM, e.g. 2G or 2048 (MiB)" },
-        .{ .long = "disk", .kind = .string, .metavar = "GIB", .help = "Disk size in GiB, e.g. 40 or 40G" },
+        .{ .long = "memory", .kind = .string, .metavar = "SIZE", .help = "RAM, e.g. 2G or 2048 (MiB; overrides the size)" },
+        .{ .long = "disk", .kind = .string, .metavar = "GIB", .help = "Disk size in GiB, e.g. 40 or 40G (overrides the size)" },
         .{ .long = "ip", .kind = .string, .metavar = "ADDR", .help = "Static address (default: lowest free in the pool)" },
         .{ .long = "id", .kind = .int, .metavar = "VMID", .help = "VMID (default: lowest free ≥ 200)" },
         .{ .long = "template", .kind = .string, .metavar = "T", .help = "Template (default: guests.template)" },
@@ -663,7 +678,7 @@ pub const new = struct {
         .{ .long = "no-dns", .help = "Skip the DNS record on UniFi (the client record is still made)" },
         .{ .long = "no-watch", .help = "Do not enroll with the watchdog (tag no-watch): a quiet test guest" },
     };
-    pub const examples = [_][]const u8{ "artoo vm new -n", "artoo vm new naboo --role web -n", "artoo vm new bespin --role edge --size small --cores 1 -y", "artoo vm new hoth --size medium --disk 60 --no-dns -y", "artoo vm new hoth --no-watch -y" };
+    pub const examples = [_][]const u8{ "artoo vm new -n", "artoo vm new naboo --role web -n", "artoo vm new hoth --size medium --disk 60 -y", "artoo vm new hoth --no-watch --no-dns -y" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         if (args.optPos("NAME")) |nm| try checkName(ctx, nm);
@@ -1298,27 +1313,34 @@ pub fn renderChecks(ctx: *Context, checks: []const Check) !void {
 
 pub const verify = struct {
     pub const name = "verify";
-    pub const summary = "Read-only readiness checks of a guest";
+    pub const summary = "Check that a guest is ready and set up as artoo expects";
     pub const details =
-        \\From Proxmox: configuration waiting for a restart (warning).
-        \\Through the guest agent: cloud-init done, hostname and FQDN, the guest
-        \\user's shell and home, payload files owned by it, sudo asking for a
-        \\password, sshd without root or password login, Ghostty terminfo for
-        \\root and the user,
-        \\baseline tools, Tailscale installed but not enrolled (a guest tagged
-        \\tailnet: enrolled as a tagged node, no routes, no Tailscale SSH), unattended security
-        \\updates without automatic reboot, a pending reboot (warning), Alloy enrolled when a
-        \\watchdog exists (not checked for a guest tagged no-watch). From here: SSH key
-        \\login with the pinned host key, the DNS record on UniFi and its
-        \\answer (dig @gateway). Any failed check exits 8. --all checks every artoo
-        \\guest concurrently, one block each, then a summary.
+        \\Read-only. Runs the checks 'artoo vm new' ends with; run it again
+        \\after changes to a guest, or with --all to check the whole lab.
+        \\
+        \\What is checked:
+        \\  Proxmox       configuration waiting for a restart (warning)
+        \\  guest agent   cloud-init done; hostname and FQDN; the guest user's
+        \\                shell, home and files; sudo asks for a password;
+        \\                sshd allows no root or password login; terminfo and
+        \\                baseline tools; Tailscale installed, and enrolled
+        \\                only as a tagged node without routes or Tailscale
+        \\                SSH (on guests tagged tailnet); security updates
+        \\                without automatic reboot; a pending reboot
+        \\                (warning); enrolled with the watchdog, when one
+        \\                exists (not for guests tagged no-watch)
+        \\  from here     SSH login with the pinned host key; the DNS record
+        \\                on UniFi and the gateway's answer
+        \\
+        \\Any failed check exits 8. --all checks every artoo guest at once, one
+        \\block each, then a summary.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name", .required = false }};
     pub const flags = [_]cli.Flag{
         .{ .long = "all", .short = 'a', .help = "Every artoo guest (tag artoo, not templates)" },
-        .{ .long = "no-dns", .help = "Do not check DNS (guest created with --no-dns)" },
+        .{ .long = "no-dns", .help = "Skip the DNS checks (for a guest made with --no-dns)" },
     };
-    pub const examples = [_][]const u8{ "artoo vm verify web-01", "artoo vm verify --all", "artoo vm verify test-01 --no-dns -o json" };
+    pub const examples = [_][]const u8{ "artoo vm verify web-01", "artoo vm verify --all", "artoo vm verify hoth --no-dns -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         if (args.has("all")) {
@@ -1450,17 +1472,23 @@ fn addressOf(c: *pve.Client, v: vms.Vm, cfg: Value) ![]const u8 {
 
 pub const ssh_cmd = struct {
     pub const name = "ssh";
-    pub const summary = "SSH to a guest as the guest user (host key pinned via the guest agent)";
+    pub const summary = "Open an SSH session on a guest as the guest user";
     pub const details =
-        \\Runs ssh <guests.user>@<address> with StrictHostKeyChecking against the key recorded
-        \\in ~/.artoo/known_hosts under the VM name; a missing entry is first read
-        \\from the guest through the guest agent. Guests tagged ssh-jump are reached
-        \\through root on Proxmox (pve.ssh_host), the only machine they accept SSH
-        \\from. Words after -- are the command.
+        \\Logs in to the guest as guests.user, or runs the command given after
+        \\--. The host key is checked strictly against the one pinned in
+        \\~/.artoo/known_hosts; a guest without a pinned key is pinned first,
+        \\with the key its guest agent reads, so a first login never trusts
+        \\the network.
+        \\
+        \\Guests tagged ssh-jump accept SSH only from Proxmox and are reached
+        \\through root on it (pve.ssh_host).
+        \\
+        \\'artoo vm ssh-config' gives plain ssh, scp and rsync the same
+        \\settings.
     ;
     pub const positionals = [_]cli.Positional{vm_arg};
     pub const trailing = "CMD";
-    pub const examples = [_][]const u8{ "artoo vm ssh web-01", "artoo vm ssh web-01 -- uptime" };
+    pub const examples = [_][]const u8{ "artoo vm ssh web-01", "artoo vm ssh web-01 -- uptime", "artoo vm ssh 205 -- df -h /" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);

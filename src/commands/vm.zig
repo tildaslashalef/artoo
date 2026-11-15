@@ -20,11 +20,18 @@ const vm_arg = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID
 
 pub const ls = struct {
     pub const name = "ls";
-    pub const summary = "List VMs on Proxmox (templates with --all)";
+    pub const summary = "List VMs on Proxmox";
+    pub const details =
+        \\Read-only. One row per VM on the configured node: VMID, name, machine
+        \\name (artoo guests only), role, state, CPU, memory, uptime and tags.
+        \\Templates are left out unless --all is given.
+        \\
+        \\'artoo vm show VM' has the details of one VM.
+    ;
     pub const flags = [_]cli.Flag{
         .{ .long = "all", .short = 'a', .help = "Include templates" },
         .{ .long = "status", .short = 's', .kind = .string, .metavar = "STATE", .help = "Only VMs in this state (running, stopped, …)" },
-        .{ .long = "name", .kind = .string, .metavar = "GLOB", .help = "Only names matching (* and ?)" },
+        .{ .long = "name", .kind = .string, .metavar = "GLOB", .help = "Only names matching GLOB (* and ?)" },
     };
     pub const examples = [_][]const u8{ "artoo vm ls", "artoo vm ls --all", "artoo vm ls -s running --name 'web-*'" };
 
@@ -160,7 +167,16 @@ fn fenceText(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value) ![]const u8 {
 
 pub const show = struct {
     pub const name = "show";
-    pub const summary = "One VM: state, resources, network, cloud-init, snapshots";
+    pub const summary = "Show one VM: state, resources, network, snapshots";
+    pub const details =
+        \\Read-only. The VM's state, tags and boot settings; CPU, memory (what
+        \\the guest uses, when it runs) and disk; its network, the addresses
+        \\its guest agent reports and its fence; cloud-init settings; its
+        \\snapshots. Changes still waiting for a restart are marked.
+        \\
+        \\'artoo vm config VM' lists every configuration key; 'artoo vm verify
+        \\VM' checks that a guest is ready.
+    ;
     pub const positionals = vm_arg;
     pub const examples = [_][]const u8{ "artoo vm show web-01", "artoo vm show 100 -o json" };
 
@@ -315,9 +331,18 @@ fn render(ctx: *Context, d: Detail) !void {
 
 pub const config = struct {
     pub const name = "config";
-    pub const summary = "A VM's full configuration (PVE keys, sorted)";
+    pub const summary = "Show a VM's full Proxmox configuration";
+    pub const details =
+        \\Read-only. Every configuration key of the VM as Proxmox stores it,
+        \\sorted by name. A key changed but still waiting for a restart (or
+        \\the next start) shows both values; the cloud-init password is never
+        \\shown.
+        \\
+        \\'artoo vm set' changes the keys artoo allows; 'artoo vm reboot'
+        \\applies waiting changes on a running VM.
+    ;
     pub const positionals = vm_arg;
-    pub const examples = [_][]const u8{"artoo vm config web-01"};
+    pub const examples = [_][]const u8{ "artoo vm config web-01", "artoo vm config 100 -o json" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         var c = try pve.Client.open(ctx);
@@ -380,12 +405,15 @@ pub fn pendingSummary(ctx: *Context, waiting: []const vms.Key) ![]const u8 {
 
 pub const urls = struct {
     pub const name = "urls";
-    pub const summary = "A VM's web addresses: its services and their public hosts";
+    pub const summary = "Show a VM's services and the public hosts that reach them";
     pub const details =
-        \\Read-only. Lists the services whose route on the edge VM points at the
-        \\VM and the public hosts of the lab tunnel that reach each
-        \\one (§15). If the edge VM or Cloudflare cannot be read, the command says
-        \\so and exits 8.
+        \\Read-only. Lists the services the edge VM routes to this VM, with
+        \\their port and lab URL, and the public hosts of the lab tunnel that
+        \\reach each one. Use it to see what a guest serves before you change
+        \\or remove it.
+        \\
+        \\If the edge VM or Cloudflare cannot be read, the command says so and
+        \\exits 8.
     ;
     pub const positionals = vm_arg;
     pub const examples = [_][]const u8{ "artoo vm urls scarif", "artoo vm urls scarif -o json" };
