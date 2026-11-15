@@ -779,7 +779,9 @@ pub const scripts = struct {
         \\echo "last $(stat -c %Y /var/lib/apt/periodic/unattended-upgrades-stamp /var/lib/apt/periodic/upgrade-stamp 2>/dev/null | sort -n | tail -1)"
         \\echo "now $(date +%s)"
     ;
-    pub const reboot = "if [ -f /run/reboot-required ]; then echo yes; cat /run/reboot-required.pkgs 2>/dev/null; else echo no; fi";
+    /// `.pkgs` is optional (notify-reboot-required writes it only from a
+    /// package's maintainer script): its absence is not a failed check.
+    pub const reboot = "if [ -f /run/reboot-required ]; then echo yes; cat /run/reboot-required.pkgs 2>/dev/null || true; else echo no; fi";
 };
 
 /// SPEC §9.13: Proxmox keys stored for the VM's next start.
@@ -978,7 +980,7 @@ fn dnsAnswer(ctx: *Context, gw: []const u8, fqdn: []const u8, address: ?[]const 
 
 /// SPEC §9.3 step 6: a fresh guest whose first boot installed a newer
 /// kernel reboots once, before it is in service; skipped otherwise.
-pub fn rebootForUpdates(c: *pve.Client, vmid: u32, l: *exec.Ledger, i: usize) !void {
+fn rebootForUpdates(c: *pve.Client, vmid: u32, l: *exec.Ledger, i: usize) !void {
     const ctx = c.ctx;
     const want = try agent.sh(c, vmid, scripts.reboot, 60_000);
     var lines = std.mem.tokenizeAny(u8, want.out, "\r\n");

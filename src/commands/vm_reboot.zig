@@ -15,6 +15,7 @@ const template = @import("template.zig");
 const vm_new = @import("vm_new.zig");
 const vm_upgrade = @import("vm_upgrade.zig");
 const k = @import("node.zig");
+const tasks = @import("../pve/task.zig");
 
 const Context = app.Context;
 
@@ -42,7 +43,7 @@ fn wanted(ctx: *Context, c: *pve.Client, vmid: u32) !?[]const []const u8 {
 }
 
 fn pkgList(a: std.mem.Allocator, pkgs: []const []const u8) ![]const u8 {
-    if (pkgs.len == 0) return "no package named";
+    if (pkgs.len == 0) return "packages not named";
     const shown = pkgs[0..@min(pkgs.len, 3)];
     const more = if (pkgs.len > 3) try std.fmt.allocPrint(a, " +{d}", .{pkgs.len - 3}) else "";
     return std.fmt.allocPrint(a, "{s}{s}", .{ try std.mem.join(a, ", ", shown), more });
@@ -63,6 +64,8 @@ pub const RebootPendingOp = struct {
 
     pub fn read(op: *RebootPendingOp, ctx: *Context) !void {
         const a = ctx.arena;
+        var host_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+        const here = shortName(std.posix.gethostname(&host_buf) catch "");
         var todo: std.ArrayList(Guest) = .empty;
         var not_needed: std.ArrayList([]const u8) = .empty;
         var own_run: std.ArrayList([]const u8) = .empty;
@@ -96,7 +99,12 @@ pub const RebootPendingOp = struct {
                 try own_run.append(a, try std.fmt.allocPrint(a, "{s} (role {s}: 'artoo vm reboot {s}'; {s})", .{ name, r, name, try pkgList(a, pkgs) }));
                 continue;
             }
-            try fp.print(a, "{s}:{d};", .{ name, pkgs.len });
+            // Rebooting the machine artoo runs on would end the run midway.
+            if (here.len > 0 and std.ascii.eqlIgnoreCase(here, v.name)) {
+                try own_run.append(a, try std.fmt.allocPrint(a, "{s} (artoo runs here: reboot it last, on its own; {s})", .{ name, try pkgList(a, pkgs) }));
+                continue;
+            }
+            try fp.print(a, "{d}:{s}:{s};", .{ v.vmid, name, try std.mem.join(a, ",", pkgs) });
             try todo.append(a, .{ .vm = v, .name = name, .pkgs = pkgs });
         }
         op.todo = todo.items;
@@ -149,26 +157,32 @@ pub const RebootPendingOp = struct {
         const first = l.steps.items.len;
         for (op.todo) |g| _ = try l.add(a, try std.fmt.allocPrint(a, "reboot {s}", .{g.name}));
         for (op.todo, first..) |g, i| {
-            // Checks the request again right before the write: a guest that
-            // no longer wants a reboot is skipped, not rebooted.
-            vm_new.rebootForUpdates(op.c, g.vm.vmid, l, i) catch |err| {
-                l.settle(err);
-                if (l.steps.items[i].detail.len == 0) l.set(i, l.steps.items[i].state, try k.clean(ctx, ctx.diag orelse @errorName(err)));
-                ctx.out.writeAll("\n") catch {};
-                l.render(ctx.out, &ctx.ui) catch {};
-                const rest = op.todo.len - (i - first) - 1;
-                const why = ctx.diag orelse @errorName(err);
-                return ctx.fail(err, "{s} did not come back as expected ({s}); {s}", .{
-                    g.name,                                                                                                                try k.clean(ctx, why),
-                    if (rest > 0) try std.fmt.allocPrint(a, "{f} not rebooted", .{ui.values.count(rest, "guest")}) else "it was the last",
-                });
+            var sent = false;
+            rebootOne(ctx, op.c, g, l, i, &sent) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                if (!ctx.json()) {
+                    ctx.out.writeAll("\n") catch {};
+                    l.render(ctx.out, &ctx.ui) catch {};
+                }
+                const why = try k.clean(ctx, ctx.diag orelse @errorName(err));
+                const after = op.todo.len - (i - first) - 1;
+                const st = l.steps.items[i].state;
+                if (!sent) return ctx.fail(err, "{s} was not rebooted ({s}); the run stopped, {f} not rebooted", .{ g.name, why, ui.values.count(after + 1, "guest") });
+                const rest = if (after > 0) try std.fmt.allocPrint(a, "{f} after it not rebooted", .{ui.values.count(after, "guest")}) else "it was the last";
+                if (st == .unknown) return ctx.fail(if (err == error.Canceled) err else error.OutcomeUnknown, "the reboot of {s} was sent, outcome unknown ({s}); check 'artoo vm verify {s}' before running again; {s}", .{ g.name, why, g.name, rest });
+                return ctx.fail(error.Partial, "{s} did not come back as expected ({s}); {s}", .{ g.name, why, rest });
             };
         }
     }
 
     pub fn verify(op: *RebootPendingOp, ctx: *Context) !bool {
-        try ctx.out.writeAll("\n");
-        try op.ledger.render(ctx.out, &ctx.ui);
+        if (!ctx.json()) {
+            try ctx.out.writeAll("\n");
+            try op.ledger.render(ctx.out, &ctx.ui);
+        }
+        var n: usize = 0;
+        for (op.ledger.steps.items) |st| n += @intFromBool(st.state == .done);
+        if (n == 0) return ctx.fail(error.NoChange, "no guest was rebooted: none wanted it any more when its turn came", .{});
         return op.ledger.complete();
     }
 
@@ -179,6 +193,98 @@ pub const RebootPendingOp = struct {
         return std.fmt.allocPrint(a, "{f} rebooted and back; no reboot request left on them", .{ui.values.count(n, "guest")}) catch "rebooted";
     }
 };
+
+/// The host name without its domain.
+fn shortName(h: []const u8) []const u8 {
+    return h[0 .. std.mem.indexOfScalar(u8, h, '.') orelse h.len];
+}
+
+fn reason(ctx: *Context, err: anyerror) ![]const u8 {
+    defer ctx.diag = null;
+    return k.clean(ctx, ctx.diag orelse @errorName(err));
+}
+
+/// One guest's reboot. Every return sets the guest's step to its final
+/// state first — done, skipped, failed, or unknown when the reboot was
+/// (or may have been) sent and its end is not known — and `sent` says
+/// whether the write went out (or may have).
+fn rebootOne(ctx: *Context, c: *pve.Client, g: Guest, l: *exec.Ledger, i: usize, sent: *bool) !void {
+    const a = ctx.arena;
+    const vmid = g.vm.vmid;
+    // The request is read again right before the write: a guest that no
+    // longer wants a reboot is skipped, not rebooted.
+    const want = wanted(ctx, c, vmid) catch |err| {
+        if (err == error.OutOfMemory or err == error.Canceled) return err;
+        const why = try reason(ctx, err);
+        l.set(i, .failed, try std.fmt.allocPrint(a, "reboot check failed: {s}", .{why}));
+        return ctx.fail(err, "its reboot check failed: {s}", .{why});
+    };
+    if (want == null) {
+        l.set(i, .skipped, "no longer wanted");
+        return;
+    }
+    sent.* = true;
+    l.set(i, .unknown, "");
+    const data = c.send(.POST, try c.nodePath("/qemu/{d}/status/reboot", .{vmid}), &.{}) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        // No definite answer: the reboot may have been sent.
+        error.OutcomeUnknown, error.Network, error.Timeout, error.Protocol, error.Canceled => {
+            const why = try reason(ctx, err);
+            l.set(i, .unknown, try std.fmt.allocPrint(a, "may have been sent: {s}", .{why}));
+            return ctx.fail(err, "{s}", .{why});
+        },
+        else => {
+            sent.* = false;
+            const why = try reason(ctx, err);
+            l.set(i, .failed, try std.fmt.allocPrint(a, "refused, not rebooted: {s}", .{why}));
+            return ctx.fail(err, "Proxmox refused it: {s}", .{why});
+        },
+    };
+    const upid = tasks.upidOf(c, data, "the reboot") catch |err| {
+        const why = try reason(ctx, err);
+        l.set(i, .unknown, try std.fmt.allocPrint(a, "sent, no task ID: {s}", .{why}));
+        return ctx.fail(err, "{s}", .{why});
+    };
+    _ = k.waitTaskNoted(c, upid, 240, l.noter(i)) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        const why = try reason(ctx, err);
+        if (err == error.TaskFailed) {
+            l.set(i, .failed, try std.fmt.allocPrint(a, "reboot task failed: {s}", .{why}));
+            return ctx.fail(err, "its reboot task failed: {s}", .{why});
+        }
+        l.set(i, .unknown, try std.fmt.allocPrint(a, "sent, its task not followed to the end: {s}", .{why}));
+        return ctx.fail(err, "{s}", .{why});
+    };
+    l.note(i, "waiting for the guest agent");
+    agent.waitReady(c, vmid, 600_000) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        const why = try reason(ctx, err);
+        if (err == error.WaitTimeout) {
+            l.set(i, .failed, try std.fmt.allocPrint(a, "not back: {s}", .{why}));
+            return ctx.fail(err, "{s}", .{why});
+        }
+        l.set(i, .unknown, try std.fmt.allocPrint(a, "rebooted, not seen back: {s}", .{why}));
+        return ctx.fail(err, "{s}", .{why});
+    };
+    const r = agent.sh(c, vmid, "uname -r; test -f /run/reboot-required && echo still || true", 60_000) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        const why = try reason(ctx, err);
+        l.set(i, .unknown, try std.fmt.allocPrint(a, "back, its reboot state unread: {s}", .{why}));
+        return ctx.fail(err, "{s}", .{why});
+    };
+    var out = std.mem.tokenizeAny(u8, r.out, "\r\n");
+    const kernel = out.next() orelse "";
+    if (!r.ok() or kernel.len == 0) {
+        l.set(i, .unknown, "back, its reboot state unread");
+        return ctx.fail(error.OutcomeUnknown, "it is back, but its reboot state could not be read (exit {?d})", .{r.code});
+    }
+    const kern = try k.clean(ctx, kernel);
+    if (std.mem.eql(u8, out.next() orelse "", "still")) {
+        l.set(i, .failed, try std.fmt.allocPrint(a, "still pending after the reboot (kernel {s})", .{kern}));
+        return ctx.fail(error.Partial, "it still wants a reboot after rebooting (kernel {s})", .{kern});
+    }
+    l.set(i, .done, try std.fmt.allocPrint(a, "kernel {s}", .{kern}));
+}
 
 pub fn runPending(ctx: *Context) !void {
     var c = try pve.Client.open(ctx);
@@ -212,7 +318,7 @@ fn expectAll(out: []const u8, wants: []const []const u8) !void {
 
 const pid = "{\"data\":{\"pid\":42}}";
 const ping = "{\"data\":{\"result\":{}}}";
-const upid = "{\"data\":\"UPID:pve:0006B482:00B442ED:6ACA1C3A:qmreboot:205:artoo@pve!cli:\"}";
+const upid_body = "{\"data\":\"UPID:pve:0006B482:00B442ED:6ACA1C3A:qmreboot:205:artoo@pve!cli:\"}";
 const task_ok = "{\"data\":{\"status\":\"stopped\",\"exitstatus\":\"OK\"}}";
 const list = "{\"data\":[{\"vmid\":200,\"name\":\"bespin\",\"status\":\"running\",\"tags\":\"artoo;role-edge\"},{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;role-dev\"},{\"vmid\":207,\"name\":\"tatooine\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":206,\"name\":\"endor\",\"status\":\"stopped\",\"tags\":\"artoo\"},{\"vmid\":150,\"name\":\"other\",\"status\":\"running\"}]}";
 
@@ -231,7 +337,7 @@ test "vm reboot --pending: only guests that want it, the edge named but left alo
     };
     var g: testkit.Gateway = undefined;
     try g.init(&(read ++ read ++ [_]B{
-        ans(pid), ans(yes), ans(upid), ans(task_ok), ans(ping), ans(pid), ans(try execStatus(a, 0, "7.0.0-45-generic\n")),
+        ans(pid), ans(yes), ans(upid_body), ans(task_ok), ans(ping), ans(pid), ans(try execStatus(a, 0, "7.0.0-45-generic\n")),
     }));
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
@@ -270,7 +376,7 @@ test "vm reboot --pending: the first guest still wanting a reboot stops the run"
         ans(yes),
         ans(pid),
         ans(yes),
-        ans(upid),
+        ans(upid_body),
         ans(task_ok),
         ans(ping),
         ans(pid),
@@ -281,7 +387,7 @@ test "vm reboot --pending: the first guest still wanting a reboot stops the run"
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm reboot --pending -y"));
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     try expectAll(g.h.stdout(), &.{ "✗ reboot naboo     failed  still pending after the reboot (kernel 7.0.0-45-generic)\n", "reboot tatooine" });
-    try expectAll(g.h.stderr(), &.{"artoo: naboo did not come back as expected (VM 205 still wants a reboot after rebooting; check with 'artoo vm verify'); 1 guest not rebooted\n"});
+    try expectAll(g.h.stderr(), &.{"artoo: naboo did not come back as expected (it still wants a reboot after rebooting (kernel 7.0.0-45-generic)); 1 guest after it not rebooted\n"});
 }
 
 test "vm reboot --pending: none wanted names why; usage" {
@@ -310,4 +416,45 @@ test "vm reboot --pending: none wanted names why; usage" {
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm reboot naboo --pending"));
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm reboot --pending --no-wait -y"));
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm reboot"));
+}
+
+test "vm reboot --pending: a refused reboot was not sent and counts itself; an ambiguous one is unknown (exit 7); no .pkgs still wants it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `/run/reboot-required` without `.pkgs`: still a guest that wants it.
+    const yes = try execStatus(a, 0, "yes\n");
+    const two = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":207,\"name\":\"tatooine\",\"status\":\"running\",\"tags\":\"artoo\"}]}";
+    const read = [_]B{ ans(two), ans(ping), ans(pid), ans(yes), ans(ping), ans(pid), ans(yes) };
+    var g: testkit.Gateway = undefined;
+    try g.init(&(read ++ [_]B{
+        ans(pid), ans(yes), .{ .respond = .{ .status = 500, .body = "{\"message\":\"VM is locked (backup)\"}" } },
+    } ++ read ++ [_]B{
+        ans(pid), ans(yes), .{ .respond = .{ .status = 502, .body = "{\"message\":\"bad gateway\"}" } },
+    }));
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expect(g.h.run(&root, "vm reboot --pending -y") != Exit.ok);
+    try expectAll(g.h.stdout(), &.{ "✗ reboot naboo     failed  refused, not rebooted: Proxmox refused POST", "naboo     running → rebooted (packages not named)\n", "– reboot tatooine  not run" });
+    try expectAll(g.h.stderr(), &.{"artoo: naboo was not rebooted (Proxmox refused it: Proxmox refused POST /nodes/pve/qemu/205/status/reboot (500): VM is locked (backup)); the run stopped, 2 guests not rebooted\n"});
+    try testing.expectEqual(Exit.unknown, g.h.run(&root, "vm reboot --pending -y"));
+    try expectAll(g.h.stdout(), &.{"reboot naboo     unknown  may have been sent: Proxmox answered 502"});
+    try expectAll(g.h.stderr(), &.{ "artoo: the reboot of naboo was sent, outcome unknown (Proxmox answered 502", "check 'artoo vm verify naboo' before running again; 1 guest after it not rebooted\n" });
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+}
+
+test "vm reboot VM: one VM still reboots as before" {
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans("{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"}]}"),
+        ans(upid_body),
+        ans(task_ok),
+        ans("{\"data\":{\"status\":\"running\"}}"),
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm reboot naboo -y"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expectEqualStrings("POST /api2/json/nodes/pve/qemu/205/status/reboot HTTP/1.1", g.request(1));
+    try expectAll(g.h.stdout(), &.{ "Plan · Reboot VM naboo (205)\n", "✓ naboo is running (" });
 }
