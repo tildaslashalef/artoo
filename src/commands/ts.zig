@@ -379,16 +379,50 @@ pub fn validate(c: *ts.Client, text: []const u8) !Validation {
     const v = try c.jsonOpts(.POST, try c.tailnetPath("/acl/validate", .{}), text, .{ .content_type = "application/hujson", .read_only = true });
     var errs: std.ArrayList([]const u8) = .empty;
     var warns: std.ArrayList([]const u8) = .empty;
+    // Only the documented shapes count as valid: `{}`, or a message with
+    // `data` entries that carry warnings and no errors. Anything else —
+    // another member, an `errors` that is no list of strings, a non-object
+    // answer — is an error (SPEC §19).
+    var odd = v != .object;
+    if (v == .object) {
+        var it = v.object.iterator();
+        while (it.next()) |e| {
+            if (!std.mem.eql(u8, e.key_ptr.*, "message") and !std.mem.eql(u8, e.key_ptr.*, "data")) odd = true;
+        }
+        if (v.object.get("message")) |m| if (m != .string) {
+            odd = true;
+        };
+    }
     const data = ts.field(v, "data");
+    if (data != .null and data != .array) odd = true;
     if (data == .array) for (data.array.items) |item| {
+        if (item != .object) {
+            odd = true;
+            continue;
+        }
+        var it = item.object.iterator();
+        while (it.next()) |e| {
+            const k = e.key_ptr.*;
+            const known = std.mem.eql(u8, k, "user") or std.mem.eql(u8, k, "errors") or std.mem.eql(u8, k, "warnings");
+            if (!known) odd = true;
+            if ((std.mem.eql(u8, k, "errors") or std.mem.eql(u8, k, "warnings")) and !stringList(e.value_ptr.*)) odd = true;
+        }
         const who = ts.str(item, "user") orelse "";
         for (try ts.strings(a, item, "errors")) |e| try errs.append(a, try clean(ctx, try std.fmt.allocPrint(a, "{s}{s}{s}", .{ who, if (who.len > 0) ": " else "", e })));
         for (try ts.strings(a, item, "warnings")) |e| try warns.append(a, try clean(ctx, try std.fmt.allocPrint(a, "{s}{s}{s}", .{ who, if (who.len > 0) ": " else "", e })));
     };
+    if (odd) try errs.append(a, "Tailscale answered the validation in an unexpected shape; artoo counts it as invalid");
     const message = try clean(ctx, ts.str(v, "message") orelse "");
     // `{}` is success; a message with only warnings is still valid.
     const valid = errs.items.len == 0 and (message.len == 0 or warns.items.len > 0);
     return .{ .ok = valid, .message = message, .errors = errs.items, .warnings = warns.items };
+}
+
+fn stringList(v: Value) bool {
+    if (v == .null) return true;
+    if (v != .array) return false;
+    for (v.array.items) |x| if (x != .string) return false;
+    return true;
 }
 
 pub const policy_validate = struct {
@@ -399,6 +433,24 @@ pub const policy_validate = struct {
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const text = try readPolicyFile(ctx, args.pos("FILE"));
+        // A JSON list is the endpoint's other mode — tests run against the
+        // live policy — and says nothing about the file: refused.
+        // (A file that does not parse goes to Tailscale, which names why.)
+        const local: ?Value = blk: {
+            const json = tn.hujsonToJson(ctx.arena, text) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                break :blk null;
+            };
+            break :blk std.json.parseFromSliceLeaky(Value, ctx.arena, json, .{}) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                break :blk null;
+            };
+        };
+        if (local) |v| switch (v) {
+            .object => {},
+            .array => return ctx.fail(error.Refused, "{s} is a list (tests only); Tailscale would run it against the live policy, not validate a file — artoo validates a policy (an object)", .{args.pos("FILE")}),
+            else => return ctx.fail(error.Refused, "{s} is not a policy (expected an object)", .{args.pos("FILE")}),
+        };
         var c = try ts.Client.open(ctx, .main);
         defer c.deinit();
         const r = try validate(&c, text);
@@ -1270,6 +1322,11 @@ test "ts policy show, validate and preview: read-only calls with HuJSON" {
     try testing.expect(std.mem.find(u8, f.h.stdout(), "me@example.com: address \"192.168.1.10:22\": want: Accept, got: Drop") != null);
     try testing.expectEqual(Exit.ok, f.h.run(&root, "ts policy preview 192.168.1.10:8006"));
     try expectHas(f.h.stdout(), &.{"   3  autogroup:member  192.168.1.10:8006"});
+    // A list is the endpoint's test-against-live mode: refused, never sent.
+    const list = try f.file("tests.json", "// tests\n[{\"src\":\"me@example.com\",\"accept\":[\"192.168.1.10:22\"]}]\n");
+    try testing.expectEqual(Exit.refused, f.h.runArgs(&root, &.{ "ts", "policy", "validate", list }));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "is a list (tests only)") != null);
+    try testing.expect(std.mem.find(u8, f.h.stdout(), "is valid") == null);
     try testing.expectEqual(@as(usize, 0), f.srv.unused());
     // The validate request carried the file as HuJSON.
     for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /tailnet/-/acl/validate")) {
@@ -1364,6 +1421,41 @@ test "ts routes approve: exactly the LAN; refused when not advertised" {
     try expectHas(f.h.stdout(), &.{ "approved routes  0.0.0.0/0 → 192.168.1.0/24", "0.0.0.0/0 was approved and is withdrawn", "✓ route approved and verified" });
     for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /device/nRouter/routes")) try testing.expect(std.mem.endsWith(u8, q, "{\"routes\":[\"192.168.1.0/24\"]}"));
     try testing.expectEqual(@as(usize, 0), f.srv.unused());
+}
+
+test "ts policy validate: an answer of any other shape is invalid" {
+    const bodies = [_][]const u8{
+        "",
+        "[]",
+        "{\"errors\":[\"bad\"]}",
+        "{\"message\":\"x\",\"data\":[{\"user\":\"me@example.com\",\"errors\":\"not a list\"}]}",
+        "{\"data\":[\"bad\"]}",
+        "{\"data\":{\"errors\":[\"bad\"]}}",
+        "{\"message\":\"policy error\"}",
+    };
+    for (bodies) |body| {
+        var f: Fixture = undefined;
+        try f.initRoutes(&.{
+            route("POST /oauth/token", token_ok),
+            route("POST /tailnet/-/acl/validate", body),
+        });
+        defer f.deinit();
+        try f.tailscaleConfig("");
+        const file = try f.file("policy.hujson", "{\"acls\":[]}\n");
+        try testing.expectEqual(Exit.partial, f.h.runArgs(&root, &.{ "ts", "policy", "validate", file }));
+        try testing.expect(std.mem.find(u8, f.h.stdout(), "is valid") == null);
+    }
+    // Warnings alone stay valid.
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("POST /tailnet/-/acl/validate", "{\"message\":\"warnings\",\"data\":[{\"user\":\"me@example.com\",\"warnings\":[\"unused group\"]}]}"),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    const file = try f.file("policy.hujson", "{\"acls\":[]}\n");
+    try testing.expectEqual(Exit.ok, f.h.runArgs(&root, &.{ "ts", "policy", "validate", file }));
+    try testing.expect(std.mem.find(u8, f.h.stdout(), "me@example.com: unused group") != null);
 }
 
 test "ts device rm: server strings in the target and in errors are sanitized" {
