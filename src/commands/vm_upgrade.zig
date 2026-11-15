@@ -43,7 +43,7 @@ const UpgradeOp = struct {
         const v = try vms.resolve(op.c, op.word);
         op.vm = v;
         op.target = try k.clean(ctx, v.name);
-        if (v.template) return ctx.fail(error.Refused, "{s} is a template; templates are not upgraded (a new image pin is, SPEC §9.2)", .{op.target});
+        if (v.template) return ctx.fail(error.Refused, "{s} is a template; templates are not upgraded (a new image pin is)", .{op.target});
         if (!template.taggedWith(v.tags, vm_new.tag)) return ctx.fail(error.Refused, "{s} is not an artoo guest (no '{s}' tag)", .{ op.target, vm_new.tag });
         if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; start it first ('artoo vm start {s}')", .{ op.target, try k.clean(ctx, v.status), op.target });
         if (!try agent.ping(op.c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{op.target});

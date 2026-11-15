@@ -150,7 +150,7 @@ pub const add = struct {
     pub const details =
         \\NAME without a dot gets guests.domain (lab.example.com by default).
         \\Names or addresses of Proxmox and UniFi are refused outside
-        \\home.arpa (SPEC §9.6). An existing record with another address is
+        \\home.arpa. An existing record with another address is
         \\refused; remove it first.
     ;
     pub const positionals = [_]cli.Positional{
@@ -172,7 +172,7 @@ pub const add = struct {
         const ttl = args.int("ttl") orelse dns.default_ttl;
         if (ttl < 0 or ttl > dns.max_ttl) return ctx.fail(error.Usage, "--ttl must be 0-{d}, got {d}", .{ dns.max_ttl, ttl });
         if (!exposure.isPrivate(fqdn)) {
-            if (exposure.protected(try ctx.config(), fqdn, ip)) |why| return ctx.fail(error.Refused, "refused: {s}; Proxmox and UniFi keep home.arpa names only (SPEC §9.6)", .{why});
+            if (exposure.protected(try ctx.config(), fqdn, ip)) |why| return ctx.fail(error.Refused, "refused: {s}; Proxmox and UniFi keep home.arpa names only", .{why});
         }
         var c = try unifi.Client.open(ctx);
         defer c.deinit();
@@ -356,7 +356,7 @@ test "dns add: no-op, conflicts and protected targets are refused" {
     // Protected names/addresses outside home.arpa: refused before any request.
     try testing.expectEqual(Exit.refused, f.h.run(&root, "dns add pve 192.168.1.50 -y"));
     try testing.expectEqual(Exit.refused, f.h.run(&root, "dns add web-02 192.168.1.1 -y"));
-    try testing.expect(std.mem.find(u8, f.h.stderr(), "SPEC §9.6") != null);
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "home.arpa names only") != null);
     // Local validation.
     try testing.expectEqual(Exit.usage, f.h.run(&root, "dns add web_02 192.168.1.50"));
     try testing.expectEqual(Exit.usage, f.h.run(&root, "dns add web-02 192.168.1.500"));

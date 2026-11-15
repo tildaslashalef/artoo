@@ -180,7 +180,7 @@ pub const ls = struct {
     pub const details =
         \\Read-only. Names and IDs from the Integration API; state from the
         \\gateway's classic stat/health and stat/device documents and the v2
-        \\load-balancing status (SPEC §10.4). "shared" marks an address in
+        \\load-balancing status. "shared" marks an address in
         \\100.64.0.0/10 (the ISP's carrier-grade NAT). A WAN no gateway port
         \\carries shows as "no port" (role unassigned). A source this firmware
         \\lacks is named; the command exits 8 when none answers.

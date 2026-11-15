@@ -225,7 +225,7 @@ const RenameOp = struct {
         if (v.template) return ctx.fail(error.Refused, "{s} is a template; templates are not renamed this way", .{v.name});
         if (!template.taggedWith(v.tags, "artoo")) return ctx.fail(error.Refused, "{s} is not an artoo guest (no tag artoo); a foreign VM is renamed with 'artoo vm set {s} name={s}'", .{ v.name, v.name, op.new });
         if (vm_cmd.roleOf(v.tags)) |r| if (std.mem.eql(u8, r, "edge") or std.mem.eql(u8, r, "watch"))
-            return ctx.fail(error.Refused, "{s} carries role-{s}: its name sits in firewall rules and every guest's Alloy configuration (SPEC §9.7, §9.9); rebuild it instead", .{ v.name, r });
+            return ctx.fail(error.Refused, "{s} carries role-{s}: its name sits in firewall rules and every guest's Alloy configuration; rebuild it instead", .{ v.name, r });
         if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; its hostname is changed inside, so start it first", .{ v.name, v.status });
         if (!try agent.ping(op.c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{v.name});
         const vcfg = try vms.config(op.c, v.vmid);

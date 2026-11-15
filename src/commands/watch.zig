@@ -59,7 +59,7 @@ pub fn findWatchVm(c: *pve.Client) !?vms.Vm {
 
 /// The VM tagged `role-watch` (exactly one), running, agent answering.
 pub fn watchVm(ctx: *Context, c: *pve.Client) !vms.Vm {
-    const v = try findWatchVm(c) orelse return ctx.fail(error.NotFound, "no VM tagged role-watch; create it with 'artoo vm new scarif --role watch --size medium --ssh-jump' (SPEC §9.9)", .{});
+    const v = try findWatchVm(c) orelse return ctx.fail(error.NotFound, "no VM tagged role-watch; create it with 'artoo vm new scarif --role watch --size medium --ssh-jump'", .{});
     return ready(ctx, c, v);
 }
 
@@ -96,7 +96,7 @@ fn lab(ctx: *Context, c: *pve.Client, full: bool) !files.Lab {
     const ad = try edge.addresses(ctx);
     var l: files.Lab = .{ .pve = ad.pve, .gateway = ad.gateway, .lan = ad.lan, .pool = ad.pool, .edge = "", .domain = (try ctx.config()).guests.domain };
     if (!full) return l;
-    const e = try tagged(c, edge.role) orelse return ctx.fail(error.Refused, "no VM tagged role-edge: Grafana and ntfy are served through it (SPEC §9.9); set up the edge first", .{});
+    const e = try tagged(c, edge.role) orelse return ctx.fail(error.Refused, "no VM tagged role-edge: Grafana and ntfy are served through it; set up the edge first", .{});
     l.edge = life.staticAddress(try vms.config(c, e.vmid)) orelse return ctx.fail(error.Refused, "the edge VM {s} has no static address (ipconfig0)", .{e.name});
     if (e.running()) {
         const view = try svc.read(ctx, c);
@@ -587,7 +587,7 @@ pub const setup = struct {
     pub const name = "setup";
     pub const summary = "Set up the watchdog VM (idempotent)";
     pub const details =
-        \\Brings the VM tagged role-watch to SPEC §9.9: service accounts, the
+        \\Brings the VM tagged role-watch to its hardened layout: service accounts, the
         \\nftables policy (ingest from the guest pool and Proxmox, Grafana and
         \\ntfy only from the edge, no internet for the service users), Grafana,
         \\Loki, Alloy and ntfy at their pinned versions from their signed
@@ -735,7 +735,7 @@ const EnrollOp = struct {
     pub fn read(op: *EnrollOp, ctx: *Context) !void {
         const a = ctx.arena;
         const c = op.c;
-        op.watch = try findWatchVm(c) orelse return ctx.fail(error.NotFound, "no VM tagged role-watch; guests have nowhere to push (SPEC §9.9)", .{});
+        op.watch = try findWatchVm(c) orelse return ctx.fail(error.NotFound, "no VM tagged role-watch; guests have nowhere to push", .{});
         const host = try watchHost(ctx, op.watch);
         const l = try lab(ctx, c, false);
         var targets: std.ArrayList(vms.Vm) = .empty;
@@ -971,7 +971,7 @@ pub const secret = struct {
         \\grafana: Grafana's admin password, handed to Grafana's CLI on stdin.
         \\phone: the ntfy login of the operator's phone (user 'phone', read-only
         \\on the alert topic); only its bcrypt hash, made here, reaches the VM.
-        \\artoo never stores, prints or logs either (SPEC §9.9).
+        \\artoo never stores, prints or logs either.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "KIND", .help = "grafana | phone" }};
     pub const flags = [_]cli.Flag{.{ .long = "stdin", .help = "Read the password from standard input" }};
@@ -1087,7 +1087,7 @@ pub const status = struct {
         }
         const hs = try edge.readHost(&c, v);
         const hsteps = edge.hostSteps(&hostRules(l), hs);
-        try checks.append(a, .{ .name = "host firewall", .status = if (hsteps.any()) .failed else .ok, .detail = if (hsteps.any()) "differs from SPEC §9.9 — run 'artoo watch setup'" else "Proxmox VM firewall as designed (on Proxmox)" });
+        try checks.append(a, .{ .name = "host firewall", .status = if (hsteps.any()) .failed else .ok, .detail = if (hsteps.any()) "differs from the hardened layout — run 'artoo watch setup'" else "Proxmox VM firewall as designed (on Proxmox)" });
         try checks.append(a, .{ .name = "firewall", .status = if (st.nft_loaded and st.nft_enabled) .ok else .failed, .detail = if (st.nft_loaded) (if (st.nft_enabled) "loaded, enabled" else "loaded, not enabled at boot") else "not loaded" });
         for (files.watch_packages) |p| {
             const have = st.version(p[0]);
@@ -1271,7 +1271,7 @@ pub const forget = struct {
     }
 };
 
-pub const group = cli.group("watch", "The watchdog VM: metrics, logs, alerts to the phone (SPEC §9.9)", &.{
+pub const group = cli.group("watch", "The watchdog VM: metrics, logs, alerts to the phone", &.{
     cli.leaf(setup),
     cli.leaf(status),
     cli.leaf(enroll),
