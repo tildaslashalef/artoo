@@ -85,10 +85,17 @@ fn joinClean(ctx: *Context, list: []const []const u8) ![]const u8 {
     return clean(ctx, try std.mem.join(ctx.arena, ", ", list));
 }
 
-fn header(ctx: *Context, c: *const ts.Client) !void {
-    try ui.blocks.header(ctx.out, &ctx.ui, ctx.subject, try std.fmt.allocPrint(ctx.arena, "tailscale {s} {s} {s} {f}", .{
-        ctx.ui.glyphs.dot, try clean(ctx, c.shownName()), ctx.ui.glyphs.dot, ui.values.clock(ctx.ui.now, &ctx.ui.zone),
-    }));
+/// `tailscale · <tailnet> · <clock>`; the tailnet is left out while its
+/// name is unknown.
+fn header(ctx: *Context, c: *ts.Client) !void {
+    tn.learnName(c);
+    const g = ctx.ui.glyphs;
+    const clock = ui.values.clock(ctx.ui.now, &ctx.ui.zone);
+    const right = if (c.shownName()) |n|
+        try std.fmt.allocPrint(ctx.arena, "tailscale {s} {s} {s} {f}", .{ g.dot, try clean(ctx, n), g.dot, clock })
+    else
+        try std.fmt.allocPrint(ctx.arena, "tailscale {s} {f}", .{ g.dot, clock });
+    try ui.blocks.header(ctx.out, &ctx.ui, ctx.subject, right);
 }
 
 fn ipv4(d: tn.Device) []const u8 {
@@ -520,7 +527,8 @@ fn labDevice(ctx: *Context, c: *ts.Client, word: []const u8) !struct { tn.Device
 }
 
 fn deviceTarget(ctx: *Context, c: *const ts.Client) ![]const u8 {
-    return std.fmt.allocPrint(ctx.arena, "Tailscale (tailnet {s})", .{try clean(ctx, c.shownName())});
+    const n = c.shownName() orelse return "Tailscale";
+    return std.fmt.allocPrint(ctx.arena, "Tailscale (tailnet {s})", .{try clean(ctx, n)});
 }
 
 const RenameOp = struct {
@@ -1432,13 +1440,15 @@ test "ts keys ls: metadata only, never a key value" {
             \\{"keys":[{"id":"kAuth1","key":"tskey-auth-LEAKED","keyType":"auth","description":"artoo router dagobah","capabilities":{"devices":{"create":{"reusable":false,"ephemeral":false,"preauthorized":true,"tags":["tag:lab-router"]}}},"created":"2026-11-15T10:00:00Z","expires":"2026-11-15T10:10:00Z"},
             \\{"id":"kClient","keyType":"client","description":"artoo","scopes":["devices:core"],"tags":["tag:lab-router"],"created":"2026-11-01T10:00:00Z"}]}
         ),
+        // The header learns the tailnet's name from the device list.
+        route("GET /tailnet/-/devices?fields=all", "{\"devices\":[{\"id\":\"n1\",\"name\":\"hoth.tail1234.ts.net\",\"addresses\":[]}]}"),
         route("POST /oauth/token", token_ok),
         route("GET /tailnet/-/keys?all=true", "{\"keys\":[{\"id\":\"kAuth1\",\"key\":\"tskey-auth-LEAKED\",\"keyType\":\"auth\"}]}"),
     });
     defer f.deinit();
     try f.tailscaleConfig("");
     try testing.expectEqual(Exit.ok, f.h.run(&root, "ts keys ls"));
-    try expectHas(f.h.stdout(), &.{ "kAuth1", "single-use, preauthorized", "kClient" });
+    try expectHas(f.h.stdout(), &.{ "tailscale · tail1234.ts.net · ", "kAuth1", "single-use, preauthorized", "kClient" });
     try testing.expect(std.mem.find(u8, f.h.stdout(), "LEAKED") == null);
     try testing.expectEqual(Exit.ok, f.h.run(&root, "-o json ts keys ls"));
     try testing.expect(std.mem.find(u8, f.h.stdout(), "LEAKED") == null);

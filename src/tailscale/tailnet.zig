@@ -79,6 +79,16 @@ pub fn device(a: Allocator, v: Value) !?Device {
 }
 
 /// Every device, with all fields (routes are not in the default set).
+/// Learns the tailnet's MagicDNS name for headers and plan targets when the
+/// config names none: one read of the device list, whose failure (a
+/// client without device scope) leaves the name unknown and no error.
+pub fn learnName(c: *ts.Client) void {
+    if (!std.mem.eql(u8, c.tailnet, "-") or c.seen_name != null) return;
+    const saved = c.ctx.diag;
+    _ = devices(c) catch {};
+    c.ctx.diag = saved;
+}
+
 pub fn devices(c: *ts.Client) ![]Device {
     const v = try c.get(try c.tailnetPath("/devices?fields=all", .{}));
     const list = ts.field(v, "devices");
