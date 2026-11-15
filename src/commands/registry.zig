@@ -38,6 +38,7 @@ test {
     _ = @import("../cloudflare/tunnel.zig");
     _ = @import("../exposure.zig");
     _ = @import("../unifi/dns.zig");
+    _ = @import("../unifi/wan.zig");
     _ = @import("../unifi/classic.zig");
     _ = @import("../guest/names.zig");
     _ = @import("../edge/files.zig");
