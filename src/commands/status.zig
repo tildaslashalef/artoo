@@ -385,7 +385,7 @@ fn readPve(p: *Part, r: *Report) void {
     r.guests = attempt(ctx, &p.errors, "guests", guests(&c, &r.templates));
     r.storage = attempt(ctx, &p.errors, "storage", storage.list(&c));
     if (attempt(ctx, &p.errors, "tasks", task.list(&c, 100, .running))) |running| r.running_tasks = running.len;
-    if (attempt(ctx, &p.errors, "tasks", task.list(&c, 20, .failed))) |failed| r.failed_tasks = failed;
+    if (attempt(ctx, &p.errors, "tasks", task.list(&c, 100, .failed))) |failed| r.failed_tasks = failed;
 }
 
 fn readUnifi(p: *Part, r: *Report, records: *?[]const dns.ARecord) void {
@@ -572,18 +572,21 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
     try sectionTitle(ctx, "Tasks");
     if (r.running_tasks != null and r.failed_tasks != null) {
         // PVE's errors=1 filter also returns tasks that ended with warnings.
+        // The same 24 h window as host health's tasks check.
+        const day_ago = ctx.ui.now - 86400;
         const recent = r.failed_tasks.?;
         var failed: usize = 0;
         var warned: usize = 0;
-        for (recent) |t| switch (t.state()) {
+        for (recent) |t| if ((t.start orelse 0) >= day_ago) switch (t.state()) {
             .failed => failed += 1,
             .warning => warned += 1,
             else => {},
         };
-        try ctx.out.print("  {d} running, {f}, {d} with warnings\n", .{ r.running_tasks.?, ui.values.count(failed, "recent failure"), warned });
+        try ctx.out.print("  {d} running; last 24 h: {d} failed, {d} with warnings\n", .{ r.running_tasks.?, failed, warned });
         var shown: usize = 0;
         for (recent) |t| {
             if (shown == 3) break;
+            if ((t.start orelse 0) < day_ago) continue;
             const st = t.state();
             if (st != .failed and st != .warning) continue;
             shown += 1;
@@ -743,7 +746,7 @@ test "status: Proxmox and UniFi sections; a failed section exits 8" {
     for ([_][]const u8{
         "  0 running, 1 stopped, 1 template\n",
         "  local-zfs  ",
-        "✗ unavailable: Proxmox refused GET /nodes/pve/tasks?limit=20&source=all&errors=1 (500): boom",
+        "✗ unavailable: Proxmox refused GET /nodes/pve/tasks?limit=100&source=all&errors=1 (500): boom",
         "  Devices  1 online / 1\n",
         "  Clients  7\n",
         "Guest DNS (lab.example.com): 0 matched, no record: web-01, no guest: old-01.lab.example.com",
