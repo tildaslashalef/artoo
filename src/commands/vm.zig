@@ -75,7 +75,10 @@ pub const ls = struct {
             .{ .title = "ROLE" },
             .{ .title = "STATUS" },
             .{ .title = "CPU", .alignment = .right, .drop = 1 },
-            .{ .title = "MEMORY", .drop = 1 },
+            // What the host gives the VM's QEMU process (page cache
+            // included, so near 100%); the guest's own use is in status
+            // and vm show.
+            .{ .title = "HOST MEM", .drop = 1 },
             .{ .title = "UPTIME", .alignment = .right, .drop = 2 },
             .{ .title = "TAGS", .drop = 3 },
         }, rows);
