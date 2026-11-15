@@ -126,6 +126,7 @@ artoo cf dns … | cf tunnel …          Cloudflare zone records + tunnel route
 artoo ts devices ls | device show NAME   the tailnet's devices, lab devices marked (§19)
 artoo ts dns show | keys ls           tailnet DNS; auth key metadata (never a key's value)
 artoo ts policy show [--json] | validate FILE | preview USER|IP:PORT   the policy, read-only
+artoo ts policy apply FILE           replace the policy (credential tailscale-policy; diff, typed confirmation)
 artoo ts device rename NAME NEW | device rm NAME   lab devices only (rm: typed confirmation)
 artoo ts routes approve ROUTER        approve exactly the LAN route a lab router advertises
 artoo ts dns split set DOMAIN NAMESERVER…   guests.domain or home.arpa → the gateway only
@@ -2955,7 +2956,11 @@ verified live:
   username). OAuth client secrets start `tskey-client-`, API access
   tokens `tskey-api-`. Token exchange: `POST /api/v2/oauth/token` with
   `client_id`, `client_secret` (and optional `scope`, `tags`), answering
-  `access_token`, `token_type`, `expires_in` (3600) and `scope`.
+  `access_token`, `token_type`, `expires_in` (3600) and `scope`. **Not
+  in the OpenAPI document:** this endpoint comes from Tailscale's OAuth
+  documentation; artoo sends `grant_type=client_credentials`, the ID and
+  the secret form-encoded, and reads `tags` from the answer only if one
+  appears — unverified until the first live run.
 - **Tailnet path:** `/tailnet/{tailnet}/…`; `-` means the credential's
   own tailnet.
 - **Devices:** `GET /tailnet/{tailnet}/devices`, `GET|DELETE
@@ -2974,9 +2979,15 @@ verified live:
   clears one, PUT replaces the whole map. Also `dns/nameservers`,
   `dns/preferences`, `dns/searchpaths`.
 - **Policy:** `GET /tailnet/{tailnet}/acl` (HuJSON, or JSON on request)
-  answers an `ETag`; a `POST` honours `If-Match` (the ETag, or
-  `"ts-default"`) and refuses a mismatch; `POST …/acl/validate`; `POST
-  …/acl/preview?type=user|ipport&previewFor=…`.
+  answers an `ETag`; a `POST` takes `application/hujson` or
+  `application/json`, honours `If-Match` (the ETag as the GET returned
+  it, quoted in the document's example `"e0b2816b418"`, or
+  `"ts-default"`) and answers `412` ("precondition failed, invalid old
+  hash") on a mismatch, `400` on a validation or test error; `POST
+  …/acl/validate` answers `{}` or `{message, data: [{user, errors,
+  warnings}]}`; `POST …/acl/preview?type=user|ipport&previewFor=…`.
+- **Key descriptions:** at most 50 letters, digits, hyphens and spaces —
+  so `artoo router <vm>` and `artoo join <vm>`, without a colon.
 - **Errors and lists:** HTTP status plus `{"message": …}`; some
   endpoints document `429`; "does not currently support pagination".
 
@@ -3075,7 +3086,8 @@ archive `artoo-<ver>-<target>.tar.gz` holding
 
 ## 19. Tailscale
 
-Decided 2026-11-15; not implemented yet. Designed from Tailscale's
+Decided 2026-11-15; implemented, not yet verified live (see **Status**).
+Designed from Tailscale's
 official OpenAPI document (API v2, OpenAPI 3.1, fetched 2026-11-15 from
 `https://api.tailscale.com/api/v2?outputOpenapiSchema=true`; kept in the
 private API checkout, §17.4) — Tailscale calls the endpoints stable and
@@ -3084,10 +3096,10 @@ the schema itself unstable, so re-fetch it before changing behaviour.
 **Scope.** The lab's side of the tailnet, so the operator no longer
 opens the admin console for routine work: the subnet router's join key
 and route (§9.8), the lab's devices (guests on the tailnet), split DNS
-for `guests.domain` and `home.arpa`, and read access to the policy.
-Not in scope: changing the policy file, users and roles, invites,
-webhooks, log streaming, posture, services, settings — those stay in
-the console.
+for `guests.domain` and `home.arpa`, read access to the policy, and
+replacing the policy with a reviewed file under its own credential
+(`ts policy apply`). Not in scope: users and roles, invites, webhooks,
+log streaming, posture, services, settings — those stay in the console.
 
 **Credential.** One **OAuth client** (Settings → Trust credentials →
 OAuth), owned by the tailnet, not a user — never a personal API access
@@ -3120,6 +3132,18 @@ and rename or remove devices, but cannot change who may reach what (no
 `policy_file` write). Revoking the client revokes its access tokens, not
 the auth keys it made — artoo's keys are single-use and expire in
 minutes, so none outlives a run.
+
+**Policy credential.** Changing the policy needs `policy_file` (write),
+which the main client never holds. A second OAuth client with
+`policy_file` (+ `devices:core:read`, `devices:posture_attributes:read`,
+which it requires): config `tailscale.policy_client_id`, secret
+`tailscale-policy` (`auth set|status|rm tailscale-policy`). Only `ts
+policy apply` uses it — every other command uses `tailscale` and never
+falls back to it, nor does apply fall back to the main client. `config
+export` never carries it (§6.1). Create it in the console when the
+policy is to change and revoke it afterwards; `doctor` shows "not
+stored" without a warning when it is absent, and with `--connect`
+exchanges it and reports its scopes when it is stored.
 
 **Transport.** `https://api.tailscale.com/api/v2`, `Authorization:
 Bearer <access token>` injected at request time; TLS verified against
@@ -3180,6 +3204,20 @@ both pointing at the gateway.
   (`Running`, the tag) and the device appearing in the API with the tag.
   No command prints a key for a machine that is not a guest: other
   machines join from the console.
+- `ts policy apply FILE` (HuJSON, the policy credential) — refused
+  before any request (exit 5, no override) when the file is not HuJSON
+  or a `nodeAttrs` entry's `attr` names `funnel` (§9.6). Then: read the
+  live policy (HuJSON) and its `ETag` (none → refused); `POST
+  …/acl/validate` with the file (errors → refused; Tailscale runs the
+  file's `tests`); the plan prints a unified diff live → file and is
+  high impact with typed confirmation of the tailnet's name
+  (`tailscale.tailnet`, or the suffix of a device's MagicDNS name;
+  `--confirm` non-interactively). Sent once: `POST …/acl` with
+  `Content-Type: application/hujson` and `If-Match` set to the ETag as
+  received (quoted, as the document's example); `412` → refused, "changed
+  since it was read", nothing applied. Verified by a fresh read whose
+  text (outer whitespace aside) or JSON equals the file. `-n` stops after
+  validation and the diff.
 
 **Into existing commands** (each only when the `tailscale` credential is
 stored; without it they behave as today):
@@ -3199,6 +3237,13 @@ stored; without it they behave as today):
   from the tailnet after the VM is destroyed.
 - `vm rename` (§9.18) checks the device's name and renames it when the
   guest's own `tailscale set --hostname` did not change it.
+
+**Status.** Implemented, not yet verified live (no live run was made;
+offline tests cover every command and refusal). Assumptions to check on
+the first live runs: the token endpoint and its form fields (not in the
+OpenAPI document; §17.4), whether the token response ever names `tags`,
+the `412` body, and a device `DELETE` answering for an already removed
+device.
 
 **Open questions, settled before phase 1 is merged:** OAuth clients on
 the Free plan (the console offers Trust credentials there); whether a

@@ -369,6 +369,107 @@ pub fn policy(c: *ts.Client, as_json: bool) !Policy {
     return .{ .text = r.body, .etag = r.etag };
 }
 
+/// HuJSON (JSON with `//` and `/* */` comments and trailing commas) as
+/// standard JSON: comments become spaces, trailing commas go. Strings are
+/// kept byte for byte. An unterminated string or comment is an error.
+pub fn hujsonToJson(a: std.mem.Allocator, text: []const u8) ![]u8 {
+    // Pass 1: comments → spaces (newlines kept).
+    const s = try a.dupe(u8, text);
+    var i: usize = 0;
+    while (i < s.len) {
+        switch (s[i]) {
+            '"' => i = try skipString(s, i),
+            '/' => {
+                if (i + 1 >= s.len) return error.InvalidHuJson;
+                if (s[i + 1] == '/') {
+                    while (i < s.len and s[i] != '\n') : (i += 1) s[i] = ' ';
+                } else if (s[i + 1] == '*') {
+                    const end = std.mem.find(u8, s[i + 2 ..], "*/") orelse return error.InvalidHuJson;
+                    const stop = i + 2 + end + 2;
+                    while (i < stop) : (i += 1) {
+                        if (s[i] != '\n') s[i] = ' ';
+                    }
+                } else return error.InvalidHuJson;
+            },
+            else => i += 1,
+        }
+    }
+    // Pass 2: drop a comma whose next significant byte closes the value.
+    var out: std.ArrayList(u8) = .empty;
+    try out.ensureTotalCapacity(a, s.len);
+    i = 0;
+    while (i < s.len) {
+        switch (s[i]) {
+            '"' => {
+                const end = try skipString(s, i);
+                try out.appendSlice(a, s[i..end]);
+                i = end;
+            },
+            ',' => {
+                var j = i + 1;
+                while (j < s.len and std.ascii.isWhitespace(s[j])) j += 1;
+                if (j < s.len and (s[j] == '}' or s[j] == ']')) {
+                    out.appendAssumeCapacity(' ');
+                } else out.appendAssumeCapacity(',');
+                i += 1;
+            },
+            else => {
+                out.appendAssumeCapacity(s[i]);
+                i += 1;
+            },
+        }
+    }
+    return out.items;
+}
+
+/// The index just past the string starting at `s[start] == '"'`.
+fn skipString(s: []const u8, start: usize) !usize {
+    var i = start + 1;
+    while (i < s.len) : (i += 1) switch (s[i]) {
+        '\\' => i += 1,
+        '"' => return i + 1,
+        '\n' => return error.InvalidHuJson,
+        else => {},
+    };
+    return error.InvalidHuJson;
+}
+
+/// The `nodeAttrs` entries that grant Funnel (an `attr` naming `funnel`):
+/// artoo never applies a policy that opens the lab to the internet
+/// (SPEC §9.6, §19).
+pub fn funnelAttrs(a: std.mem.Allocator, policy_json: Value) ![]const []const u8 {
+    var hits: std.ArrayList([]const u8) = .empty;
+    const attrs = ts.field(policy_json, "nodeAttrs");
+    if (attrs != .array) return hits.items;
+    for (attrs.array.items) |item| {
+        const list = ts.field(item, "attr");
+        const words: []const Value = switch (list) {
+            .array => |arr| arr.items,
+            .string => &.{list},
+            else => &.{},
+        };
+        for (words) |w| if (w == .string and std.ascii.findIgnoreCase(w.string, "funnel") != null) try hits.append(a, w.string);
+    }
+    return hits.items;
+}
+
+/// Two policies say the same: equal text (outer whitespace aside), or
+/// equal JSON once comments and trailing commas are gone.
+pub fn samePolicy(a: std.mem.Allocator, x: []const u8, y: []const u8) !bool {
+    if (std.mem.eql(u8, std.mem.trim(u8, x, " \t\r\n"), std.mem.trim(u8, y, " \t\r\n"))) return true;
+    const jx = hujsonToJson(a, x) catch return false;
+    const jy = hujsonToJson(a, y) catch return false;
+    const vx = std.json.parseFromSliceLeaky(Value, a, jx, .{}) catch return false;
+    const vy = std.json.parseFromSliceLeaky(Value, a, jy, .{}) catch return false;
+    const sx = try std.json.Stringify.valueAlloc(a, vx, .{});
+    const sy = try std.json.Stringify.valueAlloc(a, vy, .{});
+    return std.mem.eql(u8, sx, sy);
+}
+
+pub fn setPolicy(c: *ts.Client, text: []const u8, etag: []const u8) !void {
+    _ = try c.raw(.POST, try c.tailnetPath("/acl", .{}), text, .{ .accept = "application/hujson", .content_type = "application/hujson", .if_match = etag });
+}
+
 // ---------------------------------------------------------------- tests
 
 const testing = std.testing;
@@ -407,4 +508,28 @@ test "keyInfo: metadata only; a key value is never read" {
     try testing.expect(std.mem.find(u8, text, "SECRET") == null);
     try testing.expectEqualStrings("tag:lab-router", k.tags[0]);
     try testing.expectEqual(@as(?bool, true), k.preauthorized);
+}
+
+test "hujsonToJson: comments and trailing commas go, strings stay; funnel attributes are found" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const text =
+        \\// lab policy
+        \\{
+        \\  "grants": [{"src": ["autogroup:member"], "dst": ["tag:lab-guest"], "ip": ["443"],},], /* web */
+        \\  "note": "a // not a comment, /* nor this */",
+        \\  "nodeAttrs": [{"target": ["tag:lab-guest"], "attr": ["funnel"]}],
+        \\}
+    ;
+    const json = try hujsonToJson(a, text);
+    const v = try std.json.parseFromSliceLeaky(Value, a, json, .{});
+    try testing.expectEqualStrings("a // not a comment, /* nor this */", ts.str(v, "note").?);
+    try testing.expectEqual(@as(usize, 1), (try funnelAttrs(a, v)).len);
+    const quiet = try std.json.parseFromSliceLeaky(Value, a, "{\"nodeAttrs\":[{\"target\":[\"*\"],\"attr\":[\"mullvad\"]}]}", .{});
+    try testing.expectEqual(@as(usize, 0), (try funnelAttrs(a, quiet)).len);
+    try testing.expectError(error.InvalidHuJson, hujsonToJson(a, "{\"a\": \"open"));
+    try testing.expectError(error.InvalidHuJson, hujsonToJson(a, "{} /* open"));
+    try testing.expect(try samePolicy(a, "{\"a\": 1, // x\n}", "{\"a\":1}"));
+    try testing.expect(!try samePolicy(a, "{\"a\": 1}", "{\"a\": 2}"));
 }
