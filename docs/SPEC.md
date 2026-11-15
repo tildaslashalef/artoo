@@ -3207,7 +3207,9 @@ both pointing at the gateway.
   verified by a read answering 404.
 - `ts routes approve ROUTER` — `POST /device/{id}/routes` with exactly
   the LAN, after reading what the device advertises; refused when it
-  does not advertise it.
+  does not advertise it, and for any device but the subnet router
+  (tagged `tag:lab-router`, or named after an artoo VM tagged
+  `role-router`).
 - `ts dns split set DOMAIN NAMESERVER…` — `PATCH …/dns/split-dns` with
   that one domain (others untouched), verified by a fresh read.
 - `ts join VM [--tag TAG]` — enrolls a running guest tagged `tailnet`

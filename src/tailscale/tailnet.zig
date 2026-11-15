@@ -169,6 +169,8 @@ pub const Ownership = struct {
     tags: []const []const u8,
     /// False when Proxmox could not be read: VM names are unknown.
     vms_known: bool = true,
+    /// Names of the artoo VMs tagged `role-router`.
+    routers: []const []const u8 = &.{},
 
     /// Why `d` is a lab device; null when it is not.
     pub fn reason(o: Ownership, d: Device) ?[]const u8 {
@@ -176,6 +178,15 @@ pub const Ownership = struct {
         for (o.tags) |t| if (d.hasTag(t)) return "tag";
         for (o.artoo_vms) |n| if (std.ascii.eqlIgnoreCase(n, d.machine)) return "vm";
         return null;
+    }
+
+    /// True when `d` is the subnet router: tagged `tag:lab-router`, or
+    /// named after an artoo VM tagged `role-router`.
+    pub fn isRouter(o: Ownership, d: Device) bool {
+        if (d.external) return false;
+        if (d.hasTag(router_tag)) return true;
+        for (o.routers) |n| if (std.ascii.eqlIgnoreCase(n, d.machine)) return true;
+        return false;
     }
 };
 
