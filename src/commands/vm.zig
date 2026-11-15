@@ -23,7 +23,9 @@ pub const ls = struct {
     pub const summary = "List VMs on Proxmox";
     pub const details =
         \\Read-only. One row per VM on the configured node: VMID, name, machine
-        \\name (artoo guests only), role, state, CPU, memory, uptime and tags.
+        \\name (artoo guests only), role, state, CPU, memory as the host sees it
+        \\(cache included; 'artoo status' and 'vm show' have the guest's own use),
+        \\uptime and tags.
         \\Templates are left out unless --all is given.
         \\
         \\'artoo vm show VM' has the details of one VM.
