@@ -435,8 +435,11 @@ pub const log = struct {
                 try problemLines(ctx, l.problems.items);
             }
         }
-        // The log answered; the state sources only sharpen ongoing causes,
-        // so their absence is named but does not fail the command.
+        // The log answered. A state source missing on this firmware only
+        // blunts ongoing causes; one that failed otherwise is partial.
+        var failed: usize = 0;
+        for (l.problems.items) |p| failed += @intFromBool(!p.firmware);
+        if (failed > 0) return ctx.fail(error.Partial, "WAN state incomplete: {d} source{s} failed", .{ failed, if (failed == 1) "" else "s" });
     }
 };
 
@@ -700,6 +703,14 @@ test "gw wans show: in depth, outages of the last 24 hours, ongoing cause from t
     });
 }
 
+test "gw wans show: a failed 24-hour search is partial (exit 8); the state is still shown" {
+    var f: testkit.Gateway = undefined;
+    try f.initRoutes(&(state_routes ++ [_]Route{answer("/system-log/all ", 502, "{}")}));
+    defer f.deinit();
+    try testing.expectEqual(testkit.Exit.partial, f.h.run(&root, "gw wans show Fiber-Main"));
+    try expectLines(f.h.stdout(), &.{ "  Status         ● online (active)\n", "✗ system-log: UniFi answered 502" });
+}
+
 test "gw wans show: a WAN without a port; a missing WAN is exit 2" {
     var f: testkit.Gateway = undefined;
     try f.initRoutes(&state_routes);
@@ -759,6 +770,22 @@ test "gw wans log --since 7d: every page, window and category in the search, fol
         "Summary, last 7d\n  Fiber-Main  1 outage, 2m 30s down (longest 2m 30s), availability 100.0%\n",
     });
     try testing.expect(std.mem.find(u8, out, "Fiber-Backup") == null);
+}
+
+test "gw wans log: a state source that fails (not the firmware) is named and exits 8; events still shown" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const events = try logEvent(a, "e1", "SOMETHING_NEW", nowMs() - 60_000, "WAN", null);
+    var f: testkit.Gateway = undefined;
+    try f.initRoutes(&.{
+        state_routes[0],                    state_routes[1], state_routes[2],
+        answer("/stat/device ", 502, "{}"), state_routes[4], ok("/system-log/all ", try logPage(a, events, 0, 1)),
+    });
+    defer f.deinit();
+    try testing.expectEqual(testkit.Exit.partial, f.h.run(&root, "gw wans log"));
+    try expectLines(f.h.stdout(), &.{ "WAN1 SOMETHING_NEW", "✗ device: UniFi answered 502" });
+    try expectLines(f.h.stderr(), &.{"1 source failed"});
 }
 
 test "gw wans log: a failed search is never retried and is a read failure (exit 4)" {

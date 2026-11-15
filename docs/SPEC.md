@@ -2382,9 +2382,13 @@ changes nothing and is never retried.
   covered by `gw spec`; a source that answers 404 or an unexpected shape
   makes its part "not available on this firmware" while the rest is
   shown (exit 8 when nothing answers: no state source for `ls`/`show`,
-  the system log for `log`). A source that fails otherwise (transport,
-  5xx) is named and exits 8. A failed system-log search is a failed read
-  (exit 4), never an unknown write.
+  the system log for `log`). A state source (`stat/device`,
+  `stat/health`, load balancing) that fails otherwise (transport, 5xx)
+  is named and exits 8 — in `log` too, whose events are still shown.
+  `log`'s own search failing is a failed read (exit 4), never an
+  unknown write; inside `show` the 24-hour search failing that way is a
+  partial result (named, exit 8) while the WAN's state is shown (404:
+  named as not available on this firmware, exit 0).
 - **JSON:** `ls` keeps `id` and `name` and adds `group`, `role`,
   `status` (`online|offline|no_port|unknown`), `address`,
   `shared_address`, `netmask`, `next_hop`, `isp`, `port`,
