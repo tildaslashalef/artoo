@@ -925,6 +925,44 @@ pub const status = struct {
 /// The edge VM's checks, drop counters first (`edge status`, `status`).
 pub const Health = struct { vm: []const u8, checks: []const Check };
 
+/// openssl's `subject=CN=…` and `notAfter=Jan  8 18:56:24 2027 GMT` as
+/// `*.apps.… · expires 2027-01-08 (in 54d)`; anything else as it came.
+fn certText(ctx: *Context, raw: []const u8) ![]const u8 {
+    const a = ctx.arena;
+    var subject: ?[]const u8 = null;
+    var expires: ?i64 = null;
+    var lines = std.mem.tokenizeScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.cutPrefix(u8, line, "subject=")) |rest| {
+            const cn = std.mem.find(u8, rest, "CN=") orelse 0;
+            subject = std.mem.trim(u8, if (cn > 0 or std.mem.startsWith(u8, rest, "CN=")) rest[cn + 3 ..] else rest, " ");
+        } else if (std.mem.cutPrefix(u8, line, "notAfter=")) |rest| expires = opensslTime(a, rest);
+    }
+    const sub = subject orelse return k.clean(ctx, try std.mem.replaceOwned(u8, a, raw, "\n", "; "));
+    const t = expires orelse return k.clean(ctx, sub);
+    return std.fmt.allocPrint(a, "{s} {s} expires {f} (in {f})", .{
+        try k.clean(ctx, sub),               ctx.ui.glyphs.dot,
+        ui.values.absolute(t, &ctx.ui.zone), ui.values.duration(@intCast(@max(t - ctx.ui.now, 0))),
+    });
+}
+
+/// `Jan  8 18:56:24 2027 GMT` → epoch seconds.
+fn opensslTime(a: std.mem.Allocator, s: []const u8) ?i64 {
+    var it = std.mem.tokenizeScalar(u8, s, ' ');
+    const mon = it.next() orelse return null;
+    const day = it.next() orelse return null;
+    const time = it.next() orelse return null;
+    const year = it.next() orelse return null;
+    const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const m = for (months, 1..) |name, i| {
+        if (std.mem.eql(u8, name, mon)) break i;
+    } else return null;
+    const d = std.fmt.parseInt(u8, day, 10) catch return null;
+    if (time.len != 8 or year.len != 4) return null;
+    const iso = std.fmt.allocPrint(a, "{s}-{d:0>2}-{d:0>2}T{s}Z", .{ year, m, d, time }) catch return null;
+    return @import("../unifi/view.zig").parseTime(iso);
+}
+
 pub fn health(ctx: *Context, c: *pve.Client) !Health {
     return healthOf(ctx, c, try edgeVm(ctx, c));
 }
@@ -954,7 +992,7 @@ pub fn healthOf(ctx: *Context, c: *pve.Client, v: vms.Vm) !Health {
     try checks.append(a, .{ .name = "firewall", .status = if (st.nft_loaded and st.nft_enabled) .ok else .failed, .detail = if (st.nft_loaded) (if (st.nft_enabled) "loaded, enabled" else "loaded, not enabled at boot") else "not loaded" });
     const pinned = std.mem.eql(u8, st.caddy, files.caddy_version);
     try checks.append(a, .{ .name = "caddy", .status = if (pinned and st.caddy_module) .ok else .failed, .detail = try std.fmt.allocPrint(a, "{s}{s}, {s}", .{ st.caddy, if (st.caddy_module) " + cloudflare" else " (no cloudflare module)", if (st.caddy_active) "running" else "not running" }) });
-    try checks.append(a, .{ .name = "certificate", .status = if (std.mem.eql(u8, cert, "nocert")) .failed else .ok, .detail = if (std.mem.eql(u8, cert, "nocert")) (if (st.dns_secret) "not issued yet" else "needs 'artoo edge secret dns'") else try k.clean(ctx, try std.mem.replaceOwned(u8, a, cert, "\n", "; ")) });
+    try checks.append(a, .{ .name = "certificate", .status = if (std.mem.eql(u8, cert, "nocert")) .failed else .ok, .detail = if (std.mem.eql(u8, cert, "nocert")) (if (st.dns_secret) "not issued yet" else "needs 'artoo edge secret dns'") else try certText(ctx, cert) });
     try checks.append(a, .{ .name = "cloudflared", .status = if (st.cloudflared) .ok else .failed, .detail = if (!st.cloudflared) "not installed" else if (std.mem.eql(u8, cfd, "active")) "connected (service active)" else "installed; tunnel not configured yet" });
     try checks.append(a, .{ .name = "tailscale removed", .status = if (st.tailscale) .failed else .ok, .detail = if (st.tailscale) "still installed" else "not installed" });
     try checks.append(a, .{ .name = "failed SSH (24 h)", .status = if (ssh_fail.len == 0 or std.mem.eql(u8, ssh_fail, "0")) .ok else .warning, .detail = if (ssh_fail.len == 0) "0" else try k.clean(ctx, ssh_fail) });
@@ -1108,4 +1146,11 @@ test "edge tunnel -y: creates the tunnel, token straight to the VM, never in the
     try testing.expect(std.mem.find(u8, g.h.stdout(), "SECRETTOKEN") == null);
     try testing.expect(std.mem.find(u8, g.h.stderr(), "SECRETTOKEN") == null);
     try testing.expect(std.mem.find(u8, g.h.stdout(), "bespin runs tunnel lab (1 connection)") != null);
+}
+
+test "certificate detail: subject and expiry from openssl's output" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    try testing.expectEqual(@as(?i64, 1799434584), opensslTime(a.allocator(), "Jan  8 18:56:24 2027 GMT"));
+    try testing.expectEqual(@as(?i64, null), opensslTime(a.allocator(), "soon"));
 }
