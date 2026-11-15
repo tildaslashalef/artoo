@@ -2362,7 +2362,12 @@ changes nothing and is never retried.
   outage still open is "ongoing"; a WAN offline now with no failure in
   the window is an ongoing outage "since before the window", from the
   window's start. A summary ends the list:
-  outages, total and longest downtime, availability over the window.
+  outages, total and longest downtime (both clipped to the window),
+  availability over the window. Paging stops at 100 pages of 100
+  events; stopping there, or a page without `total_page_count` (then
+  read until a short page), is a visible warning and `meta.warning`.
+  `show` says when it did not search the log because the WAN could not
+  be tied to a network group.
   Events artoo does not know are shown as they are (title and message
   with parameters filled in), never dropped.
 - **Likely cause**, per outage, from evidence only — never a guess:

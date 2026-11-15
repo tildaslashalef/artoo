@@ -44,6 +44,8 @@ pub const Outages = struct {
     outages: []wan.Outage,
     others: []const wan.Event,
     summary: []wan.Summary,
+    /// Paging may have missed events.
+    warning: ?[]const u8 = null,
 };
 
 /// The system log over [now - since, now], folded, WANs without a port
@@ -53,7 +55,8 @@ pub fn outages(c: *unifi.Client, wans: []const wan.Wan, since_s: i64, only: ?[]c
     const a = c.ctx.arena;
     const now_ms = c.ctx.ui.now * 1000;
     const from_ms = now_ms - since_s * 1000;
-    const all = try wan.events(c, from_ms, now_ms);
+    const got = try wan.events(c, from_ms, now_ms);
+    const all = got.events;
     var kept: std.ArrayList(wan.Event) = .empty;
     for (all) |e| {
         if (e.group) |g| {
@@ -94,7 +97,7 @@ pub fn outages(c: *unifi.Client, wans: []const wan.Wan, since_s: i64, only: ?[]c
     }
     const sum = try wan.summarize(a, list.items, groups.items, from_ms, now_ms);
     for (sum) |*s| s.wan = if (byGroup(wans, s.group)) |x| x.name else null;
-    return .{ .from_ms = from_ms, .to_ms = now_ms, .outages = list.items, .others = f.others, .summary = sum };
+    return .{ .from_ms = from_ms, .to_ms = now_ms, .outages = list.items, .others = f.others, .summary = sum, .warning = got.warning };
 }
 
 fn byGroup(wans: []const wan.Wan, g: []const u8) ?*const wan.Wan {
@@ -270,7 +273,7 @@ pub const show = struct {
             d.events = x.others;
         }
         if (ctx.json()) {
-            try ui.json.envelope(ctx.out, .unifi, d, .{ .collected_at = ctx.ui.now, .site = c.site_name orelse c.site, .units = units, .errors = l.problems.items });
+            try ui.json.envelope(ctx.out, .unifi, d, .{ .collected_at = ctx.ui.now, .site = c.site_name orelse c.site, .units = units, .errors = l.problems.items, .warning = if (o) |x| x.warning else null });
         } else {
             try gw.header(ctx, &c);
             try renderShow(ctx, w.*, o);
@@ -368,6 +371,9 @@ fn renderShow(ctx: *Context, w: wan.Wan, o: ?Outages) !void {
     try ctx.out.print("\n{s}Outages, last 24h{s}\n", .{ u.palette.on(.title), u.palette.off(.title) });
     if (o) |x| {
         try renderOutages(ctx, x, true);
+        try pagingWarning(ctx, x, "  ");
+    } else if (w.group == null) {
+        try ctx.out.print("  {s}not searched: this WAN could not be matched to the system log (its network group is unknown){s}\n", .{ u.palette.on(.muted), u.palette.off(.muted) });
     } else try ctx.out.print("  {s}system log unavailable{s}\n", .{ u.palette.on(.muted), u.palette.off(.muted) });
 }
 
@@ -436,10 +442,11 @@ pub const log = struct {
             else => |e| return e,
         };
         if (ctx.json()) {
-            try ui.json.envelope(ctx.out, .unifi, LogData{ .since = @tagName(since), .from = o.from_ms, .to = o.to_ms, .outages = o.outages, .events = o.others, .summary = o.summary }, .{ .collected_at = ctx.ui.now, .site = c.site_name orelse c.site, .units = units, .errors = l.problems.items });
+            try ui.json.envelope(ctx.out, .unifi, LogData{ .since = @tagName(since), .from = o.from_ms, .to = o.to_ms, .outages = o.outages, .events = o.others, .summary = o.summary }, .{ .collected_at = ctx.ui.now, .site = c.site_name orelse c.site, .units = units, .errors = l.problems.items, .warning = o.warning });
         } else {
             try gw.header(ctx, &c);
             try renderOutages(ctx, o, false);
+            try pagingWarning(ctx, o, "");
             try renderSummary(ctx, o, @tagName(since));
             if (l.problems.items.len > 0) {
                 try ctx.out.writeByte('\n');
@@ -509,6 +516,11 @@ fn renderOutages(ctx: *Context, o: Outages, indent: bool) !void {
         .{ .title = "DOWN", .alignment = .right },
         .{ .title = "CAUSE / DETAIL" },
     }, rows.items);
+}
+
+fn pagingWarning(ctx: *Context, o: Outages, pad: []const u8) !void {
+    const msg = o.warning orelse return;
+    try ctx.out.print("{s}{s}{s} {s}{s}\n", .{ pad, ctx.ui.palette.on(.warn), ctx.ui.glyphs.warn, msg, ctx.ui.palette.off(.warn) });
 }
 
 fn groupName(o: Outages, g: []const u8) []const u8 {
@@ -812,6 +824,35 @@ test "gw wans log: a state source that fails (not the firmware) is named and exi
     try testing.expectEqual(testkit.Exit.partial, f.h.run(&root, "gw wans log"));
     try expectLines(f.h.stdout(), &.{ "WAN1 SOMETHING_NEW", "✗ device: UniFi answered 502" });
     try expectLines(f.h.stderr(), &.{"1 source failed"});
+}
+
+test "gw wans log: no page count is read until a short page, with a warning in text and JSON" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const page = try std.fmt.allocPrint(a, "{{\"data\":[{s}]}}", .{try logEvent(a, "e1", "SOMETHING_NEW", nowMs() - 60_000, "WAN", null)});
+    var f: testkit.Gateway = undefined;
+    try f.initRoutes(&(state_routes ++ [_]Route{ok("/system-log/all ", page)}));
+    defer f.deinit();
+    try testing.expectEqual(testkit.Exit.ok, f.h.run(&root, "gw wans log"));
+    try expectLines(f.h.stdout(), &.{"▲ the gateway sent no page count; read until a short page\n"});
+    f.srv.stop();
+    try f.srv.startRoutes(testing.io, &(state_routes ++ [_]Route{ok("/system-log/all ", page)}));
+    f.h.hooks.unifi_base = try f.srv.url(f.h.arena.allocator(), "");
+    try testing.expectEqual(testkit.Exit.ok, f.h.run(&root, "-o json gw wans log"));
+    try expectLines(f.h.stdout(), &.{"\"warning\": \"the gateway sent no page count; read until a short page\""});
+}
+
+test "gw wans show: a WAN no source ties to a group is not searched" {
+    var f: testkit.Gateway = undefined;
+    try f.initRoutes(&.{
+        state_routes[0],                                              state_routes[1],
+        ok("/wan/load-balancing/status ", "{\"wan_interfaces\":[]}"), state_routes[3],
+        state_routes[4],
+    });
+    defer f.deinit();
+    try testing.expectEqual(testkit.Exit.ok, f.h.run(&root, "gw wans show Fiber-Main"));
+    try expectLines(f.h.stdout(), &.{"not searched: this WAN could not be matched to the system log"});
 }
 
 test "gw wans log: a failed search is never retried and is a read failure (exit 4)" {
