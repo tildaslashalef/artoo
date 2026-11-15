@@ -372,6 +372,10 @@ const SetOp = struct {
     pub fn read(op: *SetOp, ctx: *Context) !void {
         op.vm = try vms.resolve(op.c, op.word);
         op.target = try vmLabel(ctx, op.vm.?);
+        // An artoo guest's name lives in many places; Proxmox's label
+        // alone would leave it half-renamed (SPEC §9.18).
+        for (op.wanted) |w| if (w.key == .name and template.taggedWith(op.vm.?.tags, "artoo"))
+            return ctx.fail(error.Refused, "{s} is an artoo guest: its name is also its hostname, DNS and UniFi records, pinned key, password entry, services, fences, tailnet name and watchdog series — use 'artoo vm rename {s} {s}'", .{ op.vm.?.name, op.vm.?.name, w.value });
         op.config = try vms.config(op.c, op.vm.?.vmid);
         op.digest = pve.str(op.config, "digest") orelse "";
     }
@@ -1601,6 +1605,17 @@ test "vm set: validated, digest-guarded PUT of changed keys only" {
     try testing.expect(std.mem.find(u8, g.h.stdout(), "The guest uses 2.9 GiB of 3.8 GiB now") != null);
     try testing.expect(std.mem.find(u8, g.h.stdout(), "Warning:") == null);
     try testing.expect(std.mem.endsWith(u8, g.h.stdout(), "✓ configuration saved; memory 4096 pending until restart — 'artoo vm reboot web-01'\n"));
+}
+
+test "vm set name= refuses on an artoo guest and points to vm rename; foreign VMs keep it" {
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+    });
+    defer g.deinit();
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm set web-01 name=web-02 -y"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "use 'artoo vm rename web-01 web-02'") != null);
+    try testing.expectEqual(@as(usize, 1), g.sent());
 }
 
 test "parseStartup, parseHotplug, hasFeature" {
