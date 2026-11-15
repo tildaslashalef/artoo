@@ -3245,7 +3245,8 @@ both pointing at the gateway.
   …/acl/validate` with the file (errors → refused; Tailscale runs the
   file's `tests`); the plan prints a unified diff live → file and is
   high impact with typed confirmation of the tailnet's name
-  (`tailscale.tailnet`, or the suffix of a device's MagicDNS name;
+  (`tailscale.tailnet`, or the suffix of the MagicDNS name of a device
+  that is not shared in from another tailnet (`isExternal`);
   `--confirm` non-interactively). Sent once: `POST …/acl` with
   `Content-Type: application/hujson` and `If-Match` set to the ETag as
   received (quoted, as the document's example); `412` → refused, "changed
