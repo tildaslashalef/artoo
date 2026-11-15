@@ -70,7 +70,7 @@ pub fn resolveDevice(ctx: *Context, list: []const tn.Device, word: []const u8) !
         .missing => ctx.fail(error.NotFound, "no device '{s}' on the tailnet (see 'artoo ts devices ls')", .{word}),
         .ambiguous => |hits| blk: {
             var ids: std.ArrayList(u8) = .empty;
-            for (hits, 0..) |h, i| try ids.print(ctx.arena, "{s}{s} ({s})", .{ if (i > 0) ", " else "", h.id, try clean(ctx, h.name) });
+            for (hits, 0..) |h, i| try ids.print(ctx.arena, "{s}{s} ({s})", .{ if (i > 0) ", " else "", try clean(ctx, h.id), try clean(ctx, h.name) });
             break :blk ctx.fail(error.Usage, "{d} devices match '{s}'; use a node ID: {s}", .{ hits.len, word, ids.items });
         },
     };
@@ -559,7 +559,7 @@ const RmOp = struct {
 
     pub fn read(op: *RmOp, ctx: *Context) !void {
         op.dev, _, _ = try labDevice(ctx, op.c, op.word);
-        op.target = op.dev.machine;
+        op.target = try clean(ctx, op.dev.machine);
         op.state = op.dev.id;
     }
 
@@ -1364,6 +1364,19 @@ test "ts routes approve: exactly the LAN; refused when not advertised" {
     try expectHas(f.h.stdout(), &.{ "approved routes  0.0.0.0/0 → 192.168.1.0/24", "0.0.0.0/0 was approved and is withdrawn", "✓ route approved and verified" });
     for (f.srv.received) |req| if (req) |q| if (std.mem.startsWith(u8, q, "POST /device/nRouter/routes")) try testing.expect(std.mem.endsWith(u8, q, "{\"routes\":[\"192.168.1.0/24\"]}"));
     try testing.expectEqual(@as(usize, 0), f.srv.unused());
+}
+
+test "ts device rm: server strings in the target and in errors are sanitized" {
+    var f: Fixture = undefined;
+    try f.initRoutes(&.{
+        route("POST /oauth/token", token_ok),
+        route("GET /tailnet/-/devices?fields=all", "{\"devices\":[{\"nodeId\":\"n\\u001b[2J1\",\"name\":\"naboo.example.ts.net\"},{\"nodeId\":\"n\\u001b[2J2\",\"name\":\"naboo.other.ts.net\"}]}"),
+    });
+    defer f.deinit();
+    try f.tailscaleConfig("");
+    try testing.expectEqual(Exit.usage, f.h.run(&root, "ts device rm naboo -y --confirm naboo"));
+    try testing.expect(std.mem.find(u8, f.h.stderr(), "2 devices match 'naboo'") != null);
+    try testing.expect(std.mem.findScalar(u8, f.h.stderr(), 0x1b) == null);
 }
 
 test "ts routes approve: on the subnet router only — by its tag or its role-router VM" {
