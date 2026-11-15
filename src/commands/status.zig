@@ -17,6 +17,8 @@ const unifi = @import("../unifi/client.zig");
 const catalog = @import("../unifi/catalog.zig");
 const view = @import("../unifi/view.zig");
 const dns = @import("../unifi/dns.zig");
+const wan = @import("../unifi/wan.zig");
+const gw_wans = @import("gw_wans.zig");
 const host = @import("host.zig");
 const storage = @import("storage.zig");
 const task = @import("task.zig");
@@ -68,7 +70,24 @@ const Gateway = struct {
     devices_total: usize,
     clients: usize,
     wans: []const []const u8,
+    /// Each WAN's status and role (SPEC §10.4).
+    wan_states: []const WanState = &.{},
+    /// Outages of the last 24 hours on WANs with a port, and their total
+    /// downtime; null when the system log did not answer.
+    outages_24h: ?usize = null,
+    downtime_24h_seconds: ?i64 = null,
+    /// WAN sources that did not answer.
+    wan_sources: []const wan.Problem = &.{},
+
+    /// Active WANs that are offline: failed checks.
+    fn offlineActive(g: Gateway) usize {
+        var n: usize = 0;
+        for (g.wan_states) |w| n += @intFromBool(w.role == .active and w.status == .offline);
+        return n;
+    }
 };
+
+const WanState = struct { name: []const u8, status: wan.Status, role: ?wan.Role };
 
 const DnsCheck = struct {
     domain: []const u8,
@@ -213,16 +232,34 @@ fn gateway(c: *unifi.Client) !Gateway {
         if (std.mem.eql(u8, view.string(d, "state") orelse "", "ONLINE")) online += 1;
     }
     const clients = (try unifi.list(c, catalog.find("clients").?, .{ .limit = 1 })).total;
-    const wans = (try unifi.list(c, catalog.find("wans").?, .{ .all = true })).items;
-    const names = try c.ctx.arena.alloc([]const u8, wans.len);
-    for (wans, names) |w, *n| n.* = view.string(w, "name") orelse "--";
-    return .{
+    var l = try gw_wans.load(c);
+    const a = c.ctx.arena;
+    const names = try a.alloc([]const u8, l.wans.len);
+    const states = try a.alloc(WanState, l.wans.len);
+    for (l.wans, names, states) |w, *n, *st| {
+        n.* = if (w.name.len > 0) w.name else "--";
+        st.* = .{ .name = n.*, .status = w.status, .role = w.role };
+    }
+    var g: Gateway = .{
         .version = i.applicationVersion,
         .devices_online = online,
         .devices_total = devs.len,
         .clients = if (clients) |t| @intCast(@max(t, 0)) else 0,
         .wans = names,
+        .wan_states = states,
     };
+    if (try wan.attempt(c, &l.problems, "system-log", gw_wans.outages(c, l.wans, wan.Since.@"24h".seconds(), null))) |o| {
+        var n: usize = 0;
+        var down: i64 = 0;
+        for (o.summary) |s| {
+            n += s.outages;
+            down += s.downtime_seconds;
+        }
+        g.outages_24h = n;
+        g.downtime_24h_seconds = down;
+    }
+    g.wan_sources = l.problems.items;
+    return g;
 }
 
 fn dnsCheck(arena: std.mem.Allocator, domain: []const u8, d: svc.Domains, records: []const dns.ARecord, gs: []const Guest) !DnsCheck {
@@ -302,6 +339,7 @@ pub const status = struct {
         for ([_]?Checks{ r.edge, r.router }) |ch| if (ch) |x| {
             failed += vm_new.failures(x.checks);
         };
+        if (r.gateway) |g| failed += g.offlineActive();
 
         if (ctx.json()) {
             try ui.json.envelope(ctx.out, .local, r, .{ .collected_at = ctx.ui.now, .errors = errors.items, .guest_cpu_unit = "fraction of the guest's vCPUs", .host_cpu_unit = "fraction of host threads" });
@@ -349,6 +387,10 @@ fn readUnifi(p: *Part, r: *Report, records: *?[]const dns.ARecord) void {
     var c = attempt(ctx, &p.errors, "unifi", unifi.Client.open(ctx)) orelse return;
     defer c.deinit();
     r.gateway = attempt(ctx, &p.errors, "gateway", gateway(&c));
+    // A WAN source that failed other than for the firmware is unavailable.
+    if (r.gateway) |g| for (g.wan_sources) |pr| if (!pr.firmware) {
+        p.errors.append(ctx.arena, .{ .section = "wans", .message = std.fmt.allocPrint(ctx.arena, "WAN {s}: {s}", .{ pr.source, pr.message }) catch pr.message }) catch {};
+    };
     records.* = attempt(ctx, &p.errors, "dns", dns.list(&c));
 }
 
@@ -549,8 +591,9 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
             .{ .key = "  Network", .value = try k.clean(ctx, g.version) },
             .{ .key = "  Devices", .value = try std.fmt.allocPrint(a, "{d} online / {d}", .{ g.devices_online, g.devices_total }), .role = if (g.devices_online == g.devices_total) .ok else .warn },
             .{ .key = "  Clients", .value = try std.fmt.allocPrint(a, "{d}", .{g.clients}) },
-            .{ .key = "  WANs", .value = try k.clean(ctx, try std.mem.join(a, ", ", g.wans)) },
+            try wanField(ctx, g),
         } }});
+        if (unavailable(errors, "wans")) |m| try failLine(ctx, m);
     } else try failLine(ctx, unavailable(errors, "gateway") orelse unavailable(errors, "unifi") orelse "--");
     if (r.dns) |d| {
         const ok = d.missing.len == 0 and d.orphans.len == 0;
@@ -593,6 +636,30 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
     } else if (r.edge != null and r.edge.?.vm == null) {
         try muted(ctx, "none (no edge VM)");
     } else try failLine(ctx, unavailable(errors, "services") orelse unavailable(errors, "edge") orelse unavailable(errors, "dns") orelse unavailable(errors, "guests") orelse "--");
+}
+
+/// One line (SPEC §10.4): each WAN's status and role, then the outages of
+/// the last 24 hours. An offline active WAN fails; outages warn.
+fn wanField(ctx: *Context, g: Gateway) !ui.blocks.Field {
+    const a = ctx.arena;
+    var parts: std.ArrayList([]const u8) = .empty;
+    for (g.wan_states) |w| {
+        const st = gw_wans.statusCell(ctx, w.status);
+        const role = if (w.role) |r| (if (r == .unassigned) "" else try std.fmt.allocPrint(a, " ({s})", .{@tagName(r)})) else "";
+        try parts.append(a, try std.fmt.allocPrint(a, "{s} {s}{s}", .{ try k.clean(ctx, w.name), st.text, role }));
+    }
+    var value: std.ArrayList(u8) = .empty;
+    try value.appendSlice(a, if (parts.items.len > 0) try std.mem.join(a, ", ", parts.items) else "none");
+    if (g.outages_24h) |n| {
+        if (n == 0) {
+            try value.appendSlice(a, "; no outages in 24h");
+        } else try value.print(a, "; {d} outage{s} in 24h, {f} down", .{ n, if (n == 1) "" else "s", ui.values.duration(@intCast(@max(g.downtime_24h_seconds orelse 0, 0))) });
+    } else try value.appendSlice(a, "; outages unknown (system log unavailable)");
+    for (g.wan_sources) |pr| if (pr.firmware) {
+        try value.print(a, "; {s} {s}", .{ pr.source, pr.message });
+    };
+    const role: ui.style.Role = if (g.offlineActive() > 0) .fail else if ((g.outages_24h orelse 0) > 0) .warn else .text;
+    return .{ .key = "  WANs", .value = value.items, .role = role };
 }
 
 fn muted(ctx: *Context, text: []const u8) !void {
@@ -648,7 +715,12 @@ test "status: Proxmox and UniFi sections; a failed section exits 8" {
         .{ .match = "/v1/sites?", .behavior = .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"S1\",\"internalReference\":\"default\",\"name\":\"Default\"}]}" } } },
         .{ .match = "/devices?", .behavior = .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"name\":\"Beacon\",\"state\":\"ONLINE\"}]}" } } },
         .{ .match = "/clients?", .behavior = .{ .respond = .{ .body = "{\"offset\":0,\"limit\":1,\"count\":1,\"totalCount\":7,\"data\":[{}]}" } } },
-        .{ .match = "/wans?", .behavior = .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"name\":\"WAN 1\"}]}" } } },
+        .{ .match = "/wans?", .behavior = .{ .respond = .{ .body = wan.fixture_wans } } },
+        .{ .match = "/wan/load-balancing/status ", .behavior = .{ .respond = .{ .body = wan.fixture_load } } },
+        // The active WAN is offline: a failed check.
+        .{ .match = "/stat/device ", .behavior = .{ .respond = .{ .body = wan_offline } } },
+        .{ .match = "/stat/health ", .behavior = .{ .respond = .{ .body = wan.fixture_health } } },
+        .{ .match = "/system-log/all ", .behavior = .{ .respond = .{ .body = no_events } } },
         .{ .match = "/dns/policies?", .behavior = .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"type\":\"A_RECORD\",\"id\":\"R1\",\"enabled\":true,\"domain\":\"old-01.lab.example.com\",\"ipv4Address\":\"192.168.1.201\"}]}" } } },
         // No edge or router VM, no tunnel.
         .{ .match = "/nodes/pve/qemu ", .behavior = .{ .respond = .{ .body = qemu_plain } } },
@@ -672,6 +744,7 @@ test "status: Proxmox and UniFi sections; a failed section exits 8" {
         "Router\n  none (no VM tagged role-router)\n",
         "Tunnel\n  none (no tunnel 'lab')\n",
         "Services\n  none (no edge VM)\n",
+        "  WANs     Fiber-Main ✗ offline (active), Fiber-Backup – no port; no outages in 24h\n",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
@@ -683,6 +756,14 @@ test "status: Proxmox and UniFi sections; a failed section exits 8" {
 fn agentOut(a: std.mem.Allocator, out: []const u8) ![]const u8 {
     return std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = out, .@"err-data" = "" } }, .{});
 }
+
+const no_events = "{\"data\":[],\"page_number\":0,\"total_element_count\":0,\"total_page_count\":0}";
+const wan_offline = blk: {
+    @setEvalBranchQuota(100_000);
+    const from = "\"last_wan_status\":{\"WAN\":\"online\"}";
+    const i = std.mem.find(u8, wan.fixture_device, from).?;
+    break :blk wan.fixture_device[0..i] ++ "\"last_wan_status\":{\"WAN\":\"offline\"}" ++ wan.fixture_device[i + from.len ..];
+};
 
 const json_list = "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}";
 
@@ -746,7 +827,11 @@ test "status: the whole lab — edge drops first, no router, tunnel and service 
         ok("/v1/sites?", "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"S1\",\"internalReference\":\"default\",\"name\":\"Default\"}]}"),
         ok("/devices?", json_list),
         ok("/clients?", "{\"offset\":0,\"limit\":1,\"count\":0,\"totalCount\":0,\"data\":[]}"),
-        ok("/wans?", json_list),
+        ok("/wans?", wan.fixture_wans),
+        ok("/wan/load-balancing/status ", wan.fixture_load),
+        ok("/stat/device ", wan.fixture_device),
+        ok("/stat/health ", wan.fixture_health),
+        ok("/system-log/all ", no_events),
         ok("/dns/policies?", "{\"offset\":0,\"limit\":200,\"count\":4,\"totalCount\":4,\"data\":[" ++
             "{\"type\":\"A_RECORD\",\"id\":\"R1\",\"enabled\":true,\"domain\":\"bespin.lab.example.com\",\"ipv4Address\":\"192.168.1.200\"}," ++
             "{\"type\":\"A_RECORD\",\"id\":\"R2\",\"enabled\":true,\"domain\":\"scarif.lab.example.com\",\"ipv4Address\":\"192.168.1.202\"}," ++
@@ -760,6 +845,7 @@ test "status: the whole lab — edge drops first, no router, tunnel and service 
     const out = g.h.stdout();
     for ([_][]const u8{
         "Guest DNS (lab.example.com): 2 matched\n",
+        "  WANs     Fiber-Main ● online (active), Fiber-Backup – no port; no outages in 24h\n",
         "1.5 GiB / 2.0 GiB (75.0%)*",
         "488.3 MiB / 1.9 GiB",
         "  * incl. page cache: the guest agent did not answer\n",
