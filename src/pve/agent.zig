@@ -144,7 +144,8 @@ fn truthy(v: Value) bool {
     };
 }
 
-fn elapsed(io: Io, since: Io.Timestamp) u64 {
+/// Milliseconds since `since` on the awake clock.
+pub fn elapsed(io: Io, since: Io.Timestamp) u64 {
     return @intCast(@max(0, @divTrunc(since.durationTo(Io.Clock.awake.now(io)).nanoseconds, std.time.ns_per_ms)));
 }
 

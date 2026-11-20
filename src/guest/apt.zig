@@ -4,29 +4,73 @@
 
 const std = @import("std");
 
-/// `lists` / `now` lines, then `apt-get -s` itself (its exit code is the
-/// script's). Root through the guest agent; `-s` changes nothing.
+/// `lists` / `now` / `unfinished` lines, then `apt-get -s` itself (its
+/// exit code is the script's). Root through the guest agent; `-s`
+/// changes nothing. `unfinished` names the packages an interrupted dpkg
+/// left (status unpacked, half-installed, half-configured or awaiting
+/// triggers, or reinstall-required): `apt-get -s` does not report them,
+/// and apt's daily run silently skips while they exist. While dpkg or
+/// apt runs (an unattended run, artoo's own unit) those states are
+/// normal, so the line is empty then.
 pub const simulate_script =
     \\echo "lists $(stat -c %Y /var/lib/apt/periodic/update-success-stamp 2>/dev/null)"
     \\echo "now $(date +%s)"
+    \\if pgrep -x 'dpkg|apt|apt-get|unattended-upgr|apt.systemd.dai' >/dev/null; then echo unfinished; else
+    \\echo "unfinished $(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null | awk 'substr($0,2,1) ~ /[UHFWt]/ || substr($0,3,1) == "R" { printf "%s ", $NF }')"; fi
     \\LC_ALL=C apt-get -s -q --with-new-pkgs upgrade
 ;
 
 /// apt's status lines (`APT::Status-Fd`) become the step's live detail.
 pub const stage_file = "/run/artoo-upgrade.stage";
 
-/// The single write: install what the simulation listed. Its output goes
-/// to the log; a failure prints the log's last lines on stderr.
+/// The run's id, apt's exit code, then (on failure) the log's last
+/// lines; written once, when apt has ended, and left until replaced.
+pub const rc_file = "/run/artoo-upgrade.rc";
+
+/// The transient systemd unit apt runs in (SPEC §9.12). Not a child of
+/// the guest agent: upgrading `qemu-guest-agent` restarts the agent, and
+/// systemd stops every process in the agent's own unit with it — apt and
+/// dpkg included, leaving packages unconfigured. A second upgrade while
+/// one runs is refused by systemd (the unit exists). `RefuseManualStop`
+/// keeps needrestart (which restarts every unit running an old library,
+/// and does not know this one) from stopping and starting apt again.
+pub const unit = "artoo-upgrade.service";
+
+/// The single write: start `upgrade_script` as `unit`, `id` naming this
+/// run in `rc_file`. systemd-run returns once the unit has started; its
+/// exit code is whether it did.
+pub fn launchArgv(id: []const u8) [11][]const u8 {
+    return .{ "systemd-run", "--quiet", "--collect", "--unit=" ++ unit, "--description=artoo vm upgrade", "--property=RefuseManualStop=yes", "sh", "-c", upgrade_script, "artoo-upgrade", id };
+}
+
+/// Install what the simulation listed, in `unit` (`$1` the run's id).
+/// Its output goes to the log; the id, the exit code and on failure the
+/// log's last lines to `rc_file`, renamed into place whole.
 pub const upgrade_script =
     \\export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a LC_ALL=C
-    \\s=/run/artoo-upgrade.stage rc=/run/artoo-upgrade.rc log=/var/log/artoo-upgrade.log
-    \\rm -f "$s" "$rc"
-    \\{ apt-get -y -q --with-new-pkgs -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Status-Fd=3 upgrade 3>&1 >"$log" 2>&1; echo $? >"$rc"; } |
+    \\id=$1 s=/run/artoo-upgrade.stage rc=/run/artoo-upgrade.rc log=/var/log/artoo-upgrade.log
+    \\rm -f "$s" "$rc.code"
+    \\{ apt-get -y -q --with-new-pkgs -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Status-Fd=3 upgrade 3>&1 >"$log" 2>&1; echo $? >"$rc.code"; } |
     \\  while IFS= read -r l; do m=${l##*:}; p=${l%:*}; p=${p##*:}; printf '%s%% %s\n' "${p%%.*}" "$m" >"$s"; done
-    \\code=$(cat "$rc" 2>/dev/null || echo 1)
-    \\rm -f "$s" "$rc"
-    \\[ "$code" = 0 ] || { tail -n 5 "$log" >&2; exit "$code"; }
+    \\code=$(cat "$rc.code" 2>/dev/null || echo 1)
+    \\{ echo "$id"; echo "$code"; [ "$code" = 0 ] || tail -n 5 "$log"; } >"$rc.tmp" && mv "$rc.tmp" "$rc"
+    \\rm -f "$s" "$rc.code"
 ;
+
+/// One look at run `id` (letters, digits and `-` only): its exit code
+/// and log tail from `rc_file` (exit 0); the stage line while the unit
+/// runs (exit 3); neither (exit 4) — the unit ended without writing this
+/// run's code, was stopped from outside, or has not started yet.
+pub fn pollScript(a: std.mem.Allocator, id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a,
+        \\id='{s}' rc={s}
+        \\mine() {{ [ "$(head -n 1 "$rc" 2>/dev/null)" = "$id" ] && tail -n +2 "$rc"; }}
+        \\mine && exit 0
+        \\systemctl is-active --quiet {s} && {{ tail -n 1 {s} 2>/dev/null; exit 3; }}
+        \\mine && exit 0
+        \\exit 4
+    , .{ id, rc_file, unit, stage_file });
+}
 
 pub const Package = struct {
     name: []const u8,
@@ -45,6 +89,8 @@ pub const Pending = struct {
     /// When the package lists were last refreshed (Unix seconds).
     lists: ?i64 = null,
     now: ?i64 = null,
+    /// Packages an interrupted dpkg left unfinished (`unfinished` line).
+    unfinished: []const []const u8 = &.{},
 
     pub fn security(p: Pending) usize {
         var n: usize = 0;
@@ -72,6 +118,7 @@ pub const Pending = struct {
 pub fn parse(arena: std.mem.Allocator, out: []const u8) !Pending {
     var p: Pending = .{};
     var pkgs: std.ArrayList(Package) = .empty;
+    var unfinished: std.ArrayList([]const u8) = .empty;
     const List = enum { none, deferred, kept_back };
     var list: List = .none;
     var lines = std.mem.tokenizeAny(u8, out, "\r\n");
@@ -90,6 +137,9 @@ pub fn parse(arena: std.mem.Allocator, out: []const u8) !Pending {
             p.lists = std.fmt.parseInt(i64, std.mem.trim(u8, v, " "), 10) catch null;
         } else if (std.mem.cutPrefix(u8, line, "now ")) |v| {
             p.now = std.fmt.parseInt(i64, std.mem.trim(u8, v, " "), 10) catch null;
+        } else if (std.mem.cutPrefix(u8, line, "unfinished")) |v| {
+            var names = std.mem.tokenizeScalar(u8, v, ' ');
+            while (names.next()) |n| try unfinished.append(arena, n);
         } else if (std.mem.cutPrefix(u8, line, "Inst ")) |rest| {
             if (inst(rest)) |pk| try pkgs.append(arena, pk);
         } else if (std.mem.startsWith(u8, line, "The following upgrades have been deferred due to phasing")) {
@@ -99,6 +149,7 @@ pub fn parse(arena: std.mem.Allocator, out: []const u8) !Pending {
         }
     }
     p.packages = pkgs.items;
+    p.unfinished = unfinished.items;
     return p;
 }
 
@@ -124,11 +175,23 @@ fn inst(rest: []const u8) ?Package {
 
 const testing = std.testing;
 
+test "the upgrade script writes the files artoo reads" {
+    try testing.expect(std.mem.find(u8, upgrade_script, " s=" ++ stage_file ++ " rc=" ++ rc_file ++ " ") != null);
+    const argv = launchArgv("r1");
+    try testing.expectEqualStrings("--unit=artoo-upgrade.service", argv[3]);
+    try testing.expectEqualStrings("r1", argv[10]);
+    const poll = try pollScript(testing.allocator, "r1");
+    defer testing.allocator.free(poll);
+    try testing.expect(std.mem.startsWith(u8, poll, "id='r1' rc=/run/artoo-upgrade.rc\nmine() { ["));
+    try testing.expect(std.mem.find(u8, poll, "systemctl is-active --quiet artoo-upgrade.service && { tail -n 1 /run/artoo-upgrade.stage") != null);
+}
+
 /// As printed on a 26.04 guest (2026-10-25), shortened, plus a security
 /// update and a new kernel.
 pub const sample =
     \\lists 1000
     \\now 4600
+    \\unfinished
     \\NOTE: This is only a simulation!
     \\Calculating upgrade...
     \\The following upgrades have been deferred due to phasing:
@@ -169,6 +232,10 @@ test "parse: packages, security pockets, new packages, phased and kept back" {
     const none = try parse(arena.allocator(), "lists \nnow 5\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n");
     try testing.expectEqual(@as(usize, 0), none.packages.len);
     try testing.expect(none.listsAge() == null);
+    try testing.expectEqual(@as(usize, 0), p.unfinished.len);
+    const broken = try parse(arena.allocator(), "lists 5\nnow 6\nunfinished qemu-guest-agent vim-tiny \n");
+    try testing.expectEqual(@as(usize, 2), broken.unfinished.len);
+    try testing.expectEqualStrings("vim-tiny", broken.unfinished[1]);
     try testing.expect(inst("broken") == null);
     try testing.expect(inst("x [1.0") == null);
 }

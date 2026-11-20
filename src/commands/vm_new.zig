@@ -1192,10 +1192,14 @@ const stale_lists_s: u64 = 2 * 24 * 3600;
 /// What `vm upgrade` would install (SPEC §9.4, §9.12): security updates
 /// waiting are a warning (the unattended run installs them within a
 /// day), others only a count; stale package lists are a warning too.
+/// Packages an interrupted dpkg left unfinished fail the check.
 fn judgePending(ctx: *Context, r: agent.Result, vm: []const u8, _: []const u8) !Check {
     const a = ctx.arena;
-    if (!r.ok()) return .{ .name = "", .status = .failed, .detail = try std.fmt.allocPrint(a, "apt-get -s failed: {s}", .{try k.clean(ctx, firstLine(r.err))}) };
     const p = try apt.parse(a, r.out);
+    // apt's daily run skips while dpkg is unfinished: nothing below is
+    // current, and a failing `apt-get -s` is likely its consequence.
+    if (p.unfinished.len > 0) return .{ .name = "", .status = .failed, .detail = try std.fmt.allocPrint(a, "dpkg interrupted: {s}; apt's daily refresh and unattended upgrades stop until 'sudo dpkg --configure -a' on the guest", .{try @import("vm_upgrade.zig").unfinishedText(ctx, p.unfinished)}) };
+    if (!r.ok()) return .{ .name = "", .status = .failed, .detail = try std.fmt.allocPrint(a, "apt-get -s failed: {s}", .{try k.clean(ctx, firstLine(r.err))}) };
     const sec = p.security();
     const others = p.packages.len - sec;
     const name = try k.clean(ctx, vm);
@@ -1940,6 +1944,13 @@ test "judgeUpdates, judgePending and judgeReboot" {
     try testing.expectEqualStrings("none; package lists from 3d ago (apt's daily refresh is not running)", c.detail);
     c = try judgePending(&ctx, R("lists \nnow 5\n"), "naboo", "");
     try testing.expectEqualStrings("none", c.detail);
+    // An interrupted dpkg fails the check, whatever the lists say.
+    c = try judgePending(&ctx, R("lists 0\nnow 400000\nunfinished qemu-guest-agent libpam-systemd vim-tiny dbus man-db\n"), "naboo", "");
+    try testing.expectEqual(ui.style.Status.failed, c.status);
+    c = try judgePending(&ctx, .{ .code = 100, .out = "lists 0\nnow 5\nunfinished libc-bin \n", .err = "E: Unmet dependencies.\n" }, "naboo", "");
+    try testing.expect(std.mem.startsWith(u8, c.detail, "dpkg interrupted: 1 package unfinished (libc-bin);"));
+    c = try judgePending(&ctx, R("lists 0\nnow 400000\nunfinished qemu-guest-agent libpam-systemd vim-tiny dbus man-db\n"), "naboo", "");
+    try testing.expectEqualStrings("dpkg interrupted: 5 packages unfinished (qemu-guest-agent, libpam-systemd, vim-tiny +2); apt's daily refresh and unattended upgrades stop until 'sudo dpkg --configure -a' on the guest", c.detail);
     c = try judgePending(&ctx, .{ .code = 100, .out = "", .err = "E: Could not open lock file\n" }, "naboo", "");
     try testing.expectEqual(ui.style.Status.failed, c.status);
     try testing.expectEqualStrings("apt-get -s failed: E: Could not open lock file", c.detail);

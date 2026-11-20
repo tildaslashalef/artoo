@@ -861,7 +861,10 @@ installed): security updates waiting are a warning naming them and `vm
 upgrade VM` — the unattended run installs them within a day, so one that
 stays is the updater falling behind; other updates are counted in the ok
 detail; lists older than 2 days are a warning (apt's daily refresh is
-not running); phased updates are not counted; reboot pending (a warning, with the
+not running); packages an interrupted dpkg left unfinished fail the
+check, naming them and `sudo dpkg --configure -a` (apt's daily refresh
+and unattended upgrades stop while they exist); phased updates are not
+counted; reboot pending (a warning, with the
 packages that want it); config pending (§9.13: Proxmox keys waiting
 for a restart, a warning). DNS resolution is checked with `dig
 @<gateway>` from the workstation (not checked without `dig`; `--no-dns`
@@ -1925,8 +1928,17 @@ and the watchdog included — or every ordinary guest at once with `--all`
   Ubuntu:26.04/resolute-updates [amd64])`, seen 2026-10-25); a pocket
   ending in `-security` makes it a security update. Also read: the
   lists' age (`/var/lib/apt/periodic/update-success-stamp`), the
-  packages Ubuntu's phased updates defer and those kept back. artoo
-  never runs `apt-get update`: the plan is what the lists say, and their
+  packages Ubuntu's phased updates defer and those kept back, and the
+  packages an interrupted dpkg left unfinished (`dpkg-query` status
+  unpacked, half-installed, half-configured, awaiting or pending
+  triggers, or reinstall-required) — `apt-get -s` does not report
+  them, and apt's daily run skips silently while they exist, so the
+  lists stop refreshing. While dpkg or apt runs (an unattended run,
+  artoo's own unit) those states are normal and none is reported; read
+  even when `apt-get -s` fails, as broken dependencies are their usual
+  consequence. A guest with unfinished packages is refused,
+  naming them and `sudo dpkg --configure -a` (run over SSH, outside the
+  agent). artoo never runs `apt-get update`: the plan is what the lists say, and their
   age is in it (apt's daily timer refreshes them).
 - **Plan:** one line per package, `name  old → new`, marked `security`;
   nothing pending is a no-op (exit 5). Impact: new dependencies are
@@ -1942,13 +1954,32 @@ and the watchdog included — or every ordinary guest at once with `--all`
 - **Send once:** `apt-get -y --with-new-pkgs upgrade` as root with
   `DEBIAN_FRONTEND=noninteractive` and `DPkg::Lock::Timeout=300` (an
   unattended run holding the lock is waited for), its output in
-  `/var/log/artoo-upgrade.log`. apt's status lines (`APT::Status-Fd`)
-  are the step's live detail (`42% Unpacking tmux (amd64)`) through
-  `/run/artoo-upgrade.stage` (§4.4). Deadline 30 minutes: past it the
-  outcome is unknown (exit 7) and apt keeps running in the guest; apt
-  failing is exit 6 with the log's last lines.
-- **Verify:** a fresh simulation shows none of the planned packages
-  still pending at its planned version (a version the lists offer anew
+  `/var/log/artoo-upgrade.log`, in its own transient unit
+  `artoo-upgrade.service` (`systemd-run --collect`), never as a child
+  of the guest agent: upgrading `qemu-guest-agent` restarts the agent,
+  and systemd stops every process of the agent's unit with it
+  (`KillMode=control-group`) — seen 2026-11-20, apt and dpkg killed at
+  "Setting up qemu-guest-agent", about 20 packages left unconfigured
+  (the new kernel among them) while the agent answered "PID … does not
+  exist". systemd refuses a second unit while one runs, and
+  `RefuseManualStop=yes` keeps needrestart — which restarts every unit
+  still running an old library and has no exclusion for this one — from
+  stopping apt and starting it again. Each run has an id (VMID and a
+  clock value); the script writes it, apt's exit code and on failure the
+  log's last lines to `/run/artoo-upgrade.rc` (renamed into place) when
+  apt ends, and artoo polls through the agent (every 2 s) for its own
+  run's code only, never an earlier or concurrent run's, and apt's status lines (`APT::Status-Fd`) are the
+  step's live detail (`42% Unpacking tmux (amd64)`) through
+  `/run/artoo-upgrade.stage` (§4.4). Polls that fail while the agent
+  restarts are not errors; the agent silent for 5 minutes, the unit
+  gone without this run's exit code (after three polls when
+  systemd-run's own answer was lost: the unit may not be registered
+  yet), or 30 minutes passing is an unknown outcome (exit 7) — apt may keep running in the guest. apt failing is
+  exit 6 with the log's last lines; systemd-run refusing (exit 6)
+  started nothing. The exit-code file stays until the next run clears
+  it.
+- **Verify:** a fresh simulation shows no unfinished dpkg package and
+  none of the planned packages still pending at its planned version (a version the lists offer anew
   does not count). The result names a pending reboot with its packages
   (`/run/reboot-required`, as §9.4) and `vm reboot VM`.
 
@@ -1959,7 +1990,9 @@ upgrade -y` installed them in 18 s. apt's stage lines showed while it ran
 (`0% Retrieving file 1 of 10`, `51% Configuring snapd (amd64)`), the
 result said no reboot was needed, `vm verify` then showed "pending updates
 ok none" and every other check unchanged, no unit had failed, and the
-stage and exit-code files were gone.
+stage and exit-code files were gone. (That run had apt under the
+agent; the own unit and the exit-code file kept until the next run
+date from 2026-11-21.)
 
 **`vm upgrade --all`** (decided 2026-11-15) is the same upgrade for
 every running artoo guest in one plan, one confirmation:
@@ -1973,8 +2006,8 @@ every running artoo guest in one plan, one confirmation:
   Every other role (`search`, `app`, …) is included; there is no opt-out
   tag.
 - **Read:** per guest as above. A guest that is stopped, whose agent
-  does not answer or whose `apt-get -s` fails is named in the plan as
-  skipped with the reason; one with nothing pending as up to date.
+  does not answer, whose `apt-get -s` fails or whose dpkg was
+  interrupted is named in the plan as skipped with the reason; one with nothing pending as up to date.
   Nothing pending anywhere is a no-op (exit 5) whose message names the
   up-to-date and every skipped guest — never the generic "already has
   the requested state", which would hide a guest that could not be read.
@@ -1994,8 +2027,9 @@ every running artoo guest in one plan, one confirmation:
   step, apt may still run) does not stop the next; an exec Proxmox
   accepted without a pid is unknown too. Never a retry,
   never a reboot.
-- **Verify:** a fresh simulation per upgraded guest, as above; a planned
-  package still pending fails that guest's step. The result names the
+- **Verify:** a fresh simulation per upgraded guest, as above; an
+  unfinished dpkg package or a planned package still pending fails
+  that guest's step. The result names the
   guests that want a reboot; a reboot check that does not answer says
   "reboot state unknown" for that guest, never "no reboot needed".
   The live progress has ended by then: steps changed while verifying
