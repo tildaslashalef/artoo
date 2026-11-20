@@ -1,7 +1,9 @@
 //! `artoo vm upgrade VM` (SPEC §9.12): install a guest's pending package
 //! updates through the guest agent, on the one pipeline — the plan lists
 //! every package from a simulated upgrade on the guest's current lists,
-//! apt runs once, and a fresh simulation verifies. Never a reboot.
+//! apt runs once in its own systemd unit (an upgraded guest agent
+//! restarts without taking apt along), and a fresh simulation verifies.
+//! Never a reboot.
 //! `--all` does the same for every ordinary artoo guest in one plan, one
 //! guest after another; the edge, the router and the watchdog are left
 //! to their own runs.
@@ -28,6 +30,9 @@ const Context = app.Context;
 
 /// apt's own deadline; past it the outcome is unknown (SPEC §9.12).
 const deadline_ms: u64 = 30 * 60 * 1000;
+/// The agent not answering this long while apt runs: the outcome is
+/// unknown. A restart (an upgraded `qemu-guest-agent`) takes seconds.
+const agent_gone_ms: u64 = 5 * 60 * 1000;
 const log_file = "/var/log/artoo-upgrade.log";
 
 const UpgradeOp = struct {
@@ -55,6 +60,7 @@ const UpgradeOp = struct {
         if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; start it first ('artoo vm start {s}')", .{ op.target, try k.clean(ctx, v.status), op.target });
         if (!try agent.ping(op.c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{op.target});
         op.pending = try simulate(ctx, op.c, v.vmid, op.target);
+        if (op.pending.unfinished.len > 0) return ctx.fail(error.Refused, "dpkg on {s} was interrupted: {s}; finish it first with 'sudo dpkg --configure -a' on the guest ('artoo vm ssh {s}')", .{ op.target, try unfinishedText(ctx, op.pending.unfinished), op.target });
         var fp: std.ArrayList(u8) = .empty;
         try fp.print(a, "{?d}", .{op.pending.lists});
         for (op.pending.packages) |p| try fp.print(a, " {s}={s}", .{ p.name, p.to });
@@ -114,16 +120,16 @@ const UpgradeOp = struct {
         errdefer if (op.guard) |*g| g.annotate(ctx);
         if (op.guard) |*g| try g.take(ctx, op.c, l);
         const i = try l.add(a, "apt-get upgrade");
-        const argv: []const []const u8 = &.{ "sh", "-c", apt.upgrade_script };
-        const pid = agent.start(op.c, vmid, argv, null) catch |err| {
-            l.set(i, if (err == error.OutcomeUnknown) .unknown else .failed, "");
+        const id = try runId(ctx, vmid);
+        const confirmed = launch(ctx, op.c, vmid, id) catch |err| {
+            l.set(i, if (err == error.OutcomeUnknown or err == error.Protocol) .unknown else .failed, "");
             return err;
         };
         if (ctx.globals.no_wait) {
-            l.set(i, .unknown, try std.fmt.allocPrint(a, "started (pid {d}); 'artoo vm verify {s}' shows the result", .{ pid, op.target }));
+            l.set(i, .unknown, try std.fmt.allocPrint(a, "started as {s}; 'artoo vm verify {s}' shows the result", .{ apt.unit, op.target }));
             return;
         }
-        const r = agent.wait(op.c, vmid, pid, "apt-get upgrade", deadline_ms, .{ .file = apt.stage_file, .note = l.noter(i) }) catch |err| switch (err) {
+        const r = awaitApt(ctx, op.c, vmid, id, confirmed, l.noter(i)) catch |err| switch (err) {
             error.OutOfMemory, error.Canceled => |e| return e,
             else => {
                 const why = ctx.diag orelse @errorName(err);
@@ -131,9 +137,9 @@ const UpgradeOp = struct {
                 return ctx.fail(error.OutcomeUnknown, "the upgrade of {s} was started, outcome unknown ({s}); apt may still be running — its log is {s}, 'artoo vm verify {s}' shows what is pending", .{ op.target, try k.clean(ctx, why), log_file, op.target });
             },
         };
-        if (!r.ok()) {
-            l.set(i, .failed, if (r.code) |c| try std.fmt.allocPrint(a, "exit {d}", .{c}) else "");
-            return ctx.fail(error.TaskFailed, "apt-get upgrade failed on {s} (exit {?d}): {s} (log: {s})", .{ op.target, r.code, try k.clean(ctx, lastLine(r.err)), log_file });
+        if (r.code != 0) {
+            l.set(i, .failed, try std.fmt.allocPrint(a, "exit {d}", .{r.code}));
+            return ctx.fail(error.TaskFailed, "apt-get upgrade failed on {s} (exit {d}): {s} (log: {s})", .{ op.target, r.code, try k.clean(ctx, lastLine(r.err)), log_file });
         }
         l.set(i, .done, try std.fmt.allocPrint(a, "{f}", .{ui.values.count(op.pending.packages.len, "package")}));
     }
@@ -144,6 +150,7 @@ const UpgradeOp = struct {
         try op.ledger.render(ctx.out, &ctx.ui);
         const vmid = op.vm.?.vmid;
         const now = try simulate(ctx, op.c, vmid, op.target);
+        if (now.unfinished.len > 0) return ctx.fail(error.Partial, "dpkg left {s} on {s} (log: {s}); 'sudo dpkg --configure -a' on the guest finishes them", .{ try unfinishedText(ctx, now.unfinished), op.target, log_file });
         var left: std.ArrayList([]const u8) = .empty;
         for (op.pending.packages) |pk| if (now.has(pk)) try left.append(a, try k.clean(ctx, pk.name));
         if (left.items.len > 0) return ctx.fail(error.Partial, "{f} still pending on {s}: {s} (log: {s})", .{ ui.values.count(left.items.len, "planned package"), op.target, try std.mem.join(a, ", ", left.items), log_file });
@@ -244,6 +251,10 @@ const UpgradeAllOp = struct {
                     continue;
                 },
             };
+            if (p.unfinished.len > 0) {
+                try skipped.append(a, try std.fmt.allocPrint(a, "{s} (dpkg interrupted: {s}; 'sudo dpkg --configure -a' on it first)", .{ name, try unfinishedText(ctx, p.unfinished) }));
+                continue;
+            }
             try fp.print(a, "{s}:{?d}", .{ name, p.lists });
             for (p.packages) |pk| try fp.print(a, " {s}={s}", .{ pk.name, pk.to });
             try fp.append(a, ';');
@@ -328,8 +339,8 @@ const UpgradeAllOp = struct {
         for (op.todo) |*g| g.step = try l.add(a, try std.fmt.allocPrint(a, "upgrade {s}", .{g.name}));
         for (op.todo) |*g| {
             const vmid = g.vm.vmid;
-            const argv: []const []const u8 = &.{ "sh", "-c", apt.upgrade_script };
-            const pid = agent.start(op.c, vmid, argv, null) catch |err| switch (err) {
+            const id = try runId(ctx, vmid);
+            const confirmed = launch(ctx, op.c, vmid, id) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
                 else => {
                     // A 2xx without a pid may still have started apt.
@@ -338,9 +349,9 @@ const UpgradeAllOp = struct {
                     continue;
                 },
             };
-            const r = agent.wait(op.c, vmid, pid, "apt-get upgrade", deadline_ms, .{ .file = apt.stage_file, .note = l.noter(g.step) }) catch |err| switch (err) {
+            const r = awaitApt(ctx, op.c, vmid, id, confirmed, l.noter(g.step)) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| {
-                    l.set(g.step, .unknown, try std.fmt.allocPrint(a, "started (pid {d}); apt may still be running, log {s}", .{ pid, log_file }));
+                    l.set(g.step, .unknown, try std.fmt.allocPrint(a, "started as {s}; apt may still be running, log {s}", .{ apt.unit, log_file }));
                     return e;
                 },
                 else => {
@@ -350,8 +361,8 @@ const UpgradeAllOp = struct {
                     continue;
                 },
             };
-            if (!r.ok()) {
-                l.set(g.step, .failed, try std.fmt.allocPrint(a, "exit {?d}: {s} (log {s})", .{ r.code, try k.clean(ctx, lastLine(r.err)), log_file }));
+            if (r.code != 0) {
+                l.set(g.step, .failed, try std.fmt.allocPrint(a, "exit {d}: {s} (log {s})", .{ r.code, try k.clean(ctx, lastLine(r.err)), log_file }));
                 continue;
             }
             g.upgraded = true;
@@ -380,6 +391,11 @@ const UpgradeAllOp = struct {
                     continue;
                 },
             };
+            if (now.unfinished.len > 0) {
+                changed = true;
+                l.set(g.step, .failed, try std.fmt.allocPrint(a, "dpkg left {s} (log {s}); 'sudo dpkg --configure -a' on it", .{ try unfinishedText(ctx, now.unfinished), log_file }));
+                continue;
+            }
             var left: std.ArrayList([]const u8) = .empty;
             for (g.pending.packages) |pk| if (now.has(pk)) try left.append(a, try k.clean(ctx, pk.name));
             if (left.items.len > 0) {
@@ -451,11 +467,106 @@ fn pad(a: std.mem.Allocator, n: usize) ![]const u8 {
     return b;
 }
 
+/// apt's exit code and, on failure, the log's last lines (`apt.rc_file`).
+const Ran = struct { code: i64, err: []const u8 };
+
+/// This run's id in `apt.rc_file`: an earlier or concurrent run's exit
+/// code is never taken for this one's.
+fn runId(ctx: *Context, vmid: u32) ![]const u8 {
+    const ns = std.Io.Clock.real.now(ctx.io).nanoseconds;
+    return std.fmt.allocPrint(ctx.arena, "{d}-{x}", .{ vmid, @as(u64, @truncate(@as(u128, @bitCast(@as(i128, ns))))) });
+}
+
+/// The single write: start apt as `apt.unit`. An error from systemd-run
+/// means nothing started; true when systemd-run confirmed the start,
+/// false when its answer was lost (the agent restarted under it) and
+/// `awaitApt` is to find the unit or its exit code.
+fn launch(ctx: *Context, c: *pve.Client, vmid: u32, id: []const u8) !bool {
+    const argv = apt.launchArgv(id);
+    const pid = try agent.start(c, vmid, &argv, null);
+    const r = agent.wait(c, vmid, pid, "systemd-run", 60_000, null) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            ctx.diag = null;
+            return false;
+        },
+    };
+    if (!r.ok()) return ctx.fail(error.TaskFailed, "systemd-run did not start apt ({s}): {s}", .{
+        if (r.code) |code| try std.fmt.allocPrint(ctx.arena, "exit {d}", .{code}) else "ended abnormally", try k.clean(ctx, lastLine(r.err)),
+    });
+    return true;
+}
+
+/// Polls finding neither the unit nor this run's code before that is
+/// taken as final, when the start was not confirmed (it may not be
+/// registered yet).
+const unseen_polls = 3;
+
+/// Wait for run `id`'s exit code, its stage line as the step's detail.
+/// The agent may stop answering for a while (an upgraded
+/// `qemu-guest-agent` restarts): the run goes on in its own unit, and
+/// polls carry on. OutcomeUnknown past the deadline, when the agent stays
+/// away, or when the unit ended without this run's exit code.
+fn awaitApt(ctx: *Context, c: *pve.Client, vmid: u32, id: []const u8, confirmed: bool, note: exec.Note) !Ran {
+    const script = try apt.pollScript(ctx.arena, id);
+    const started = std.Io.Clock.awake.now(ctx.io);
+    var answered = started;
+    var seen = confirmed;
+    var unseen: usize = 0;
+    while (true) {
+        if (agent.sh(c, vmid, script, 60_000)) |r| switch (r.code orelse -1) {
+            0 => {
+                const t = std.mem.trim(u8, r.out, " \t\r\n");
+                const nl = std.mem.findScalar(u8, t, '\n') orelse t.len;
+                const code = std.fmt.parseInt(i64, std.mem.trim(u8, t[0..nl], " \t\r"), 10) catch
+                    return ctx.fail(error.OutcomeUnknown, "{s} holds no exit code", .{apt.rc_file});
+                return .{ .code = code, .err = t[nl..] };
+            },
+            3 => {
+                answered = std.Io.Clock.awake.now(ctx.io);
+                seen = true;
+                const t = std.mem.trim(u8, r.out, " \t\r\n");
+                if (t.len > 0) note.say(try ui.text.sanitize(ctx.arena, lastLine(t), .line));
+            },
+            4 => {
+                answered = std.Io.Clock.awake.now(ctx.io);
+                unseen += 1;
+                if (seen or unseen >= unseen_polls) return ctx.fail(error.OutcomeUnknown, "{s} ended without an exit code", .{apt.unit});
+            },
+            // Not an answer about apt (the shell or systemctl failing).
+            else => {},
+        } else |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => ctx.diag = null,
+        }
+        if (agent.elapsed(ctx.io, started) >= deadline_ms)
+            return ctx.fail(error.OutcomeUnknown, "apt still running after {d} min", .{deadline_ms / 60_000});
+        if (agent.elapsed(ctx.io, answered) >= agent_gone_ms)
+            return ctx.fail(error.OutcomeUnknown, "no answer about apt for {d} min", .{agent_gone_ms / 60_000});
+        try ctx.io.sleep(.fromMilliseconds(@intCast(ctx.test_hooks.poll_ms orelse 2000)), .awake);
+    }
+}
+
+/// `2 packages unfinished (qemu-guest-agent, vim-tiny)`, at most three named.
+pub fn unfinishedText(ctx: *Context, names: []const []const u8) ![]const u8 {
+    const a = ctx.arena;
+    var shown: std.ArrayList([]const u8) = .empty;
+    for (names[0..@min(names.len, 3)]) |n| try shown.append(a, try k.clean(ctx, n));
+    return std.fmt.allocPrint(a, "{f} unfinished ({s}{s})", .{
+        ui.values.count(names.len, "package"),
+        try std.mem.join(a, ", ", shown.items),
+        if (names.len > 3) try std.fmt.allocPrint(a, " +{d}", .{names.len - 3}) else "",
+    });
+}
+
 /// The simulated upgrade (SPEC §9.12); a failing `apt-get -s` refuses.
 fn simulate(ctx: *Context, c: *pve.Client, vmid: u32, target: []const u8) !apt.Pending {
     const r = try agent.sh(c, vmid, apt.simulate_script, 120_000);
+    // Unfinished packages can break `apt-get -s` too: they are the cause to name.
+    const p = try apt.parse(ctx.arena, r.out);
+    if (!r.ok() and p.unfinished.len > 0) return p;
     if (!r.ok()) return ctx.fail(error.TaskFailed, "apt-get -s failed on {s} (exit {?d}): {s}", .{ target, r.code, try k.clean(ctx, lastLine(r.err)) });
-    return apt.parse(ctx.arena, r.out);
+    return p;
 }
 
 fn lastLine(s: []const u8) []const u8 {
@@ -476,6 +587,11 @@ pub const upgrade = struct {
         \\library are restarted, and configuration files keep local changes.
         \\Package lists are not refreshed (apt does that daily), and pinned
         \\packages stay at their pins.
+        \\
+        \\apt runs in its own systemd unit (artoo-upgrade.service), so an
+        \\upgraded guest agent restarts without stopping it. A guest whose
+        \\dpkg was interrupted is refused until 'sudo dpkg --configure -a'
+        \\has finished its packages.
         \\
         \\There is never a reboot: if one is needed, the result says so and
         \\'artoo vm reboot VM' does it when convenient. apt has no undo, so
@@ -533,6 +649,11 @@ fn execStatus(a: std.mem.Allocator, code: i64, out: []const u8, err: []const u8)
     return std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = code, .@"out-data" = out, .@"err-data" = err } }, .{});
 }
 
+/// A poll that finds apt ended: `apt.rc_file` with its code and the log's tail.
+fn ended(a: std.mem.Allocator, code: i64, tail: []const u8) ![]const u8 {
+    return execStatus(a, 0, try std.fmt.allocPrint(a, "{d}\n{s}", .{ code, tail }), "");
+}
+
 const B = testkit.Gateway.FakeServer.Behavior;
 fn ans(s: []const u8) B {
     return .{ .respond = .{ .body = s } };
@@ -554,7 +675,9 @@ test "vm upgrade: plan from the simulation, apt once with its live stage, verifi
         ans(list_body),
         ans(ping_body),
         ans(pid_body), ans(try execStatus(a, 0, apt.sample, "")), // simulate
-        ans(pid_body), ans("{\"data\":{\"exited\":0}}"), ans("{\"data\":{\"content\":\"42% Unpacking tmux (amd64)\\n\"}}"), ans(try execStatus(a, 0, "", "")), // upgrade
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), // systemd-run started the unit
+        ans(pid_body), ans(try execStatus(a, 3, "42% Unpacking tmux (amd64)\n", "")), // running
+        ans(pid_body), ans("{\"data\":{\"exited\":0}}"), ans(try execStatus(a, 0, "0\n", "")), // ended
         ans(pid_body), ans(try execStatus(a, 0, "lists 4700\nnow 4800\nInst tmux [3.6a-2ubuntu0.2] (3.6a-2ubuntu0.3 Ubuntu:26.04/resolute-updates [amd64])\n", "")), // verify
         ans(pid_body), ans(try execStatus(a, 0, "yes\nlinux-image-7.0.0-40-generic\nlinux-base\n", "")), // reboot wanted
     });
@@ -564,8 +687,12 @@ test "vm upgrade: plan from the simulation, apt once with its live stage, verifi
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     try testing.expectEqualStrings("POST /api2/json/nodes/pve/qemu/205/agent/ping HTTP/1.1", g.request(1));
     try testing.expect(std.mem.startsWith(u8, g.body(2), "command=sh&command=-c&command=echo%20%22lists%20"));
-    try testing.expect(std.mem.startsWith(u8, g.body(4), "command=sh&command=-c&command=export%20DEBIAN_FRONTEND%3Dnoninteractive%20NEEDRESTART_MODE%3Da"));
-    try testing.expect(std.mem.find(u8, g.request(6), "file-read?file=%2Frun%2Fartoo-upgrade.stage") != null);
+    // apt runs in its own unit, not under the guest agent it may upgrade,
+    // and needrestart may not restart that unit (a second apt run).
+    try testing.expect(std.mem.startsWith(u8, g.body(4), "command=systemd-run&command=--quiet&command=--collect&command=--unit%3Dartoo-upgrade.service&command=--description%3Dartoo%20vm%20upgrade&command=--property%3DRefuseManualStop%3Dyes&command=sh&command=-c&command=export%20DEBIAN_FRONTEND%3Dnoninteractive%20NEEDRESTART_MODE%3Da"));
+    try testing.expect(std.mem.find(u8, g.body(4), "&command=artoo-upgrade&command=205-") != null);
+    // The poll asks for this run's code only.
+    try testing.expect(std.mem.startsWith(u8, g.body(6), "command=sh&command=-c&command=id%3D%27205-"));
     try expectAll(g.h.stdout(), &.{
         "Plan · Upgrade 3 packages on naboo (205), 1 security\n",
         "libssl3t64                    3.5.3-1ubuntu1 → 3.5.3-1ubuntu1.1 (security)\n",
@@ -593,8 +720,8 @@ test "vm upgrade: nothing pending, dry run, refusals, apt failing, a package lef
         ans(list_body), ans(ping_body), ans(pid_body), ans(one), // dry run
         ans(list_body), // not an artoo guest
         ans(list_body), // stopped
-        ans(list_body), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(try execStatus(a, 100, "", "Reading package lists...\nE: Sub-process /usr/bin/dpkg returned an error code (1)\n")), // apt fails
-        ans(list_body), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(one), // still pending
+        ans(list_body), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 100, "Reading package lists...\nE: Sub-process /usr/bin/dpkg returned an error code (1)\n")), // apt fails
+        ans(list_body), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 0, "")), ans(pid_body), ans(one), // still pending
     });
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
@@ -635,7 +762,7 @@ test "vm upgrade --snapshot: the snapshot is planned, taken first and named in t
         ans(list_body), ans(ping_body), ans(pid_body), ans(try execStatus(a, 0, apt.sample, "")), // read
         ans("{\"data\":[{\"name\":\"current\"},{\"name\":\"mine\",\"snaptime\":1}]}"), ans(naboo_config), ans(@import("storage.zig").storage_body), // guard
         ans(snap_upid), ans(task_ok), ans(try listingWithOwnName(a)), // snapshot step
-        ans(pid_body), ans("{\"data\":{\"exited\":0}}"), ans("{\"data\":{\"content\":\"\"}}"), ans(try execStatus(a, 0, "", "")), // upgrade
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 0, "")), // upgrade
         ans(pid_body), ans(try execStatus(a, 0, "lists 4700\nnow 4800\n", "")), // verify
         ans(pid_body), ans(try execStatus(a, 0, "no\n", "")), // no reboot
     });
@@ -684,9 +811,10 @@ test "vm upgrade --snapshot: a failing apt names the rollback" {
     const a = arena.allocator();
     var g: testkit.Gateway = undefined;
     try g.init(&[_]B{
-        ans(list_body),                             ans(ping_body),                 ans(pid_body),                            ans(try execStatus(a, 0, apt.sample, "")),
-        ans("{\"data\":[{\"name\":\"current\"}]}"), ans(naboo_config),              ans(@import("storage.zig").storage_body), ans(snap_upid),
-        ans(task_ok),                               ans(try listingWithOwnName(a)), ans(pid_body),                            ans(try execStatus(a, 100, "", "E: dpkg was interrupted\n")),
+        ans(list_body),                             ans(ping_body),                                      ans(pid_body),                            ans(try execStatus(a, 0, apt.sample, "")),
+        ans("{\"data\":[{\"name\":\"current\"}]}"), ans(naboo_config),                                   ans(@import("storage.zig").storage_body), ans(snap_upid),
+        ans(task_ok),                               ans(try listingWithOwnName(a)),                      ans(pid_body),                            ans(try execStatus(a, 0, "", "")),
+        ans(pid_body),                              ans(try ended(a, 100, "E: dpkg was interrupted\n")),
     });
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
@@ -711,8 +839,8 @@ test "vm upgrade --all: one plan without the edge, router and watchdog; a failin
     };
     var g: testkit.Gateway = undefined;
     try g.init(&(read ++ read ++ [_]B{
-        ans(pid_body), ans(try execStatus(a, 100, "", "Reading package lists...\nE: dpkg was interrupted\n")), // hoth fails
-        ans(pid_body), ans(try execStatus(a, 0, "", "")), // naboo upgraded
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 100, "Reading package lists...\nE: dpkg was interrupted\n")), // hoth fails
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 0, "")), // naboo upgraded
         ans(pid_body), ans(try execStatus(a, 0, "lists 1000\nnow 8300\n", "")), // naboo verified
         ans(pid_body), ans(try execStatus(a, 0, "yes\nlinux-base\n", "")), // reboot wanted
     }));
@@ -792,11 +920,11 @@ test "vm upgrade --all: a failing apt-get -s is a named skip; no pid is unknown 
     var g: testkit.Gateway = undefined;
     try g.init(&(read ++ [_]B{
         ans("{\"data\":{}}"), // naboo: accepted, no pid
-        ans(pid_body), ans(try execStatus(a, 0, "", "")), // tatooine upgraded
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 0, "")), // tatooine upgraded
         ans(pid_body), ans(one), // tmux still pending
     } ++ read ++ [_]B{
-        ans(pid_body), ans(try execStatus(a, 0, "", "")), // naboo upgraded
-        ans(pid_body), ans(try execStatus(a, 0, "", "")), // tatooine upgraded
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 0, "")), // naboo upgraded
+        ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 0, "")), // tatooine upgraded
         ans(pid_body), ans(try execStatus(a, 0, "lists 1000\nnow 1200\n", "")), // naboo verified
         ans(pid_body), ans(try execStatus(a, 1, "", "")), // its reboot check fails
         ans(pid_body), ans(try execStatus(a, 0, "lists 1000\nnow 1200\n", "")), // tatooine verified
@@ -816,5 +944,116 @@ test "vm upgrade --all: a failing apt-get -s is a named skip; no pid is unknown 
         "✓ upgrade naboo     done  1 package; reboot state unknown ('artoo vm verify naboo')\n",
         "✓ 2 packages upgraded on 2 guests; reboot state unknown on naboo\n",
     });
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+}
+
+test "vm upgrade: the guest agent restarting under apt (an upgraded qemu-guest-agent) does not lose the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const one = try execStatus(a, 0, "lists 1000\nnow 1100\nInst qemu-guest-agent [1] (2 Ubuntu:26.04/resolute-updates [amd64])\n", "");
+    const gone: B = .{ .respond = .{ .status = 500, .body = "{\"message\":\"Agent error: PID 42 does not exist\\n\"}" } };
+    const down: B = .{ .respond = .{ .status = 500, .body = "{\"message\":\"QEMU guest agent is not running\\n\"}" } };
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(list_body), ans(ping_body), ans(pid_body), ans(one),
+        ans(pid_body), gone, // systemd-run's answer lost: the poll finds out
+        down, // the agent restarting
+        ans(pid_body), gone, // its earlier process forgotten
+        ans(pid_body), ans(try execStatus(a, 3, "80% Configuring qemu-guest-agent (amd64)\n", "")),
+        ans(pid_body), ans(try ended(a, 0, "")),
+        ans(pid_body), ans(try execStatus(a, 0, "lists 1000\nnow 1200\n", "")), // verify
+        ans(pid_body), ans(try execStatus(a, 0, "no\n", "")),
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm upgrade naboo -y"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try expectAll(g.h.stdout(), &.{ "✓ apt-get upgrade  done", "✓ 1 package upgraded on naboo; no reboot needed\n" });
+    try expectAll(g.h.stderr(), &.{"  · apt-get upgrade  80% Configuring qemu-guest-agent (amd64)\n"});
+}
+
+test "vm upgrade: an interrupted dpkg refuses, is skipped by --all and fails verification; a unit ended without a code is unknown; systemd-run refusing started nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const broken = try execStatus(a, 0, "lists 1000\nnow 1100\nunfinished qemu-guest-agent vim-tiny \nInst tmux [1] (2 Ubuntu:26.04/resolute-updates [amd64])\n", "");
+    const one = try execStatus(a, 0, "lists 1000\nnow 1100\nunfinished\nInst tmux [1] (2 Ubuntu:26.04/resolute-updates [amd64])\n", "");
+    const after = try execStatus(a, 0, "lists 1000\nnow 1200\nunfinished libc-bin \n", "");
+    const none = try execStatus(a, 0, "lists 1000\nnow 1100\n", "");
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(list_body), ans(ping_body), ans(pid_body), ans(broken), // refused
+        ans(all_list), ans(ping_body), ans(pid_body), ans(broken), ans(ping_body), ans(pid_body), ans(none), ans(ping_body), ans(pid_body), ans(none), // --all: hoth skipped
+        ans(list_body), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try ended(a, 0, "")), ans(pid_body), ans(after), // dpkg left one
+        ans(list_body), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(try execStatus(a, 0, "", "")), ans(pid_body), ans(try execStatus(a, 4, "", "")), // the unit ended, no code
+        ans(list_body), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(try execStatus(a, 1, "", "Failed to start transient service unit: Unit artoo-upgrade.service was already loaded or has a fragment file.\n")), // one already runs
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm upgrade naboo -y"));
+    try testing.expectEqualStrings("artoo: dpkg on naboo was interrupted: 2 packages unfinished (qemu-guest-agent, vim-tiny); finish it first with 'sudo dpkg --configure -a' on the guest ('artoo vm ssh naboo')\n", g.h.stderr());
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm upgrade --all -y"));
+    try expectAll(g.h.stderr(), &.{"hoth (dpkg interrupted: 2 packages unfinished (qemu-guest-agent, vim-tiny); 'sudo dpkg --configure -a' on it first)"});
+    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm upgrade naboo -y"));
+    try expectAll(g.h.stderr(), &.{"artoo: dpkg left 1 package unfinished (libc-bin) on naboo (log: /var/log/artoo-upgrade.log); 'sudo dpkg --configure -a' on the guest finishes them\n"});
+    try testing.expectEqual(Exit.unknown, g.h.run(&root, "vm upgrade naboo -y"));
+    try expectAll(g.h.stderr(), &.{"artoo: the upgrade of naboo was started, outcome unknown (artoo-upgrade.service ended without an exit code)"});
+    try testing.expectEqual(Exit.task_failed, g.h.run(&root, "vm upgrade naboo -y"));
+    try expectAll(g.h.stderr(), &.{"artoo: systemd-run did not start apt (exit 1): Failed to start transient service unit: Unit artoo-upgrade.service was already loaded or has a fragment file.\n"});
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+}
+
+test "vm upgrade --all: a lost systemd-run answer gets a grace before 'ended without an exit code'; a refused start fails that guest only; a failing apt-get -s with dpkg unfinished names dpkg" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const one = try execStatus(a, 0, "lists 1000\nnow 1100\nInst tmux [1] (2 Ubuntu:26.04/resolute-updates [amd64])\n", "");
+    const sim_broken = try execStatus(a, 100, "lists 1000\nnow 1100\nunfinished libc-bin \n", "E: Unmet dependencies. Try 'apt --fix-broken install'\n");
+    const gone: B = .{ .respond = .{ .status = 500, .body = "{\"message\":\"Agent error: PID 42 does not exist\\n\"}" } };
+    const not_yet = try execStatus(a, 4, "", "");
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(all_list),
+        ans(ping_body), ans(pid_body), ans(sim_broken), // hoth: skipped, dpkg named
+        ans(ping_body), ans(pid_body), ans(one), // naboo
+        ans(ping_body), ans(pid_body), ans(one), // tatooine
+        ans(pid_body), gone, // naboo: systemd-run's answer lost
+        ans(pid_body), ans(not_yet),                      ans(pid_body), ans(not_yet), // not registered yet: not final
+        ans(pid_body), ans(try execStatus(a, 3, "", "")), ans(pid_body), ans(try ended(a, 0, "")),
+        ans(pid_body), ans(try execStatus(a, 1, "", "Failed to start transient service unit: Unit artoo-upgrade.service was already loaded or has a fragment file.\n")), // tatooine: refused
+        ans(pid_body), ans(try execStatus(a, 0, "lists 1000\nnow 1200\n", "")), ans(pid_body), ans(try execStatus(a, 0, "no\n", "")), // naboo verified
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm upgrade --all -y"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try expectAll(g.h.stdout(), &.{
+        "Skipped: hoth (dpkg interrupted: 1 package unfinished (libc-bin); 'sudo dpkg --configure -a' on it first).",
+        "✓ upgrade naboo     done  1 package\n",
+        "✗ upgrade tatooine  failed  systemd-run did not start apt (exit 1): Failed to start transient service unit",
+    });
+}
+
+test "vm upgrade: a lost systemd-run answer and no unit after the grace is unknown; an exit-code file without a code is unknown" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const one = try execStatus(a, 0, "lists 1000\nnow 1100\nInst tmux [1] (2 Ubuntu:26.04/resolute-updates [amd64])\n", "");
+    const gone: B = .{ .respond = .{ .status = 500, .body = "{\"message\":\"Agent error: PID 42 does not exist\\n\"}" } };
+    const not_yet = try execStatus(a, 4, "", "");
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(list_body), ans(ping_body),                             ans(pid_body), ans(one),     ans(pid_body), gone,
+        ans(pid_body),  ans(not_yet),                               ans(pid_body), ans(not_yet), ans(pid_body), ans(not_yet),
+        ans(list_body), ans(ping_body),                             ans(pid_body), ans(one),     ans(pid_body), ans(try execStatus(a, 0, "", "")),
+        ans(pid_body),  ans(try execStatus(a, 0, "garbage\n", "")),
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.unknown, g.h.run(&root, "vm upgrade naboo -y"));
+    try expectAll(g.h.stderr(), &.{"outcome unknown (artoo-upgrade.service ended without an exit code)"});
+    try testing.expectEqual(Exit.unknown, g.h.run(&root, "vm upgrade naboo -y"));
+    try expectAll(g.h.stderr(), &.{"outcome unknown (/run/artoo-upgrade.rc holds no exit code)"});
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
