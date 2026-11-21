@@ -902,8 +902,16 @@ appears under its name, and the reserved address is visible to the next
 address with no Fixed IP on any client record (offline ones included), no
 connected client, no DNS record and no VM config claiming it. `vm rm`
 forgets the record (`forget-sta`) after the VM is destroyed, only when the
-record carries the VM's MAC and name. `--no-dns` skips only the DNS
-record. The guest stays static: no DHCP and no change to the verified
+record carries the VM's MAC and name. UniFi keeps a destroyed guest's MAC
+as a connected client on its address for several minutes (observed ~10
+on Network 11.0.103), and while it does it refuses a Fixed IP on that
+address for another MAC with a bare `api.err.Invalid`; forgetting the
+record does not end it. So a rebuild on the same address waits: `vm rm`'s
+plan says so when the record has a Fixed IP, and `vm new` — when it
+continues a guest whose record is missing, and when the reservation is
+refused — names the other client holding the address (another record's
+Fixed IP, or a connected client) and refuses until it is gone. `--no-dns`
+skips only the DNS record. The guest stays static: no DHCP and no change to the verified
 first-boot network handling (§9.1). The Integration API offers no
 reservations; the classic calls live in `src/unifi/classic.zig` only.
 
@@ -3011,7 +3019,12 @@ procedures in GUIDE.md.
   `POST cmd/stamgr {"cmd":"forget-sta","macs":[…]}` works with the key
   (2026-10-10): an offline client's record is gone; a client the gateway
   still counts as connected is re-created at once. Not covered by `gw
-  spec`; firmware may change it.
+  spec`; firmware may change it. While another MAC is connected on an
+  address, `group/user` with that `fixed_ip` answers 400
+  `api.err.Invalid` (Network 11.0.103, 2026-11-21); the Integration API
+  has no action that drops a connected client (only guest
+  authorize/unauthorize), and deleting the gateway's ARP entry does not
+  either — the client drops when the switch ages its MAC out.
 - **Client names:** UniFi names a client from its DHCP hostname; a
   static client inherits the hostname of the last lease on its IP
   (verified 2026-10-10: a static guest showed under the name of the

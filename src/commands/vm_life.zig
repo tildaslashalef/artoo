@@ -1021,6 +1021,8 @@ const RmOp = struct {
         if (op.ts_dev) |d| try changes.append(a, .{ .field = "tailnet device", .from = try std.fmt.allocPrint(a, "{s} ({s})", .{ try k.clean(ctx, d.name), try k.clean(ctx, d.id) }), .to = null });
         var notes: std.ArrayList([]const u8) = .empty;
         if (op.client_note) |n| try notes.append(a, n);
+        if (op.client) |r| if (r.fixed_ip) |ip|
+            try notes.append(a, try std.fmt.allocPrint(a, "UniFi keeps {s} as a connected client for several minutes after the VM stops; until it drops, {s} cannot be reserved for a new VM.", .{ r.mac, ip }));
         if (op.dns_note) |n| try notes.append(a, n);
         if (op.svc_note) |n| try notes.append(a, n);
         if (op.watch_note) |n| try notes.append(a, n);
@@ -1948,6 +1950,7 @@ test "vm rm: stop, destroy, matching DNS record, Keychain entry, metrics on the 
         "✓ forget client record      done  bc:24:11:00:00:01",
         "✓ remove DNS record         done",
         "✓ delete Keychain password  done",
+        "UniFi keeps bc:24:11:00:00:01 as a connected client for several minutes after the VM stops; until it drops, 192.168.1.200 cannot be reserved for a new VM.",
     }) |line| {
         if (std.mem.find(u8, out, line) == null) {
             std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });

@@ -667,3 +667,4 @@ ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
 | `vm ssh … -- CMD` fails with a fish error | Guests' login shell is fish — wrap in `sh -c "'…'"` |
 | A VM just created is missing from lists | It appears within seconds; artoo reads the node's own VM list |
 | A removed VM's client reappears on UniFi | UniFi re-creates a client it still counts as connected; wait until it shows **offline**, then remove — that sticks. `vm rm` forgets its guest's record after the VM is gone |
+| Exit 5 (or 8 mid-run), `vm new` says the address "is still held by connected client …" | A VM removed minutes ago still counts as connected on that address; nothing clears it but time (~10 min). Re-run the same `vm new` once `gw clients ls` no longer lists the MAC — it continues |

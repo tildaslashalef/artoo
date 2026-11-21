@@ -226,6 +226,28 @@ fn secretName(ctx: *Context, name: []const u8) ![]const u8 {
     return std.fmt.allocPrint(ctx.arena, "guest/{s}", .{name});
 }
 
+/// Why UniFi will not reserve `address` for `mac`, or null: another
+/// client record with that Fixed IP, or another client UniFi still counts
+/// as connected on it. A VM just destroyed by `vm rm` stays connected for
+/// several minutes after its record is forgotten (SPEC §9.5), and UniFi
+/// then answers the reservation with a bare `api.err.Invalid`.
+fn addressHolder(ctx: *Context, u: *unifi.Client, address: []const u8, mac: []const u8) !?[]const u8 {
+    const a = ctx.arena;
+    for (try classic.records(u)) |r| {
+        if (std.ascii.eqlIgnoreCase(r.mac, mac)) continue;
+        if (!std.mem.eql(u8, r.fixed_ip orelse continue, address)) continue;
+        return try std.fmt.allocPrint(a, "{s} is the Fixed IP of client {s} ({s}) on UniFi; free it or forget that client in the UniFi UI, then re-run", .{ address, try k.clean(ctx, if (r.name.len > 0) r.name else r.mac), r.mac });
+    }
+    const clients = try unifi.list(u, catalog.find("clients").?, .{ .all = true });
+    for (clients.items) |cl| {
+        const cmac = view.string(cl, "macAddress") orelse continue;
+        if (std.ascii.eqlIgnoreCase(cmac, mac)) continue;
+        if (!std.mem.eql(u8, view.string(cl, "ipAddress") orelse continue, address)) continue;
+        return try std.fmt.allocPrint(a, "{s} is still held by connected client {s} on UniFi (a removed VM stays connected for several minutes); re-run once 'artoo gw clients ls' no longer lists it", .{ address, try k.clean(ctx, cmac) });
+    }
+    return null;
+}
+
 /// `scsi0: …,size=20G` → bytes.
 pub fn diskBytes(cfg: Value) ?u64 {
     return vms.driveSize(pve.str(cfg, "scsi0") orelse return null);
@@ -358,7 +380,10 @@ const NewOp = struct {
             if (classic.find(try classic.records(&u), mac)) |r| {
                 if (!std.mem.eql(u8, r.name, op.name) or !std.mem.eql(u8, r.fixed_ip orelse "", op.address))
                     return ctx.fail(error.Refused, "UniFi's client record for {s} is named '{s}' with Fixed IP {s}, not {s} → {s}; fix or forget it in the UniFi UI", .{ mac, try k.clean(ctx, r.name), r.fixed_ip orelse "none", op.name, op.address });
-            } else op.steps.reserve = true;
+            } else {
+                if (try addressHolder(ctx, &u, op.address, mac)) |why| return ctx.fail(error.Refused, "{s}", .{why});
+                op.steps.reserve = true;
+            }
         }
         op.steps.dns = !op.no_dns;
         if (!op.no_dns) {
@@ -527,7 +552,19 @@ const NewOp = struct {
             var u = try unifi.Client.open(ctx);
             defer u.deinit();
             l.set(i, .unknown, "");
-            try classic.reserve(&u, mac, op.name, op.network_id, op.address);
+            classic.reserve(&u, mac, op.name, op.network_id, op.address) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    // UniFi answers a bare `api.err.Invalid` when another
+                    // client holds the address; name it when one does.
+                    const diag = ctx.diag;
+                    const why = addressHolder(ctx, &u, op.address, mac) catch null;
+                    ctx.diag = diag;
+                    const w = why orelse return err;
+                    l.set(i, .failed, "address held");
+                    return ctx.fail(error.Partial, "UniFi refused the Fixed IP: {s}", .{w});
+                },
+            };
             l.set(i, .done, try std.fmt.allocPrint(a, "{s} {s} {s}", .{ mac, ctx.ui.glyphs.arrow, op.address }));
         }
         if (s_resize) |i| {
@@ -1893,6 +1930,39 @@ test "vm new --no-watch -n: tagged no-watch, no enroll step although a watchdog 
         }
     }
     try testing.expect(std.mem.find(u8, out, "Alloy pushes") == null);
+}
+
+test "vm new continuing: a connected client still on the address is named, nothing sent" {
+    const B = testkit.Gateway.FakeServer.Behavior;
+    const r = struct {
+        fn body(s: []const u8) B {
+            return .{ .respond = .{ .body = s } };
+        }
+    }.body;
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        r("{\"data\":[{\"vmid\":204,\"name\":\"hoth\",\"status\":\"stopped\"},{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"template\":1,\"status\":\"stopped\",\"maxdisk\":3758096384}]}"),
+        r("{\"data\":{\"tags\":\"artoo-template\",\"cicustom\":\"vendor=local:snippets/artoo-vendor-0123456789ab.yaml\"}}"),
+        r("{\"data\":[{\"volid\":\"local:snippets/artoo-vendor-0123456789ab.yaml\",\"size\":10}]}"),
+        r("{\"data\":{\"tags\":\"artoo\",\"ciuser\":\"artoo\",\"cipassword\":\"x\",\"ipconfig0\":\"ip=192.168.1.204/24,gw=192.168.1.1\",\"net0\":\"virtio=BC:24:11:00:00:03,bridge=vmbr0\",\"scsi0\":\"local-zfs:vm-204-disk-0,size=20G\"}}"),
+        r("{\"meta\":{\"rc\":\"ok\"},\"data\":[{\"_id\":\"N1\",\"name\":\"Default\",\"ip_subnet\":\"192.168.1.1/24\"}]}"),
+        // No record for the new MAC; the old one was forgotten.
+        r("{\"meta\":{\"rc\":\"ok\"},\"data\":[]}"),
+        r("{\"meta\":{\"rc\":\"ok\"},\"data\":[]}"),
+        r("{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"S1\",\"internalReference\":\"default\",\"name\":\"Default\"}]}"),
+        r("{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"C1\",\"type\":\"WIRED\",\"name\":\"bc:24:11:00:00:02\",\"macAddress\":\"bc:24:11:00:00:02\",\"ipAddress\":\"192.168.1.204\"}]}"),
+    });
+    defer g.deinit();
+    try g.mem.map.put(g.h.arena.allocator(), "guest/hoth", "pw");
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    const exit = g.h.run(&root, "vm new hoth --no-dns -n");
+    if (exit != .refused) {
+        std.debug.print("exit {t}\nstderr:\n{s}\n", .{ exit, g.h.stderr() });
+        for (0..12) |i| std.debug.print("req {d}: {s}\n", .{ i, g.request(i) });
+    }
+    try testing.expectEqual(Exit.refused, exit);
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "192.168.1.204 is still held by connected client bc:24:11:00:00:02 on UniFi") != null);
+    for (g.srv.received) |req| if (req) |q| try testing.expect(!std.mem.startsWith(u8, q, "POST"));
 }
 
 test "public key lines: kinds, one line, comments" {
