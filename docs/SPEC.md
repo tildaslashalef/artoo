@@ -855,13 +855,17 @@ guest tagged `fenced` (§9.11); unattended updates
 (§9.1): periodic upgrade on, the `-security` pocket allowed, the daily
 timer enabled and no automatic reboot (else failed), Tailscale's origin
 where Tailscale is installed (else a warning: a baseline older than
-2026-10-11), with the last run's time; pending updates (§9.12's
+2026-10-11), with the last run's time — a run older than 2 days is a
+warning (the timer fires daily and catches up after downtime, so apt's
+daily job is quitting before it upgrades, as it does silently while
+`apt-get check` fails); pending updates (§9.12's
 simulation on the guest's current package lists, nothing refreshed or
 installed): security updates waiting are a warning naming them and `vm
 upgrade VM` — the unattended run installs them within a day, so one that
 stays is the updater falling behind; other updates are counted in the ok
 detail; lists older than 2 days are a warning (apt's daily refresh is
-not running); packages an interrupted dpkg left unfinished fail the
+not getting through), naming `sudo systemctl start apt-daily.service`
+on the guest, which runs it now; packages an interrupted dpkg left unfinished fail the
 check, naming them and `sudo dpkg --configure -a` (apt's daily refresh
 and unattended upgrades stop while they exist); phased updates are not
 counted; reboot pending (a warning, with the

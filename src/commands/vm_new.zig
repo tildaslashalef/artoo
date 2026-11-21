@@ -1177,17 +1177,23 @@ fn judgeUpdates(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !C
     if (std.mem.eql(u8, f.reboot, "true")) return fail("automatic reboot is on (the operator reboots)");
     const last = std.fmt.parseInt(i64, f.last, 10) catch null;
     const now = std.fmt.parseInt(i64, f.now, 10) catch null;
-    const when = if (last != null and now != null)
-        try std.fmt.allocPrint(a, "last run {f} ago", .{ui.values.duration(@intCast(@max(0, now.? - last.?)))})
+    const age: ?u64 = if (last != null and now != null) @intCast(@max(0, now.? - last.?)) else null;
+    // The timer fires daily and catches up after downtime, so an older
+    // run means apt's daily job quits before upgrading (it does so
+    // silently, e.g. while `apt-get check` fails).
+    const stale = if (age) |s| s > stale_daily_s else false;
+    const when = if (age) |s|
+        try std.fmt.allocPrint(a, "last run {f} ago{s}", .{ ui.values.duration(s), if (stale) " (apt's daily upgrade is not getting through)" else "" })
     else
         "not run yet";
     if (std.mem.eql(u8, f.installed, "yes") and std.mem.eql(u8, f.tailscale, "0"))
         return .{ .name = "", .status = .warning, .detail = try std.fmt.allocPrint(a, "security daily, {s}; Tailscale not among the origins (baseline before 2026-10-11)", .{when}) };
-    return .{ .name = "", .status = .ok, .detail = try std.fmt.allocPrint(a, "security daily, no auto-reboot, {s}", .{when}) };
+    return .{ .name = "", .status = if (stale) .warning else .ok, .detail = try std.fmt.allocPrint(a, "security daily, no auto-reboot, {s}", .{when}) };
 }
 
-/// Lists older than this mean apt's daily refresh is not running.
-const stale_lists_s: u64 = 2 * 24 * 3600;
+/// A daily apt run (refresh or upgrade) older than this is not getting
+/// through: the timers fire daily and catch up after downtime.
+const stale_daily_s: u64 = 2 * 24 * 3600;
 
 /// What `vm upgrade` would install (SPEC §9.4, §9.12): security updates
 /// waiting are a warning (the unattended run installs them within a
@@ -1215,8 +1221,8 @@ fn judgePending(ctx: *Context, r: agent.Result, vm: []const u8, _: []const u8) !
         try detail.appendSlice(a, "none");
     }
     if (p.packages.len > 0) try detail.print(a, " — 'artoo vm upgrade {s}'", .{name});
-    const stale = if (p.listsAge()) |age| age > stale_lists_s else false;
-    if (stale) try detail.print(a, "; package lists from {f} ago (apt's daily refresh is not running)", .{ui.values.duration(p.listsAge().?)});
+    const stale = if (p.listsAge()) |age| age > stale_daily_s else false;
+    if (stale) try detail.print(a, "; package lists from {f} ago (apt's daily refresh is not getting through; 'sudo systemctl start apt-daily.service' on the guest runs it now)", .{ui.values.duration(p.listsAge().?)});
     return .{ .name = "", .status = if (sec > 0 or stale) .warning else .ok, .detail = detail.items };
 }
 
@@ -1922,6 +1928,12 @@ test "judgeUpdates, judgePending and judgeReboot" {
     c = try judgeUpdates(&ctx, R(base ++ "tailscale 0\ninstalled yes\nlast \nnow 4600\n"), "", "");
     try testing.expectEqual(ui.style.Status.warning, c.status);
     try testing.expect(std.mem.find(u8, c.detail, "not run yet; Tailscale not among the origins") != null);
+    // A run older than two days: the daily job is not getting through.
+    c = try judgeUpdates(&ctx, R(base ++ "tailscale 1\ninstalled yes\nlast 0\nnow 412000\n"), "", "");
+    try testing.expectEqual(ui.style.Status.warning, c.status);
+    try testing.expectEqualStrings("security daily, no auto-reboot, last run 4d 18h ago (apt's daily upgrade is not getting through)", c.detail);
+    c = try judgeUpdates(&ctx, R(base ++ "tailscale 1\ninstalled yes\nlast 0\nnow 172800\n"), "", "");
+    try testing.expectEqual(ui.style.Status.ok, c.status);
     c = try judgeUpdates(&ctx, R(base ++ "tailscale 0\ninstalled no\n"), "", "");
     try testing.expectEqual(ui.style.Status.ok, c.status);
     c = try judgeUpdates(&ctx, R("periodic 1\nreboot true\nsecurity 2\ntimer enabled\n"), "", "");
@@ -1941,7 +1953,7 @@ test "judgeUpdates, judgePending and judgeReboot" {
     try testing.expectEqualStrings("no security updates; 1 other — 'artoo vm upgrade naboo'", c.detail);
     c = try judgePending(&ctx, R("lists 0\nnow 259200\n"), "naboo", "");
     try testing.expectEqual(ui.style.Status.warning, c.status);
-    try testing.expectEqualStrings("none; package lists from 3d ago (apt's daily refresh is not running)", c.detail);
+    try testing.expectEqualStrings("none; package lists from 3d ago (apt's daily refresh is not getting through; 'sudo systemctl start apt-daily.service' on the guest runs it now)", c.detail);
     c = try judgePending(&ctx, R("lists \nnow 5\n"), "naboo", "");
     try testing.expectEqualStrings("none", c.detail);
     // An interrupted dpkg fails the check, whatever the lists say.
