@@ -627,7 +627,19 @@ pub fn apply(ctx: *Context, c: *pve.Client, g: *Guest, report: Report) !void {
             report.end(i, .skipped, why);
             continue;
         }
-        const detail = try applyItem(ctx, c, g, it);
+        var detail = try applyItem(ctx, c, g, it);
+        if (it.kind == .skill and g.has(.profile) == null) {
+            // Rex's skill setup may have just created ~/.claude/settings.json,
+            // which step 9 (planned from the earlier read, empty then) now
+            // has to bring to the kind the plan named.
+            const pg = try profile.read(ctx, c, g.vm.vmid, g.user, g.agent_profile);
+            const kind = profile.kindOf(template.taggedWith(g.vm.tags, @import("../commands/vm_fence.zig").tag), pg.ssh_keys);
+            const p = try profile.plan(a, g.agent_profile, pg, kind, g.force_profile);
+            if (!p.empty()) {
+                try profile.write(ctx, c, g.vm.vmid, g.user, p);
+                detail = try std.fmt.allocPrint(a, "{s}; then the permission kind {s} ({f})", .{ detail, kind.word(), ui.values.count(p.writes.len, "file") });
+            }
+        }
         if (it.kind != .package) {
             report.end(i, .done, detail);
             continue;
