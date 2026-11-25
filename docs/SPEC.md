@@ -3134,7 +3134,9 @@ or holds a refused file (§18.5). Every guest is read first; one refused
 guest refuses the whole run, naming it.
 
 After the steps, and on a run with nothing to change, `rex status`'s
-checks (§18.7) run for each guest; a failed check → exit 8.
+checks (§18.7) run for each guest; a failed check → exit 8. With `-o
+json`, a run with nothing to change prints the envelope `{result:
+"unchanged", guests}` and runs no checks.
 `--force-profile` overwrites profile files changed on the guest (§18.5).
 
 ### 18.4 The agy bridge
@@ -3167,7 +3169,7 @@ copies it, and copies it again after it changes.
 | `rules/AGENTS.md` | `~/.claude/CLAUDE.md`, and `~/.gemini/config/AGENTS.md` when `agy` is present |
 | `skills/NAME/**` | `~/.claude/skills/NAME/**`, and `~/.gemini/config/skills/NAME/**` when `agy` is present (`skills/rex` is skipped: `rex skill setup` owns it) |
 | `claude/settings.json` | merged into `~/.claude/settings.json` |
-| `claude/**` (other files; `README.md` skipped) | `~/.claude/**` |
+| `claude/**` (other files; a top-level `claude/README.md` skipped) | `~/.claude/**` |
 | `agy/settings.json` | merged into `~/.gemini/antigravity-cli/settings.json` |
 | `agy/hooks.json` | merged into `~/.gemini/config/hooks.json` |
 | `agy/**` (other files) | `~/.gemini/config/**` |
@@ -3199,9 +3201,10 @@ one would reach outside it. Files keep their executable bit (0755, else
   `.credentials.json`, `credentials`, `credentials.json`,
   `oauth_creds.json`, `.netrc`, `.env`, `.envrc`, `.env.*`, `*.pem`,
   `*.key`, `*.p12`, `*.pfx`, `id_*` without `.pub`, a symbolic link, any
-  file containing `PRIVATE KEY`, a `claude/settings.json` whose `env`
-  names a variable that looks like a secret (`KEY`, `TOKEN`, `SECRET`,
-  `PASSWORD`, `CREDENTIAL`), two profile files that land on one guest
+  file containing `PRIVATE KEY`, a merged JSON file (`claude/settings.json`,
+  `agy/settings.json`, `agy/hooks.json`) whose `env` names a variable
+  that looks like a secret (containing `KEY`, `TOKEN`, `SECRET`,
+  `PASSWORD`, `PASSWD` or `CREDENTIAL`, in any case), two profile files that land on one guest
   path, a file over 1 MiB, a profile over 4 MiB or 500 files.
 - MCP servers are not part of the profile: Claude keeps them in
   `~/.claude.json`, its own state file.
@@ -3241,23 +3244,30 @@ fields below leave the guest.
 | permissions | the kind | unrestricted on a guest not `sandboxed` | — |
 | agent (one per terminal with a status) | `claude-code working in naboo-api` | `blocked` (waiting for the operator), `error` | — |
 
-A row that is not checked says why (no agent, no profile set). A stopped
-guest, or one whose agent does not answer, has every row not checked,
-which is not a failure. A terminal's records (an agent and its
+A read that fails is its row's warning: `server`, `terminfo` and `skill`
+"could not be read as the guest user", `terminfo` and `skill` "status
+unreadable", and one `agents` row "not all read" when a program-status
+read fails. `profile` fails when `agents.profile` cannot be loaded or the
+guest's files cannot be read; a probe that fails as a whole is one
+failed row `rex`. A row that is not checked says why (no agent, no
+profile set). A stopped guest, or one whose agent does not answer, shows
+the rows package, apt pin, linger, server, terminfo and skill as not
+checked, which is not a failure. A terminal's records (an agent and its
 subagents) fold into one row with the most pressing state (blocked,
 error, working, done, idle). A named VM not tagged `rex` is refused
 (exit 5, naming `rex setup`). Several guests: one block per guest, then
-a summary line. `-o json`: a list of `{vm, vmid, checks, agents:
-[{session, block, app, state, title, updated_at}]}`. Any failure → exit
-8.
+a summary line. `-o json`: the envelope (§4.2) with `collected_at`,
+`failed` (the guests with a failed check) and a list of `{vm, vmid,
+checks: [{check, status, detail}], agents: [{session, block, app, state,
+title, updated_at}]}`. Any failure → exit 8.
 
 ### 18.8 Agents and the lab's own operations
 
 - **`vm reboot --pending`** reads each `rex` guest's agents first and
   skips a guest where one is `working` or `blocked` ("naboo (claude-code
   working in naboo-api)") and one whose agents cannot be read, and reads
-  them again just before each reboot. `--force-agents` includes them
-  all; the plan names the agents and, when a busy or unreadable guest is
+  them again just before each reboot, unless the run was confirmed with
+  the typed target below. `--force-agents` includes them all; the plan names the agents and, when a busy or unreadable guest is
   actually included, the risk is destructive: the confirmation becomes
   the typed target `every-guest` (`--yes --confirm every-guest`
   non-interactively). When nothing was busy at the plan (only y/N
@@ -3266,7 +3276,7 @@ a summary line. `-o json`: a list of `{vm, vmid, checks, agents:
   unreadable, never as "no agents". Whether each guest is busy is part
   of the plan's fingerprint.
 - **`vm upgrade`** names, in its plan, the agents working on each `rex`
-  guest, and goes ahead: it reboots nothing and restarts no user
+  guest (or that they could not be read), and goes ahead: it reboots nothing and restarts no user
   session (§18.1).
 - **`vm rm`** and **`vm rename`** remove or rename the guest's Rex host
   on the workstation when artoo recorded it (§18.9, §9.3, §9.18).
@@ -3280,8 +3290,9 @@ per guest tagged `rex`, labelled with the guest's name, endpoint
 
 - A missing host is added; a recorded host whose endpoint differs is
   edited; a recorded host whose guest is gone or no longer tagged `rex`
-  is removed. Removal is part of the same confirmed plan and touches only
-  hosts artoo recorded.
+  is removed. A recorded label with no Rex host any more is dropped from
+  the record ("recorded, no longer a Rex host"). Removal is part of the
+  same confirmed plan and touches only hosts artoo recorded.
 - A host with the guest's label and exactly the wanted endpoint is
   adopted (recorded, nothing sent). One with other endpoints that artoo
   did not add is left alone and named in the plan, with the commands
@@ -3290,6 +3301,8 @@ per guest tagged `rex`, labelled with the guest's name, endpoint
   ([API.md](API.md) §5). Without it, or without a running Rex on the
   workstation, the command refuses (exit 5); it never starts Rex. `vm
   rm` and `vm rename` skip their Rex step with a note then.
+- Nothing to change (foreign hosts aside, which it names) is a no-op
+  (exit 5).
 
 ### 18.10 Testing
 
