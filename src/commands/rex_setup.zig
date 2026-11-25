@@ -261,7 +261,8 @@ test "rex setup -n: the hand-installed guest's pin differs from upstream's; done
     defer arena.deinit();
     const a = arena.allocator();
     const F = setup_mod.Fixture;
-    const pr = try profileRead(a, no_agents);
+    // Holds a key but is not fenced: no "fenced, but holds" note.
+    const pr = try profileRead(a, .{ .agents = "", .keys = "id_ed25519\n" });
     const probe = try (F{ .a = a, .pin_hash = try setup_mod.sha256Hex(a, "Package: rex\nPin: origin pkgs.superlogical.com\nPin-Priority: 1001\n\nPackage: rex\nPin: release o=Ubuntu\nPin-Priority: -1\n"), .linger = false }).out();
     var g: testkit.Gateway = undefined;
     try g.initRoutes(&.{
@@ -284,6 +285,7 @@ test "rex setup -n: the hand-installed guest's pin differs from upstream's; done
         "naboo: not set up: agy bridge (no agy on the PATH).",
         "Dry run: nothing was sent.",
     });
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "fenced, but holds") == null);
 }
 
 test "rex setup: a set-up guest is nothing to change, exit 0" {
@@ -467,9 +469,9 @@ test "rex setup: the agy bridge is written as the user, other hooks kept" {
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "rex setup naboo -y"));
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     try expectLines(g.h.stdout(), &.{
-        "naboo agy hooks    other hooks kept → key artoo-rex in ~/.gemini/config/hooks.json (SessionStart, PreInvocation, Stop)",
-        "naboo agy hook     done  ~/.config/artoo/agy-rex-hook",
-        "naboo permissions  done  1 file written, trusted-reach",
+        "naboo agy hooks         other hooks kept → key artoo-rex in ~/.gemini/config/hooks.json (SessionStart, PreInvocation, Stop)",
+        "naboo agy hook          done  ~/.config/artoo/agy-rex-hook",
+        "naboo permission files  done  1 file written, trusted-reach",
     });
     var user_writes: usize = 0;
     for (g.srv.received) |req| if (req) |q| {
