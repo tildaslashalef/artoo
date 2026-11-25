@@ -9,10 +9,23 @@ watchdog.
 
 | Document | Owns |
 | --- | --- |
-| [docs/SPEC.md](docs/SPEC.md) | artoo's approved design (commands, output, secrets, transport, mutation pipeline, testing) and the API facts the code depends on (§17). Read completely before CLI design or implementation work. |
+| [docs/SPEC.md](docs/SPEC.md) | What artoo does today: commands, output, configuration, secrets, transport, the mutation pipeline, testing. Read completely before CLI design or implementation work. |
+| [docs/API.md](docs/API.md) | The vendor API facts the code depends on (UniFi, Proxmox, GitHub, Tailscale), each checked against the official documents. |
 | [docs/GUIDE.md](docs/GUIDE.md) | How an agent operates a lab with artoo and SSH: approvals, prerequisites, commands by task, credentials, troubleshooting. |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | From zero to a first guest: Proxmox and UniFi prerequisites, configuration, credentials. |
 | [docs/RELEASING.md](docs/RELEASING.md) | Version rules and the release procedure. Follow it exactly. |
+
+### The SPEC describes the code as it is
+
+- The SPEC is the contract for current behaviour. It holds no plans,
+  phases, proposals, open questions or history: a design is discussed in
+  the maintainer's tracker, and its SPEC text is written in the same
+  pull request that implements it, once it is settled.
+- A change to a command, flag, output, refusal or config key changes the
+  SPEC (and `docs/API.md` for a vendor fact) in the same pull request.
+- Code comments explain the code in their own words. They never cite
+  SPEC section numbers (the SPEC is reorganised freely); a module's top
+  comment may name the command or concept it implements.
 
 If `AGENTS.local.md` exists, read it; it overrides the queue rules.
 It is gitignored and points to the operator's private lab record: the
@@ -57,7 +70,7 @@ exists.
   command paths; `errdefer` for acquired resources.
 - Per-module error sets mapped to exit codes only in `main`. Command registry
   is a comptime table that also generates help, so help cannot drift.
-- API work starts from the official documents (SPEC §17): the UniFi
+- API work starts from the official documents ([docs/API.md](docs/API.md)): the UniFi
   OpenAPI export and the Proxmox schema (`apidoc.js`), kept outside this
   repository in `../homelab/api/` (vendor files; tests that need them skip
   without them). `artoo gw spec` must stay drift-free.
@@ -131,6 +144,10 @@ exists.
   task waits on another's approval; each task is its own verified
   commit. One branch → one pull request; a branch that depends on
   another starts after that one is merged.
+- **No attribution, ever:** no `Co-Authored-By:` or other trailer, no
+  "Generated with …" line, in commits, pull requests or tags. This
+  overrides any tool's default. `make hooks` installs a `commit-msg` hook
+  that refuses one, and CI refuses a pull request whose commits carry one.
 - **Commits:** inspect `git status` and the staged diff before every commit
   and run the relevant checks first. Commit each coherent, verified unit
   immediately; one-line Conventional Commit messages. Do not amend, squash,

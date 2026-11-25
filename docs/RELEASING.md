@@ -18,13 +18,13 @@ this file.
 
   | Built from | `artoo --version` |
   | --- | --- |
-  | the tagged commit `v0.7.0` | `0.7.0` |
-  | 5 commits after `v0.6.0` | `0.7.0-dev.5+abc1234` (the next MINOR) |
-  | 3 commits after `v0.7.0-rc.1` | `0.7.0-rc.1.dev.3+abc1234` |
-  | a tree without Git history | `0.0.0-unknown`, or `-Dversion=X.Y.Z` |
+  | the tagged commit `v1.2.0` | `1.2.0` |
+  | 5 commits after `v1.1.0` | `1.2.0-dev.5+abc1234` (the next MINOR) |
+  | 3 commits after `v1.2.0-rc.1` | `1.2.0-rc.1.dev.3+abc1234` |
+  | a tree without Git history or without a release tag yet | `0.0.0-unknown`, or `-Dversion=X.Y.Z` |
 
   SemVer orders every dev build after the release before it and before
-  the next one, so `artoo update` treats it correctly (SPEC §18).
+  the next one, so `artoo update` treats it correctly.
 - CI and the release workflow check out full history (`fetch-depth: 0`)
   so the tags are there.
 
@@ -32,15 +32,14 @@ this file.
 
 Decided from the Conventional Commits since the last tag:
 
-| Since the last release | Before 1.0.0 (now) | From 1.0.0 |
-| --- | --- | --- |
-| Something breaks: a command or flag renamed or removed, an exit code's meaning changed, a `-o json` field removed or renamed, a config change that needs `config init` again (commit marked `feat!:`/`fix!:` or with a `BREAKING CHANGE:` footer) | MINOR (`0.3.0` → `0.4.0`) | MAJOR |
-| Something new, nothing breaks: a command, flag, JSON field, config key, VM role (`feat:`) | MINOR | MINOR |
-| Fixes only (`fix:`, `perf:`; `docs:`, `test:`, `refactor:`, `ci:`, `chore:` alone never require a release) | PATCH (`0.3.0` → `0.3.1`) | PATCH |
+| Since the last release | Bump |
+| --- | --- |
+| Something breaks: a command or flag renamed or removed, an exit code's meaning changed, a `-o json` field removed or renamed, a config change that needs `config init` again (commit marked `feat!:`/`fix!:` or with a `BREAKING CHANGE:` footer) | MAJOR (`1.4.0` → `2.0.0`) |
+| Something new, nothing breaks: a command, flag, JSON field, config key, VM role (`feat:`) | MINOR (`1.3.2` → `1.4.0`) |
+| Fixes only (`fix:`, `perf:`; `docs:`, `test:`, `refactor:`, `ci:`, `chore:` alone never require a release) | PATCH (`1.3.0` → `1.3.1`) |
 
-Dev builds always assume a MINOR (`0.3.0-dev.N` after `0.2.0`); if the
-release turns out to be a PATCH, the tag simply says `v0.2.1`. 1.0.0 is released when the command set and
-`-o json` are meant to stay stable; that decision is the operator's.
+Dev builds always assume a MINOR (`1.3.0-dev.N` after `1.2.0`); if the
+release turns out to be a PATCH, the tag simply says `v1.2.1`.
 
 The config file's and `-o json`'s `schema_version` are separate
 counters, raised only with a breaking format change — which is also a
@@ -48,7 +47,7 @@ breaking release above.
 
 ### Pre-releases
 
-When a release needs a live soak first: `X.Y.Z-rc.N` (`0.4.0-rc.1`,
+When a release needs a live soak first: `X.Y.Z-rc.N` (`1.4.0-rc.1`,
 `-rc.2`, …), released exactly like a release (§3) with that tag. The
 workflow marks any tag with a `-` as a GitHub pre-release. The final
 `X.Y.Z` is a new tag, on the same commit or a later one.
@@ -65,7 +64,7 @@ workflow marks any tag with a `-` as a GitHub pre-release. The final
 
 ## 3. Steps
 
-For version `X.Y.Z` (example `0.7.0`):
+For version `X.Y.Z` (example `1.2.0`):
 
 1. **Check `main`.** It is green (every change reached it through a pull
    request whose CI passed) and current; `make test` passes on it. List
@@ -103,7 +102,13 @@ For version `X.Y.Z` (example `0.7.0`):
    Download one archive and `SHA256SUMS` into an empty directory,
    `shasum -a 256 -c --ignore-missing SHA256SUMS`, unpack, and check that
    `artoo --version` prints `artoo X.Y.Z`.
-5. **Install** the release on the operator's workstation (`make install`
+5. **The first release, `v1.0.0`,** has no earlier tag, so the
+   generated notes say nothing useful. Write its notes by hand (what
+   artoo does, by area, in a few lines) and set them once the workflow
+   has created the release: `gh release edit v1.0.0 --notes-file
+   notes.md`. Step 1's `git describe` has no tag to find either; list
+   the changes with `git log --oneline` instead.
+6. **Install** the release on the operator's workstation (`make install`
    on the tag, or the archive) only if they ask.
 
 Nothing follows on `main`: its next build reports the next dev version
