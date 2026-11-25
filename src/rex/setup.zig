@@ -992,3 +992,10 @@ test "setUpNew: vm new's one step runs rex setup's steps and checks they converg
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     try testing.expectEqualStrings("rex 0.1.0~alpha.23, tag rex\n", g.h.stdout());
 }
+
+test "the setup scripts are ASCII (the guest agent wedges on anything else)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ try probeScript(arena.allocator(), "user"), install_script, terminfo_script, user_write }) |s|
+        for (s) |b| try std.testing.expect(b < 0x80);
+}

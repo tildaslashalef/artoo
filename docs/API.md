@@ -205,6 +205,15 @@ Under `/proxy/network/v2/api/site/default/`:
   `ballooninfo.total_mem − free_mem`, and `ballooninfo` has no
   available-memory figure. `agent/file-read` (`file`, `decode=1`) returns
   `/proc/meminfo` as `content` (SPEC §9.14).
+- **Guest agent requests are ASCII only** (pve-manager 9.2.27, seen
+  live 2026-11-25): a non-ASCII character anywhere in an
+  `agent/exec` argument (one em dash in a script comment was enough)
+  makes that request time out (`got timeout`), and the agent then
+  answers nothing, ping included, until the VM restarts. On the guest,
+  `qemu-ga` keeps running but never logs the request. A probable cause:
+  `PVE::QMPClient` writes the request built by `to_json` as a character
+  string, so it arrives short and the agent waits for the rest. artoo
+  refuses such a request before sending it (SPEC §7).
 - **Tasks:** `stopped` with `OK` or `WARNINGS: n` is success. The
   `errors=1` filter also returns tasks with warnings.
 - **Listing:** `/cluster/resources` is refreshed by pvestatd: a VM created

@@ -122,7 +122,7 @@ const user_agents =
     \\if [ -n "$srv" ]; then
     \\  s=$(printf '%s' "$srv" | jq -c '{running: true, version: (.rex_version // ""), sessions: (.session_count // 0)}') || s='{"running":true}'
     \\elif [ -S "$sock" ]; then
-    \\  # A socket that does not answer: not "not running" — unknown.
+    \\  # A socket that does not answer: not "not running", unknown.
     \\  s='{"running":true}'
     \\  g='{"agents":[],"errors":["rex server status"]}'
     \\else
@@ -564,4 +564,15 @@ test "parse: the probe's JSON for each state" {
     try testing.expect(busy.isRex());
     try testing.expectEqual(@as(usize, 1), (try busy.agents(a)).len);
     try testing.expect((try busy.agents(a))[0].busy());
+}
+
+test "the probe scripts are ASCII (the guest agent wedges on anything else)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try expectAscii(try probeScript(arena.allocator(), "user"));
+    try expectAscii(user_light);
+}
+
+fn expectAscii(s: []const u8) !void {
+    for (s) |b| try std.testing.expect(b < 0x80);
 }

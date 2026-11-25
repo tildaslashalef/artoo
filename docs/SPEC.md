@@ -567,6 +567,12 @@ with a display) and refuses when none works; `--show` prints it after
 confirmation. `--reset` sets a new one through the guest agent and stores
 it on this machine (§9.17).
 
+A guest agent request (`agent/exec` arguments and input, an
+`agent/file-read` path) holding a non-ASCII byte is refused before it is
+sent (exit 5, "nothing was sent"): Proxmox would leave the agent stuck
+until the VM restarts (API.md §2). Every script artoo runs in a guest is
+plain ASCII.
+
 ## 8. Transport and mutation pipeline
 
 ### 8.1 HTTP
