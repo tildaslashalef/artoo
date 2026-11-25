@@ -3228,7 +3228,8 @@ one would reach outside it. Files keep their executable bit (0755, else
   `agy/settings.json`, `agy/hooks.json`) whose `env` names a variable
   that looks like a secret (containing `KEY`, `TOKEN`, `SECRET`,
   `PASSWORD`, `PASSWD` or `CREDENTIAL`, in any case), two profile files that land on one guest
-  path, a file over 1 MiB, a profile over 4 MiB or 500 files.
+  path, a file whose path is not ASCII (the guest agent carries ASCII
+  only, §7), a file over 1 MiB, a profile over 4 MiB or 500 files.
 - MCP servers are not part of the profile: Claude keeps them in
   `~/.claude.json`, its own state file.
 

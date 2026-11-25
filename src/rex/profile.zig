@@ -218,6 +218,9 @@ const Builder = struct {
         const path = try a.dupe(u8, e.path);
         const name = e.basename;
         if (refusedName(name)) |why| return b.refuse(path, "{s}", .{why});
+        // Paths travel to the guest agent as arguments, which carry ASCII
+        // only; name the file here rather than fail on the guest.
+        for (path) |c| if (c >= 0x80) return b.refuse(path, "its name is not ASCII, which the guest agent cannot carry; rename it", .{});
         const st = e.dir.statFile(ctx.io, name, .{ .follow_symlinks = false }) catch |err| switch (err) {
             error.Canceled => return error.Canceled,
             else => return b.refuse(path, "cannot be read: {s}", .{@errorName(err)}),
@@ -1090,6 +1093,7 @@ test "load: every refusal names the file, never its content" {
         .{ .path = "agy/oauth_creds.json", .data = secret, .want = "agy/oauth_creds.json is refused (an agent credential file)" },
         .{ .path = "skills/demo/.envrc", .data = secret, .want = "skills/demo/.envrc is refused (an environment file)" },
         .{ .path = "claude/client.p12", .data = secret, .want = "claude/client.p12 is refused (a key file)" },
+        .{ .path = "skills/caf\xc3\xa9/SKILL.md", .data = "skill\n", .want = "is refused (its name is not ASCII, which the guest agent cannot carry; rename it)" },
         .{ .path = "claude/settings.json", .data = "{\"env\":{\"ANTHROPIC_API_KEY\":\"" ++ secret ++ "\"}}", .want = "claude/settings.json is refused (its env names ANTHROPIC_API_KEY, which looks like a secret)" },
         .{ .path = "claude/CLAUDE.md", .data = "rules\n", .want = "both become ~/.claude/CLAUDE.md; keep one" },
     };
