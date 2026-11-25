@@ -405,6 +405,56 @@ test "rex setup: a fresh guest installs Rex, decides terminfo and the skill afte
     try testing.expect(wrote_key);
 }
 
+test "rex setup: the skill step creates Claude's settings; the permission kind follows in the same run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const P = @import("../rex/profile.zig");
+    const F = setup_mod.Fixture;
+    // Claude not on the restricted PATH, so the first read sees no agent
+    // and no settings: step 9 has nothing to do then.
+    const before = try (F{ .a = a, .skill = "{\"harnesses\":[{\"id\":\"claude\",\"detected\":true,\"session_naming\":true,\"items\":[{\"kind\":\"skill\",\"state\":\"missing\"},{\"kind\":\"hook\",\"state\":\"missing\"}]}]}" }).out();
+    const hooks = "{\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"rex __internal session-start\",\"timeout\":5}]}]}}";
+    const want = try P.plan(a, null, .{ .home = "/home/naboo", .claude_settings = hooks }, .trusted_reach, false);
+    try testing.expectEqual(@as(usize, 1), want.writes.len);
+    const ok = try agentOut(a, 0, "", "");
+    const pr = try profileRead(a, no_agents);
+    const pr_hooks = try profileRead(a, .{ .agents = "", .claude_settings = hooks });
+    const pr_after = try profileRead(a, .{ .agents = "", .claude_settings = want.writes[0].content });
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(&.{
+        r("GET /api2/json/nodes/pve/qemu HTTP", naboo_rex_list),
+        r("agent/ping", ok_ping),
+        r("agent/exec HTTP", pid),
+        r("exec-status", try agentOut(a, 0, before, "")),
+        pr[0],
+        pr[1],
+        // rex skill setup
+        r("agent/exec HTTP", pid),
+        r("exec-status", ok),
+        // step 9 read again, then the settings written
+        pr_hooks[0],
+        pr_hooks[1],
+        r("agent/exec HTTP", pid),
+        r("exec-status", ok),
+        // verify
+        r("GET /api2/json/nodes/pve/qemu HTTP", naboo_rex_list),
+        r("agent/exec HTTP", pid),
+        r("exec-status", try agentOut(a, 0, try (F{ .a = a }).out(), "")),
+        pr_after[0],
+        pr_after[1],
+    });
+    defer g.deinit();
+    const code = g.h.run(&root, "rex setup naboo -y");
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+    try testing.expectEqual(testkit.Exit.ok, code);
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try expectLines(g.h.stdout(), &.{
+        "naboo agent skill  done  claude; then the permission kind trusted-reach (1 file)",
+        "Rex is set up on naboo",
+    });
+}
+
 test "rex setup: a failed install stops the run and shows the ledger" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

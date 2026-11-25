@@ -3135,7 +3135,11 @@ right: a rerun on a set-up guest changes nothing and says so (exit 0,
    **permission kind** (§18.6) always: for Claude where it is (on the
    PATH, or `~/.claude/settings.json` exists), for agy where it is. The
    guest is read again just before this step, so the merges keep what
-   steps 7 and 8 wrote.
+   steps 7 and 8 wrote. When step 9 had nothing to do at the plan but
+   step 7 runs (and may create `~/.claude/settings.json`), the kind is
+   planned again right after step 7 and written within it ("then the
+   permission kind trusted-reach (1 file)"), keeping the kind the plan
+   named.
 10. **tag** `rex`, added with the config digest.
 
 Commands as the guest user run through `runuser -u USER -- env HOME=…
