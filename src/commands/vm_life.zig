@@ -1136,7 +1136,7 @@ const RmOp = struct {
             l.set(i, .done, "");
         }
         // A failure fails only this step; 'rex hosts sync' repairs it.
-        if (rex_step) |i| try op.removeRexHost(ctx, i);
+        if (rex_step) |i| try op.removeRexHost(ctx, i, &left);
         if (watch_step) |i| watch_blk: {
             l.set(i, .unknown, "");
             const n = watch.forgetHost(c, op.watch_vm.?, v.name) catch |err| switch (err) {
@@ -1171,18 +1171,17 @@ const RmOp = struct {
             };
             l.set(i, .done, try k.clean(ctx, d.name));
         }
-        if (left.items.len > 0) {
-            if (rex_step) |i| if (l.steps.items[i].state == .failed)
-                try left.append(a, try std.fmt.allocPrint(a, "its Rex host {s} stays: {s}; run 'artoo rex hosts sync' to remove it", .{ op.rex.?.label, l.steps.items[i].detail }));
+        // In send, not verify, so --no-wait reports a leftover too.
+        if (left.items.len > 0)
             return ctx.fail(error.Partial, "VM destroyed, but {s}", .{try std.mem.join(a, "; ", left.items)});
-        }
     }
 
     const rex_step_name = "remove Rex host";
 
     /// `rex hosts remove LABEL`, then the label dropped from the record;
-    /// skipped without Rex. Never stops the run (`verify` reports it).
-    fn removeRexHost(op: *RmOp, ctx: *Context, i: usize) !void {
+    /// skipped without Rex. Never stops the run: a failure goes to `left`,
+    /// saying which half failed.
+    fn removeRexHost(op: *RmOp, ctx: *Context, i: usize, left: *std.ArrayList([]const u8)) !void {
         const a = ctx.arena;
         const l = &op.ledger;
         const r = op.rex.?;
@@ -1192,18 +1191,20 @@ const RmOp = struct {
             x.remove(r.label) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
                 else => {
-                    l.set(i, .failed, ctx.diag orelse @errorName(err));
+                    const why = ctx.diag orelse @errorName(err);
+                    l.set(i, .failed, why);
                     ctx.diag = null;
-                    return;
+                    return left.append(a, try std.fmt.allocPrint(a, "its Rex host {s} stays: {s}; run 'artoo rex hosts sync' to remove it", .{ r.label, why }));
                 },
             };
         }
         rex_hosts.saveRecord(ctx, try rex_hosts.without(a, r.record, r.label)) catch |err| switch (err) {
             error.OutOfMemory, error.Canceled => |e| return e,
             else => {
-                l.set(i, .failed, ctx.diag orelse @errorName(err));
+                const why = ctx.diag orelse @errorName(err);
+                l.set(i, .failed, why);
                 ctx.diag = null;
-                return;
+                return left.append(a, try std.fmt.allocPrint(a, "{s}{s} still lists its Rex host {s}: {s}; run 'artoo rex hosts sync' to drop it", .{ if (r.listed != null) "its Rex host is removed, but " else "", rex_hosts.record_path, r.label, why }));
             },
         };
         l.set(i, .done, if (r.listed != null) r.label else "not listed; dropped from the record");
@@ -1221,8 +1222,6 @@ const RmOp = struct {
         }
         try ctx.out.writeAll("\n");
         try op.ledger.render(ctx.out, &ctx.ui);
-        for (op.ledger.steps.items) |s| if (s.state == .failed and std.mem.eql(u8, s.name, rex_step_name))
-            return ctx.fail(error.Partial, "VM destroyed, but its Rex host {s} stays: {s}; run 'artoo rex hosts sync' to remove it", .{ op.rex.?.label, s.detail });
         return gone;
     }
 
@@ -2174,6 +2173,21 @@ test "vm rm: a failed Rex host removal fails only its step (exit 8); no running 
         try testing.expect(std.mem.find(u8, try g.tmp.dir.readFileAlloc(testing.io, ".artoo/rex-hosts.json", ar, .limited(1 << 16)), "web-01") != null);
     }
     {
+        // --no-wait skips verify; the leftover is still exit 8.
+        var g: testkit.Gateway = undefined;
+        try rmWithRex(&g, arena.allocator());
+        defer g.deinit();
+        const ar = g.h.arena.allocator();
+        const exe = try @import("rex_hosts.zig").fakeRex(&g);
+        var fake: FakeRunner = .{ .arena = ar };
+        try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try @import("rex_hosts.zig").listJson(ar, &.{.{ .label = "web-01", .endpoints = &.{"ssh://artoo@web-01.lab.example.com"} }}) });
+        try fake.expect(&.{ exe, "hosts", "remove", "web-01", "--autostart=false" }, null, .{ .code = 1, .stderr = "home unreachable\n" });
+        g.h.hooks.runner = fake.runner();
+        try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rm web-01 -y --confirm web-01 --no-wait"));
+        try fake.done();
+        try testing.expect(std.mem.find(u8, g.h.stderr(), "VM destroyed, but its Rex host web-01 stays") != null);
+    }
+    {
         var g: testkit.Gateway = undefined;
         try rmWithRex(&g, arena.allocator());
         defer g.deinit();
@@ -2219,7 +2233,8 @@ test "vm rm: a failed ssh config step fails only itself; the later steps still r
     try testing.expect(std.mem.find(u8, out, "✓ destroy VM and disks") != null);
     const err = g.h.stderr();
     try testing.expect(std.mem.find(u8, err, "VM destroyed, but its block stays in ~/.artoo/ssh_config; run 'artoo vm ssh-config'") != null);
-    try testing.expect(std.mem.find(u8, err, "its Rex host web-01 stays") != null);
+    // The host went; only the record could not be written.
+    try testing.expect(std.mem.find(u8, err, "its Rex host is removed, but ~/.artoo/rex-hosts.json still lists its Rex host web-01") != null);
 }
 
 test "vm rm: a refused device removal (501) is a failed step, a 5xx an unknown one" {
