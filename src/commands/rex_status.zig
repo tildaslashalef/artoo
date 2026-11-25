@@ -60,13 +60,17 @@ pub const status = struct {
         \\Reads, through the guest agent, how Rex is set up on each guest:
         \\the package and where it comes from, the apt pin, linger, the
         \\personal server (and whether it runs an older version than the one
-        \\installed), the xterm-rex terminfo and the agent skill for each agent
-        \\found; then one row per terminal whose program reports a status
-        \\(claude-code working, blocked, …). Nothing on the guest changes and
-        \\no Rex server is started.
+        \\installed), the xterm-rex terminfo, the agent skill for each agent
+        \\found, the agy bridge, the agent profile (files changed on the guest
+        \\or behind agents.profile) and the permission kind (a warning when an
+        \\agent may run unrestricted on a guest that is not sandboxed); then
+        \\one row per terminal whose program reports a status (claude-code
+        \\working, blocked, …). Nothing on the guest changes and no Rex server
+        \\is started.
         \\
         \\Without a VM: every guest tagged rex. A guest not tagged rex is
-        \\refused; 'artoo rex setup VM' sets it up. Any failed check exits 8.
+        \\refused; 'artoo rex setup VM' sets it up. A stopped guest, or one
+        \\whose agent does not answer, is not checked. Any failed check exits 8.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .complete = .vm, .help = "VMID or exact VM name (default: every guest tagged rex)", .required = false, .variadic = true }};
     pub const examples = [_][]const u8{ "artoo rex status", "artoo rex status naboo", "artoo rex status naboo hoth -o json" };
@@ -266,6 +270,24 @@ test "rex status VM: a guest not tagged rex is refused with the setup hint; a se
     try testing.expectEqual(Exit.ok, g.h.run(&r, "rex status naboo"));
     try expectAll(g.h.stdout(), &.{ "server       ▲ warning      not running (it starts with the first session)\n", "no agent harness detected" });
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
+}
+
+test "rex status: the skill row warns on what rex setup repairs and names what it leaves alone" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const user = "{\"server\":{\"running\":false},\"terminfo\":\"Ready\",\"skills\":[{\"id\":\"claude\",\"detected\":true,\"session_naming\":true,\"items\":[{\"kind\":\"skill\",\"state\":\"foreign\"},{\"kind\":\"hook\",\"state\":\"current\"}]},{\"id\":\"pi\",\"detected\":true,\"session_naming\":false,\"items\":[{\"kind\":\"skill\",\"state\":\"current\"}]}],\"agents\":[],\"errors\":[]}";
+    const probe = try execStatus(a, 0, try state.sample(a, .{ .user = user }));
+    const x = try extras(a);
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{ ans(list), ans(ping), ans(pid), ans(probe), x[0], x[1], x[2], x[3] });
+    defer g.deinit();
+    const r = root();
+    try testing.expectEqual(Exit.ok, g.h.run(&r, "rex status naboo"));
+    try expectAll(g.h.stdout(), &.{
+        "skill claude  ✓ ok           current; skill foreign, left alone\n",
+        "skill pi      ▲ warning      session naming off — 'artoo rex setup naboo'\n",
+    });
 }
 
 test "vm verify: a guest tagged rex gets rex status's rows, not checked without its agent" {

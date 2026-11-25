@@ -59,6 +59,7 @@ pub const Server = struct {
 pub const Harness = struct {
     id: []const u8 = "",
     detected: bool = false,
+    session_naming: bool = true,
     items: []const Item = &.{},
 
     pub const Item = struct { kind: []const u8 = "", state: []const u8 = "" };
@@ -145,7 +146,7 @@ const user_light = user_agents ++
 /// The user's side for `probe`: also terminfo and the agent skill.
 const user_full = user_agents ++
     \\t=$(rex terminfo status --json 2>/dev/null) && t=$(printf '%s' "$t" | jq -c '.conclusion // ""') || t=null
-    \\h=$(rex skill status --json 2>/dev/null) && h=$(printf '%s' "$h" | jq -c '[.harnesses[]? | {id: (.id // ""), detected: (.detected // false), items: [.items[]? | {kind: (.kind // ""), state: (.state // "")}]}]') || h=null
+    \\h=$(rex skill status --json 2>/dev/null) && h=$(printf '%s' "$h" | jq -c '[.harnesses[]? | {id: (.id // ""), detected: (.detected // false), session_naming: (.session_naming // true), items: [.items[]? | {kind: (.kind // ""), state: (.state // "")}]}]') || h=null
     \\jq -nc --argjson s "$s" --argjson g "$g" --argjson t "$t" --argjson h "$h" '{server: $s, terminfo: $t, skills: $h} + $g'
 ;
 
@@ -406,14 +407,24 @@ fn skillChecks(ctx: *Context, out: *std.ArrayList(Check), skills: ?[]const Harne
     for (hs) |h| {
         if (!h.detected) continue;
         any = true;
+        // Outdated or missing items and session naming off are what
+        // 'rex setup' repairs (a warning); a foreign or unreadable item
+        // is left alone by it, so it is named, not warned about (SPEC §20.7).
         var off: std.ArrayList([]const u8) = .empty;
-        for (h.items) |it| if (!std.mem.eql(u8, it.state, "current"))
-            try off.append(a, try std.fmt.allocPrint(a, "{s} {s}", .{ try k.clean(ctx, it.kind), try k.clean(ctx, it.state) }));
+        var alone: std.ArrayList([]const u8) = .empty;
+        for (h.items) |it| {
+            if (std.mem.eql(u8, it.state, "current")) continue;
+            const text = try std.fmt.allocPrint(a, "{s} {s}", .{ try k.clean(ctx, it.kind), try k.clean(ctx, it.state) });
+            const repairable = std.mem.eql(u8, it.state, "outdated") or std.mem.eql(u8, it.state, "missing");
+            try (if (repairable) &off else &alone).append(a, text);
+        }
+        if (!h.session_naming) try off.append(a, "session naming off");
         const label = try std.fmt.allocPrint(a, "skill {s}", .{try k.clean(ctx, h.id)});
+        const left = if (alone.items.len > 0) try std.fmt.allocPrint(a, "; {s}, left alone", .{try std.mem.join(a, ", ", alone.items)}) else "";
         try out.append(a, if (off.items.len == 0)
-            .{ .name = label, .status = .ok, .detail = "current" }
+            .{ .name = label, .status = .ok, .detail = try std.fmt.allocPrint(a, "current{s}", .{left}) }
         else
-            .{ .name = label, .status = .warning, .detail = try std.fmt.allocPrint(a, "{s} — {s}", .{ try std.mem.join(a, ", ", off.items), setup }) });
+            .{ .name = label, .status = .warning, .detail = try std.fmt.allocPrint(a, "{s} — {s}{s}", .{ try std.mem.join(a, ", ", off.items), setup, left }) });
     }
     if (!any) try out.append(a, .{ .name = "skill", .status = .not_checked, .detail = "no agent harness detected (Claude Code, Codex, OpenCode, pi)" });
 }

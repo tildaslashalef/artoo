@@ -457,7 +457,7 @@ const NewOp = struct {
         try changes.append(a, .{ .field = "host key", .from = null, .to = try std.fmt.allocPrint(a, "{s} entry {s} (read through the guest agent)", .{ known_hosts.default_path, op.name }) });
         if (op.ssh_config) try changes.append(a, .{ .field = "ssh config", .from = null, .to = try std.fmt.allocPrint(a, "Host {s} in {s}", .{ op.name, ssh_config.default_path }) });
         if (op.watch_vm) |w| try changes.append(a, .{ .field = "watch", .from = null, .to = try std.fmt.allocPrint(a, "Alloy pushes metrics and the journal to {s}", .{w}) });
-        if (op.rex) try changes.append(a, .{ .field = "Rex", .from = null, .to = try std.fmt.allocPrint(a, "rex setup: Rex ({t}), linger, terminfo, agent skill, tag {s}", .{ (try ctx.config()).rex.channel, rex_guest.tag }) });
+        if (op.rex) try changes.append(a, .{ .field = "Rex", .from = null, .to = try std.fmt.allocPrint(a, "rex setup: Rex ({t}), linger, terminfo, agent skill, agy bridge, agent profile and permissions, tag {s}", .{ (try ctx.config()).rex.channel, rex_guest.tag }) });
         var notes: std.ArrayList([]const u8) = .empty;
         if (op.existing != null) try notes.append(a, "Continuing an interrupted 'vm new': finished steps are skipped.");
         if (op.no_dns) try notes.append(a, "--no-dns: no DNS record; reach the guest by address.");
@@ -1990,7 +1990,7 @@ test "vm new --rex -n: the plan shows Rex; rex.default picks it, --no-rex drops 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const row = "Rex            (none) → rex setup: Rex (preview), linger, terminfo, agent skill, tag rex\n";
+    const row = "Rex            (none) → rex setup: Rex (preview), linger, terminfo, agent skill, agy bridge, agent profile and permissions, tag rex\n";
     try testing.expect(std.mem.find(u8, try rexPlan(a, " --rex", false), row) != null);
     try testing.expect(std.mem.find(u8, try rexPlan(a, "", true), row) != null);
     try testing.expect(std.mem.find(u8, try rexPlan(a, " --no-rex", true), "Rex ") == null);

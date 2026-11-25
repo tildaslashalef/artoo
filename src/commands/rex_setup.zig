@@ -186,7 +186,9 @@ pub const setup = struct {
         \\
         \\Refused, before anything is sent, for a template, a guest without
         \\the artoo tag, the edge, router or watchdog, a stopped guest or one
-        \\whose agent does not answer. No step starts a Rex server.
+        \\whose agent does not answer, and for an agents.profile that is not a
+        \\directory or holds a refused file (credentials, keys, .env, links).
+        \\One refused guest refuses the whole run. No step starts a Rex server.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "Guests to set up (VMID or name)", .complete = .vm, .variadic = true }};
     pub const flags = [_]cli.Flag{.{ .long = "force-profile", .help = "Overwrite agent profile files changed on the guest" }};
@@ -204,6 +206,15 @@ pub const setup = struct {
                 ctx.diag = null;
                 if (ctx.json()) return ui.json.envelope(ctx.out, .pve, .{ .result = "unchanged", .guests = op.target }, .{});
                 try ctx.out.print("Nothing to change: Rex is set up on {s}.\n", .{op.target});
+                // SPEC §20.3: 'rex status's checks end every run.
+                var failed: usize = 0;
+                for (op.guests) |*g| {
+                    const rep = try rex_status.report(ctx, &c, g.vm);
+                    try ctx.out.print("\n{s} ({d})\n", .{ rep.vm, rep.vmid });
+                    try vm_new.renderChecks(ctx, rep.checks);
+                    failed += vm_new.failures(rep.checks);
+                }
+                if (failed > 0) return ctx.fail(error.Partial, "{f} failed after setup", .{ui.values.count(failed, "check")});
             },
             else => return err,
         };
