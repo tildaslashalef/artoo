@@ -1,4 +1,4 @@
-# artoo — thin wrapper over build.zig (docs/SPEC.md §12).
+# artoo — thin wrapper over build.zig.
 #
 #   make            debug build
 #   make test       offline tests + zig fmt --check + Linux cross-builds
@@ -13,7 +13,7 @@ ZIG    ?= zig
 PREFIX ?= $(HOME)/.local
 BINDIR := $(PREFIX)/bin
 
-# Shell completion installed with the binary (SPEC §3.5); the script asks
+# Shell completion installed with the binary; the script asks
 # the binary on every Tab, so it never goes stale.
 COMPLETION      ?= fish
 XDG_CONFIG_HOME ?= $(HOME)/.config

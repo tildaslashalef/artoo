@@ -1,4 +1,4 @@
-//! `artoo gw …` (SPEC §10.2): UniFi's read surface. Every resource
+//! `artoo gw …`: UniFi's read surface. Every resource
 //! group (`gw <resource> ls|show|<extra>`) is generated at compile time from
 //! `unifi/catalog.zig`, so commands, flags, help and columns cannot drift
 //! from the catalog. `gw info` is the one-screen gateway summary.
@@ -329,7 +329,7 @@ pub fn zonePairPath(c: *unifi.Client, template: []const u8, from: []const u8, to
 fn resourceGroup(comptime r: *const catalog.Resource) cli.Command {
     comptime {
         // WANs: the catalog keeps the operation (gw spec); the verbs read the
-        // gateway's own WAN data (SPEC §10.4).
+        // gateway's own WAN data.
         if (std.mem.eql(u8, r.name, "wans")) return @import("gw_wans.zig").group;
         var children: []const cli.Command = &.{ cli.leaf(Ls(r)), cli.leaf(Show(r)) };
         for (r.extras) |e| children = children ++ .{cli.leaf(Extra(r, e))};

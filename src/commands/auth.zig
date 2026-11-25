@@ -1,4 +1,4 @@
-//! `artoo auth set|status|rm` (SPEC §6). Secrets are read from a hidden
+//! `artoo auth set|status|rm`. Secrets are read from a hidden
 //! prompt or `--stdin` and never echoed.
 
 const std = @import("std");
@@ -83,7 +83,7 @@ pub const set = struct {
         if (!secrets.validSecret(secret)) {
             return ctx.fail(error.Usage, "the secret must be one line of 1-4096 printable characters", .{});
         }
-        // SPEC §19: an OAuth client, never a personal API access token.
+        // Tailscale: an OAuth client, never a personal API access token.
         if ((kind == .tailscale or kind == .@"tailscale-policy") and !std.mem.startsWith(u8, secret, "tskey-client-"))
             return ctx.fail(error.Usage, "expected a Tailscale OAuth client secret (tskey-client-…); personal API access tokens (tskey-api-…) are not used", .{});
         if (present) try ctx.confirm("Replace the existing {s} secret in {s}?", .{ @tagName(kind), where });
@@ -144,7 +144,7 @@ pub const status = struct {
             .{ .title = "STATUS" },
         }, &rows);
         // The policy client is created only to change the policy and
-        // revoked afterwards (SPEC §19): its absence is no gap.
+        // revoked afterwards: its absence is no gap.
         if (std.mem.findScalar(bool, present[0..4], false) != null) {
             try ctx.out.print("\n{s}Add a missing secret with 'artoo auth set pve|unifi|cloudflare|tailscale'.{s}\n", .{ u.palette.on(.muted), u.palette.off(.muted) });
         }

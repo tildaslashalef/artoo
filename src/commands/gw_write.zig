@@ -1,4 +1,4 @@
-//! Gateway writes (SPEC §10.2, §14.3): every catalog write becomes a verb
+//! Gateway writes: every catalog write becomes a verb
 //! under `gw <resource>` (`add`, `set`, `patch`, `rm`, `restart`, …),
 //! generated at compile time, plus the generic `gw api`. All of them run
 //! the one mutation pipeline (`exec.zig`): local validation, a read of the
@@ -318,7 +318,7 @@ fn macAddress(ctx: *Context, s: []const u8) ![]const u8 {
     return std.ascii.allocLowerString(ctx.arena, s);
 }
 
-/// SPEC §9.6 for DNS policies written through the catalog or `gw api`:
+/// The exposure hard rule for DNS policies written through the catalog or `gw api`:
 /// outside home.arpa, no name or target may point at Proxmox/UniFi.
 fn guardDns(ctx: *Context, b: Value) !void {
     if (b != .object) return;
@@ -904,7 +904,7 @@ test "gw writes: bad files are usage errors before any request" {
     try testing.expectEqual(Exit.usage, g.h.run(&root, "gw vouchers purge -y"));
     try testing.expectEqual(Exit.usage, g.h.run(&root, "gw devices adopt nope"));
     try testing.expectEqual(Exit.usage, g.h.run(&root, "gw devices port-cycle Beacon x"));
-    // SPEC §9.6 through the catalog.
+    // The exposure hard rule through the catalog.
     const dns = try g.file("dns.json", "{\"type\":\"A_RECORD\",\"enabled\":true,\"domain\":\"pve.lab.example.com\",\"ipv4Address\":\"192.168.1.10\",\"ttlSeconds\":0}");
     try testing.expectEqual(Exit.refused, g.h.run(&root, try std.fmt.allocPrint(ar, "gw dns-policies add --from {s} -y", .{dns})));
     try testing.expectEqual(@as(usize, 0), g.sent());

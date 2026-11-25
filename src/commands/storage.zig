@@ -1,4 +1,4 @@
-//! `artoo storage ls | show STORAGE` (SPEC §3.3, §11): storages on the
+//! `artoo storage ls | show STORAGE`: storages on the
 //! node with usage, and per-storage content. Read-only; no invented
 //! totals (a storage without numbers shows `--`).
 

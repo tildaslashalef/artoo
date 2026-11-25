@@ -1,4 +1,4 @@
-//! Guest SSH host keys (SPEC §9.3, §9.4): `vm new` reads the guest's
+//! Guest SSH host keys: `vm new` reads the guest's
 //! ed25519 host key through the guest agent (an authenticated channel)
 //! and records it in `~/.artoo/known_hosts` under the VM name
 //! (`HostKeyAlias`), so the first SSH connection is already strict — no
@@ -90,7 +90,7 @@ pub fn record(ctx: *Context, alias: []const u8, key: ?[]const u8) !void {
 }
 
 /// The guest user's private key: `guests.ssh_public_key` without `.pub`
-/// (expanded; SPEC §9.3).
+/// (expanded).
 pub fn guestIdentity(ctx: *Context) ![]const u8 {
     const cfg = try ctx.config();
     const public = files.expandHome(ctx.arena, ctx.env, cfg.guests.ssh_public_key) catch
@@ -128,7 +128,7 @@ pub fn sshArgv(ctx: *Context, alias: []const u8, address: []const u8, batch: boo
     return argv.items;
 }
 
-/// Tag of guests reachable over SSH only from Proxmox (SPEC §9.7.3).
+/// Tag of guests reachable over SSH only from Proxmox.
 pub const jump_tag = "ssh-jump";
 
 /// The `ProxyCommand` through root on Proxmox with artoo's Proxmox SSH settings

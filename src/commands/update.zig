@@ -1,8 +1,8 @@
-//! `artoo update [VERSION] [--check]` (SPEC §18): replace the running
+//! `artoo update [VERSION] [--check]`: replace the running
 //! binary with a GitHub release — chosen, downloaded and verified
 //! (SHA256SUMS, GitHub's digest, the binary's own `--version`) before the
 //! plan is shown; then a backup copy and one atomic rename. The pipeline
-//! is §8.2's, run here because verification precedes the preview and the
+//! is the one mutation pipeline's (exec.zig), run here because verification precedes the preview and the
 //! staged file must go on every path that does not install it.
 
 const std = @import("std");

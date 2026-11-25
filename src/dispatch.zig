@@ -1,5 +1,5 @@
 //! Parse → load config → run the command → map its error to the exit code.
-//! The error → exit-code table lives here and nowhere else (SPEC §4.3).
+//! The error → exit-code table lives here and nowhere else.
 
 const std = @import("std");
 const Io = std.Io;
@@ -32,7 +32,7 @@ pub const Exit = enum(u8) {
     }
 };
 
-/// The one error → exit-code table (SPEC §4.3). Modules return their own
+/// The one error → exit-code table. Modules return their own
 /// error sets; anything unlisted is an internal error.
 pub fn exitFor(err: anyerror) Exit {
     return switch (err) {
@@ -130,7 +130,7 @@ fn dispatchInner(p: Process, root: *const cli.Command, words: []const []const u8
                 .err_ui = err_ui,
                 .path = try pathTail(p.arena, inv.path),
             };
-            // The activity line (SPEC §4.5): stdout and stderr pass
+            // The activity line: stdout and stderr pass
             // through gates that erase it at the first output.
             const live = err_ui.width != null and !globals.verbose and !json and !inv.command().hidden;
             var act: activity.Activity = .{ .io = p.io, .w = p.err, .u = &err_ui, .name = ctx.path };

@@ -1,4 +1,4 @@
-//! `artoo vm ssh-config` and `artoo vm cp` (SPEC §9.10): plain ssh, scp
+//! `artoo vm ssh-config` and `artoo vm cp`: plain ssh, scp
 //! and rsync as strict as `vm ssh`, and copies as the guest user to, from or
 //! between guests with a SHA-256 check on the far side. Neither writes as
 //! root nor reaches Proxmox or UniFi.
@@ -81,7 +81,7 @@ fn hasAlias(text: []const u8, alias: []const u8) bool {
     return false;
 }
 
-/// Pin the guest's host key from the guest agent (SPEC §9.3 step 7).
+/// Pin the guest's host key from the guest agent.
 fn pinKey(c: *pve.Client, v: vms.Vm) !void {
     const ctx = c.ctx;
     const key = try known_hosts.keyOf(ctx.arena, try agent.readFile(c, v.vmid, known_hosts.host_key_file)) orelse
@@ -241,8 +241,8 @@ pub fn keyFingerprint(arena: std.mem.Allocator, key: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "SHA256:{s}", .{enc.encode(out, &sum)});
 }
 
-/// Replace a guest's pinned host key with the one its guest agent reads
-/// (SPEC §9.10): the agent is the trusted path, as at first pinning.
+/// Replace a guest's pinned host key with the one its guest agent reads:
+/// the agent is the trusted path, as at first pinning.
 const RepinOp = struct {
     c: *pve.Client,
     word: []const u8,
@@ -375,7 +375,7 @@ pub const ssh_config_cmd = struct {
 
 // ---------------------------------------------------------------- cp
 
-/// One side of a copy (SPEC §9.10).
+/// One side of a copy.
 pub const Side = union(enum) {
     local: []const u8,
     remote: Remote,

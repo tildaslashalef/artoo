@@ -1,7 +1,7 @@
 .{
     .name = .artoo,
     // Not artoo's version: Zig requires this field. `artoo --version` comes
-    // from the Git release tags (build.zig, docs/RELEASING.md §1).
+    // from the Git release tags (build.zig).
     .version = "0.0.0",
     // Regenerated for this fresh package identity (never copied from an
     // upstream project). See build.zig.zon docs.

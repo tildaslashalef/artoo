@@ -1,4 +1,4 @@
-//! Where `artoo update` installs and how (SPEC §18): the running
+//! Where `artoo update` installs and how: the running
 //! executable, refused when it was reached through a symbolic link or its
 //! directory is not writable; the new binary staged beside it, the old one
 //! copied to `.<name>.previous`, then one atomic rename.

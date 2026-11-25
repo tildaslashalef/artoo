@@ -1,4 +1,4 @@
-//! `artoo vm reboot --pending` (SPEC §9.12): reboot the artoo guests
+//! `artoo vm reboot --pending`: reboot the artoo guests
 //! that want it (`/run/reboot-required`), one after another, each back,
 //! its agent answering and the request gone before the next — the first
 //! that does not come back stops the run. The edge, the router and the

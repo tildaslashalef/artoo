@@ -1,4 +1,4 @@
-//! `artoo config export|import` (SPEC §6.1): carry artoo's setup — the
+//! `artoo config export|import`: carry artoo's setup — the
 //! config file, the CA bundles it names and the API credentials — to
 //! another Mac or Linux machine in one passphrase-sealed file. Guest
 //! passwords travel only with --guest-passwords; SSH keys never do;
@@ -600,7 +600,7 @@ test "config export --guest-passwords carries the stored passwords of Proxmox's 
     defer g.deinit();
     const ar = g.h.arena.allocator();
     try g.mem.map.put(ar, "guest/naboo", "naboo-sudo-password");
-    // The policy-writing Tailscale client never travels (SPEC §6.1, §19).
+    // The policy-writing Tailscale client never travels.
     try g.mem.map.put(ar, "tailscale-policy", "tskey-client-policy-secret");
     try g.mem.map.put(ar, "guest/gone", "left-behind");
     g.h.hooks.kdf_kib = 64;

@@ -1,5 +1,5 @@
-//! `artoo completion fish|bash|zsh` and the hidden `artoo __complete`
-//! (SPEC §3.5). Candidates come from the command table; VM and template
+//! `artoo completion fish|bash|zsh` and the hidden `artoo __complete`.
+//! Candidates come from the command table; VM and template
 //! names are read from Proxmox under a 1 s deadline, and a new guest's
 //! NAME offers the curated names no VM carries yet. A failure completes
 //! nothing beyond offline candidates: stdout is the user's prompt line,
@@ -82,7 +82,7 @@ fn names(ctx: *Context, templates: bool) ![]const complete.Candidate {
     return out.items;
 }
 
-/// Curated guest names (SPEC §9.1) no VM or template carries; all of
+/// Curated guest names no VM or template carries; all of
 /// them when Proxmox cannot be asked.
 fn curated(ctx: *Context) ![]const complete.Candidate {
     const taken: []const vms.Vm = taken: {

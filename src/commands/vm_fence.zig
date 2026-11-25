@@ -1,7 +1,7 @@
-//! `artoo vm fence VM [--off]` (SPEC §9.11): the Proxmox VE firewall on
+//! `artoo vm fence VM [--off]`: the Proxmox VE firewall on
 //! an artoo guest's NIC — derived rules, the `ipfilter-net0` IP set, MAC
 //! filter and DROP policies — written through the Proxmox API with the
-//! machinery of the edge VM's host firewall (SPEC §9.7). Nothing inside
+//! machinery of the edge VM's host firewall. Nothing inside
 //! the guest changes. Guests fenced this way carry the tag `fenced`.
 
 const std = @import("std");
@@ -29,7 +29,7 @@ const Context = app.Context;
 const Value = std.json.Value;
 const Rule = edge.Rule;
 
-/// Marks a guest fenced by `vm fence` (SPEC §9.11).
+/// Marks a guest fenced by `vm fence`.
 pub const tag = "fenced";
 
 const private_v4 = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16";
@@ -62,7 +62,7 @@ pub const Inputs = struct {
     allow: []const Exception = &.{},
 };
 
-/// The SPEC §9.11 rules, first match wins.
+/// The fence rules, first match wins.
 pub fn rules(a: std.mem.Allocator, in: Inputs) ![]const Rule {
     var out: std.ArrayList(Rule) = .empty;
     if (in.edge) |e| for (in.services) |s| try out.append(a, .{
@@ -316,7 +316,7 @@ pub fn datacenterOn(c: *pve.Client) ?bool {
     };
 }
 
-/// Apply `want` (SPEC §9.11 order): rules, IP set, NIC flag with the tag,
+/// Apply `want` in this order: rules, IP set, NIC flag with the tag,
 /// options last.
 pub fn apply(c: *pve.Client, v: vms.Vm, want: []const Rule, s: State) !void {
     const a = c.ctx.arena;
@@ -338,7 +338,7 @@ pub fn derive(ctx: *Context, c: *pve.Client, v: vms.Vm) ![]const Rule {
     return rules(ctx.arena, try inputsFor(ctx, c, lab, v, lab.routes));
 }
 
-/// The fence check of `vm verify` (SPEC §9.11).
+/// The fence check of `vm verify`.
 pub fn check(ctx: *Context, c: *pve.Client, v: vms.Vm) !vm_new.Check {
     const label = "fence";
     if (refusal(v) != null) return .{ .name = label, .status = .not_checked, .detail = "not a guest for 'vm fence'" };
@@ -599,8 +599,8 @@ pub fn fencedNamed(list: []const vms.Vm, name: []const u8) ?vms.Vm {
     return null;
 }
 
-/// A fenced guest whose fence a route change moves (`svc add|set|rm`,
-/// SPEC §9.11): its wanted rules for the new route set and its state.
+/// A fenced guest whose fence a route change moves (`svc add|set|rm`):
+/// its wanted rules for the new route set and its state.
 pub const Follow = struct {
     vm: vms.Vm,
     want: []const Rule,

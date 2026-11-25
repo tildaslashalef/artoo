@@ -1,4 +1,4 @@
-//! UniFi Network Integration API client (SPEC §10, §17.1).
+//! UniFi Network Integration API client.
 //! `X-API-KEY` from the SecretStore at request time; JSON responses.
 
 const std = @import("std");
@@ -59,14 +59,14 @@ pub const Client = struct {
         return c.send(method, try std.fmt.allocPrint(c.ctx.arena, "{s}{s}", .{ c.base, path }), path, body);
     }
 
-    /// The gateway's own OpenAPI document (SPEC §17.1), served beside the
+    /// The gateway's own OpenAPI document, served beside the
     /// Integration API, not under it.
     pub fn getSpec(c: *Client) ![]const u8 {
         const url = try std.fmt.allocPrint(c.ctx.arena, "{s}{s}", .{ origin(c.base), spec_path });
         return (try c.send(.GET, url, spec_path, null)).body;
     }
 
-    /// One request to the classic API of this site (SPEC §17.1):
+    /// One request to the classic API of this site:
     /// `sub` like `rest/user`; the `data` array of a `meta.rc == "ok"`
     /// envelope.
     pub fn classic(c: *Client, method: http.Method, sub: []const u8, body: ?[]const u8) ![]Value {
@@ -81,7 +81,7 @@ pub const Client = struct {
         return data.?.array.items;
     }
 
-    /// One request to the v2 API of this site (SPEC §17.1): `sub` like
+    /// One request to the v2 API of this site: `sub` like
     /// `wan/load-balancing/status`; the parsed JSON body. A `POST` through
     /// here is a read (a search that changes nothing): sent once, never
     /// retried, and a failure is a failed read, not an unknown write.
@@ -129,7 +129,7 @@ pub const Client = struct {
 pub const spec_path = "/proxy/network/api-docs/integration.json";
 /// The classic (undocumented) API beside the Integration API.
 pub const classic_prefix = "/proxy/network/api/s/";
-/// The v2 (undocumented) API beside it (SPEC §17.1).
+/// The v2 (undocumented) API beside it.
 pub const v2_prefix = "/proxy/network/v2/api/site/";
 
 /// `https://host[:port]/a/b` → `https://host[:port]`.

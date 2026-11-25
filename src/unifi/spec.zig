@@ -1,5 +1,5 @@
 //! Drift between the built-in catalog and an OpenAPI document — the
-//! gateway's live one or a local export (`artoo gw spec`, SPEC §10.2).
+//! gateway's live one or a local export (`artoo gw spec`).
 //! Compares every operation (method + path + operationId), each write's
 //! request-body fields (allowed and required, top level, union over
 //! discriminator variants), and for every list the catalog generates the

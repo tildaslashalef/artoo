@@ -1,4 +1,4 @@
-//! macOS login Keychain through Apple's `/usr/bin/security` (SPEC §6).
+//! macOS login Keychain through Apple's `/usr/bin/security`.
 //!
 //! Items: service `artoo`, account = secret name, trusted app
 //! `/usr/bin/security`, so rebuilding artoo never causes prompts. The secret

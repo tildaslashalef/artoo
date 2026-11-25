@@ -1,4 +1,4 @@
-//! Release archive checks for `artoo update` (SPEC §18): the SHA-256 line
+//! Release archive checks for `artoo update`: the SHA-256 line
 //! in `SHA256SUMS`, GitHub's asset digest, and the one binary entry read
 //! from the gzip + tar stream with the stdlib only. Nothing here touches
 //! the file system: the entry is streamed to a writer the caller owns.

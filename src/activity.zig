@@ -1,4 +1,4 @@
-//! The activity line (SPEC §4.5): while a command reads before it prints,
+//! The activity line: while a command reads before it prints,
 //! one line on stderr — spinner, command path, elapsed time, latest
 //! detail — erased for good at the first output. Dispatch starts it for
 //! every command; commands only add details (`Context.busy`, `Tally`).
@@ -93,7 +93,7 @@ pub const Activity = struct {
     }
 };
 
-/// The drawn line (no newline): §4.4's live line for a single step named
+/// The drawn line (no newline): the step ledger's live line for a single step named
 /// after the command, cut to the terminal width.
 pub fn line(w: *Io.Writer, u: *const ui.Ui, name: []const u8, detail: []const u8, seconds: u64, frame: usize) !void {
     try exec.liveLine(w, u, .{ .name = name, .detail = detail }, ui.text.width(name), seconds, frame, u.width);

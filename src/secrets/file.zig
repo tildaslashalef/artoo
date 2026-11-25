@@ -1,7 +1,7 @@
 //! Headless fallback: `$XDG_CONFIG_HOME/artoo/secrets.json` (default
 //! `~/.config/artoo/`), dir 0700 + file 0600. Like ssh with private keys,
 //! a secrets file that is a symlink, owned by someone else, or readable by
-//! group/others is refused (SPEC §6).
+//! group/others is refused.
 
 const std = @import("std");
 const builtin = @import("builtin");

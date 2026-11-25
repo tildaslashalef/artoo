@@ -141,7 +141,7 @@ pub const Gateway = struct {
     }
 
     /// Set `tailscale.client_id` (and more sections, as JSON members) in
-    /// the config file, which turns the Tailscale integrations on (§19).
+    /// the config file, which turns the Tailscale integrations on.
     pub fn tailscaleConfig(g: *Gateway, extra: []const u8) !void {
         try g.tmp.dir.createDirPath(testing.io, ".artoo");
         const data = try std.fmt.allocPrint(g.h.arena.allocator(), "{{\"schema_version\":1,\"tailscale\":{{\"client_id\":\"kTEST1CNTRL\"}}{s}}}\n", .{extra});

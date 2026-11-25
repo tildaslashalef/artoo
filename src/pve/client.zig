@@ -1,4 +1,4 @@
-//! Proxmox VE API client (SPEC §7, §8). Token `artoo@pve!cli` from the
+//! Proxmox VE API client. Token `artoo@pve!cli` from the
 //! SecretStore at request time; responses are `{"data": …}`, writes are
 //! form-encoded. pveproxy reports errors in the status line's reason
 //! phrase (and sometimes a JSON `message`/`errors`); both are surfaced.
@@ -76,7 +76,7 @@ pub const Client = struct {
         };
     }
 
-    /// One write (sent once; SPEC §8.1); returns `data` (often a UPID).
+    /// One write (sent once); returns `data` (often a UPID).
     pub fn send(c: *Client, method: http.Method, path: []const u8, params: []const Param) !Value {
         const r = try c.request(method, path, params);
         return data(c.ctx, r.body, path);

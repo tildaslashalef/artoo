@@ -1,4 +1,4 @@
-//! SecretStore (SPEC §6): `get`, `set`, `delete`, `exists` over the
+//! SecretStore: `get`, `set`, `delete`, `exists` over the
 //! Keychain, Secret Service, a 0600 file, or memory (tests). Secrets are
 //! fetched only right before use and never printed, logged or put in
 //! error text.

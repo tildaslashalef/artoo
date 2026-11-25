@@ -1,4 +1,4 @@
-//! Shell completion over the command table (SPEC §3.5).
+//! Shell completion over the command table.
 //!
 //! The scripts `artoo completion <shell>` prints are thin: on every Tab they
 //! run `artoo __complete -- <words…>` (the words after `artoo`, the last

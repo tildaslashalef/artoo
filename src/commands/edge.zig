@@ -1,4 +1,4 @@
-//! `artoo edge setup|secret|status` (SPEC §9.7): the hardened edge VM,
+//! `artoo edge setup|secret|status`: the hardened edge VM,
 //! configured through the guest agent (root, authenticated by the Proxmox
 //! API): rendered files written over stdin, fixed scripts, a step ledger.
 //! The edge VM is the one VM tagged `role-edge`.
@@ -239,7 +239,7 @@ pub const Rule = struct {
     }
 };
 
-/// The §9.7 policy as Proxmox VM rules, first match wins: the host-side
+/// The edge VM's network policy as Proxmox VM rules, first match wins: the host-side
 /// copy of the guest's nftables, which root inside the VM cannot change.
 pub fn hostRules(ad: files.Addresses) [16]Rule {
     return .{
@@ -446,7 +446,7 @@ const SetupOp = struct {
     host_steps: HostSteps = .{},
     ledger: exec.Ledger = .{},
     fp: []const u8 = "",
-    /// `--snapshot` (SPEC §9.16).
+    /// `--snapshot`.
     guard: ?snapguard.Guard = null,
 
     pub fn read(op: *SetupOp, ctx: *Context) !void {

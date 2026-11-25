@@ -1,4 +1,4 @@
-//! VM mutations (SPEC §3.3, §8.2): power actions, `set`, `clone`, `rm`
+//! VM mutations: power actions, `set`, `clone`, `rm`
 //! and snapshots — all on the one pipeline: read → plan (no-ops refused)
 //! → confirm (typed target for destructive ones) → send once → track the
 //! returned task → verify with a fresh read.
@@ -233,7 +233,7 @@ fn PowerCmd(comptime action: Power) type {
 
 // ---------------------------------------------------------------- set
 
-/// Config keys `vm set` accepts (SPEC §3.3: allowlisted).
+/// Config keys `vm set` accepts (an allowlist).
 const Key = enum {
     name,
     description,
@@ -251,7 +251,7 @@ const Key = enum {
     numa,
     hotplug,
 
-    /// May wait for the next start on a running VM (SPEC §9.13).
+    /// May wait for the next start on a running VM.
     fn hot(key: Key) bool {
         return switch (key) {
             .cores, .sockets, .vcpus, .memory, .balloon, .numa => true,
@@ -414,7 +414,7 @@ const SetOp = struct {
     config: Value = .null,
     digest: []const u8 = "",
     changes: []const Assignment = &.{},
-    /// `--reboot`: apply changes that wait for a restart (SPEC §9.13).
+    /// `--reboot`: apply changes that wait for a restart.
     reboot: bool = false,
     rebooted: ?[]const u8 = null,
     result: []const u8 = "configuration applied and verified",
@@ -423,7 +423,7 @@ const SetOp = struct {
         op.vm = try vms.resolve(op.c, op.word);
         op.target = try vmLabel(ctx, op.vm.?);
         // An artoo guest's name lives in many places; Proxmox's label
-        // alone would leave it half-renamed (SPEC §9.18).
+        // alone would leave it half-renamed.
         for (op.wanted) |w| if (w.key == .name and template.taggedWith(op.vm.?.tags, "artoo"))
             return ctx.fail(error.Refused, "{s} is an artoo guest: its name is also its hostname, DNS and UniFi records, pinned key, password entry, services, fences, tailnet name and watchdog series — use 'artoo vm rename {s} {s}'", .{ op.vm.?.name, op.vm.?.name, w.value });
         op.config = try vms.config(op.c, op.vm.?.vmid);
@@ -533,7 +533,7 @@ const SetOp = struct {
         return op.digest;
     }
 
-    /// SPEC §9.14: what a running guest with an answering agent uses now,
+    /// What a running guest with an answering agent uses now,
     /// and a warning when the new size (MiB) leaves less than 512 MiB
     /// above it.
     fn memoryNotes(op: *SetOp, ctx: *Context, mib_text: []const u8, notes: *std.ArrayList([]const u8)) !void {
@@ -558,7 +558,7 @@ const SetOp = struct {
     }
 
     /// `--reboot`: when a change waits for the restart, reboot through
-    /// Proxmox (a reboot inside the guest would not apply it, SPEC §9.13).
+    /// Proxmox (a reboot inside the guest would not apply it).
     pub fn track(op: *SetOp, ctx: *Context) !void {
         if (!op.reboot) return;
         const v = op.vm.?;
@@ -587,7 +587,7 @@ const SetOp = struct {
     }
 
     /// The stored configuration must hold every change; one that waits
-    /// for the next start is named in the result (SPEC §9.13).
+    /// for the next start is named in the result.
     pub fn verify(op: *SetOp, ctx: *Context) !bool {
         const a = ctx.arena;
         const ks = try vms.keys(a, try vms.pendingRaw(op.c, op.vm.?.vmid));
@@ -688,7 +688,7 @@ pub const set = struct {
 };
 
 /// `ssh-jump` is a tag: a guest whose tags changed gets its block in
-/// `~/.artoo/ssh_config` rewritten (SPEC §9.10), when the file has one.
+/// `~/.artoo/ssh_config` rewritten, when the file has one.
 fn refreshSshBlock(ctx: *Context, op: *const SetOp) !void {
     if (ctx.globals.dry_run or ctx.globals.no_wait) return;
     const v = op.vm orelse return;
@@ -848,13 +848,13 @@ const RmOp = struct {
     svc_note: ?[]const u8 = null,
     secret: bool = false,
     host_key: bool = false,
-    /// Its block in `~/.artoo/ssh_config` (SPEC §9.10).
+    /// Its block in `~/.artoo/ssh_config`.
     ssh_block: bool = false,
-    /// The watchdog holding this VM's metrics (SPEC §9.9), or why not.
+    /// The watchdog holding this VM's metrics, or why not.
     watch_vm: ?vms.Vm = null,
     watch_series: usize = 0,
     watch_note: ?[]const u8 = null,
-    /// The Tailscale API, when set up (SPEC §19), and the lab device of
+    /// The Tailscale API, when set up, and the lab device of
     /// this VM on the tailnet, or why not.
     tsc: ?tsapi.Client = null,
     ts_dev: ?tn.Device = null,
@@ -862,7 +862,7 @@ const RmOp = struct {
     ledger: exec.Ledger = .{},
 
     /// Its device on the tailnet: removed after the destroy, when it is a
-    /// lab device (SPEC §19).
+    /// lab device.
     fn readTailnet(op: *RmOp, ctx: *Context) !void {
         const v = op.vm.?;
         if (op.tsc == null) {
@@ -1219,7 +1219,7 @@ const SnapOp = struct {
     vm: ?vms.Vm = null,
     exists: bool = false,
     snap_has_ram: bool = false,
-    /// Rollback: snapshots taken after the target on a ZFS disk (SPEC §9.16).
+    /// Rollback: snapshots taken after the target on a ZFS disk.
     blockers: []const snapguard.Snap = &.{},
     /// Rollback: start the VM again (it ran and the snapshot has no RAM).
     start: bool = false,
@@ -1390,7 +1390,7 @@ const snap_ls = struct {
     }
 };
 
-/// `vm snap prune` (SPEC §9.16): artoo-owned snapshots beyond the cap or
+/// `vm snap prune`: artoo-owned snapshots beyond the cap or
 /// past the age, one DELETE each, oldest first, stopping at the first
 /// failure. Operator snapshots are never selected; never `force`.
 const PruneOp = struct {
@@ -1743,7 +1743,7 @@ test "vm set: validated, digest-guarded PUT of changed keys only" {
     try testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/100/pending HTTP/1.1", g.request(5));
     try testing.expect(std.mem.find(u8, out, "The guest uses 3.6 GiB of 3.8 GiB now") != null);
     try testing.expect(std.mem.find(u8, out, "Warning: 4096 MiB leaves less than 512 MiB above the 3.6 GiB the guest uses now.") != null);
-    // Stored, but waiting for the restart (SPEC §9.13): the result says so.
+    // Stored, but waiting for the restart: the result says so.
     try testing.expectEqual(Exit.ok, g.h.run(&root, "vm set web-01 memory=4G -y"));
     try testing.expect(std.mem.find(u8, g.h.stdout(), "The guest uses 2.9 GiB of 3.8 GiB now") != null);
     try testing.expect(std.mem.find(u8, g.h.stdout(), "Warning:") == null);

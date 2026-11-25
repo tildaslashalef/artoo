@@ -1,4 +1,4 @@
-//! `artoo ts …` (SPEC §19): the lab's side of the tailnet through the
+//! `artoo ts …`: the lab's side of the tailnet through the
 //! Tailscale API — devices, routes, DNS, auth key metadata and the policy
 //! (read-only). Writes go through the one mutation pipeline and touch lab
 //! devices only (artoo's tags, or a machine name that is a VM tagged
@@ -37,7 +37,7 @@ pub fn labTags(ctx: *Context) ![]const []const u8 {
     return out.items;
 }
 
-/// Who owns what (SPEC §19). Writes need Proxmox (`required`); listings
+/// Who owns what. Writes need Proxmox (`required`); listings
 /// fall back to the tags alone when it cannot be read.
 pub fn ownership(ctx: *Context, required: bool) !tn.Ownership {
     const tags = try labTags(ctx);
@@ -122,7 +122,7 @@ fn routesText(ctx: *Context, d: tn.Device) ![]const u8 {
     return clean(ctx, out.items);
 }
 
-/// The JSON view of a device (SPEC §4.2: raw units, epoch seconds).
+/// The JSON view of a device (raw units, epoch seconds).
 pub const DeviceView = struct {
     id: []const u8,
     name: []const u8,
@@ -417,7 +417,7 @@ pub fn validate(c: *ts.Client, text: []const u8) !Validation {
     // Only the documented shapes count as valid: `{}`, or a message with
     // `data` entries that carry warnings and no errors. Anything else —
     // another member, an `errors` that is no list of strings, a non-object
-    // answer — is an error (SPEC §19).
+    // answer — is an error.
     var odd = v != .object;
     if (v == .object) {
         var it = v.object.iterator();
@@ -562,7 +562,7 @@ pub const policy_preview = struct {
 
 // ---------------------------------------------------------------- writes
 
-/// The device NAME names, refused unless it is a lab device (SPEC §19).
+/// The device NAME names, refused unless it is a lab device.
 fn labDevice(ctx: *Context, c: *ts.Client, word: []const u8) !struct { tn.Device, []const u8, tn.Ownership } {
     const d = try resolveDevice(ctx, try tn.devices(c), word);
     const own = try ownership(ctx, true);
@@ -674,7 +674,7 @@ const TagOp = struct {
         op.dev, _, const own = try labDevice(ctx, op.c, op.word);
         op.target = try clean(ctx, op.dev.machine);
         // The router's tag belongs to 'router setup': routes are approved
-        // and the policy keyed by it (SPEC §9.6).
+        // and the policy keyed by it.
         if (own.isRouter(op.dev)) return ctx.fail(error.Refused, "{s} is the subnet router; its tag {s} is set by 'artoo router setup'", .{ op.target, tn.router_tag });
         op.state = try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ op.dev.id, try std.mem.join(ctx.arena, ",", op.dev.tags) });
     }
@@ -769,7 +769,7 @@ pub const device_tag = struct {
         var op: TagOp = .{ .c = &c, .word = args.pos("NAME"), .tags = uniq.items };
         exec.run(ctx, &op, .{}) catch |err| {
             // Tailscale refuses to take away tags the node advertises
-            // itself; only logging in again changes them (SPEC §19).
+            // itself; only logging in again changes them.
             const why = ctx.diag orelse return err;
             if (err != error.Refused or std.mem.find(u8, why, "cannot remove current tags") == null) return err;
             return ctx.fail(error.Refused, "{s} — the node advertises those tags itself, and only logging in again changes them: for an artoo guest, 'artoo ts join {s} --tag {s}'", .{ why, op.target, uniq.items[0] });
@@ -845,7 +845,7 @@ pub const device_rm = struct {
     }
 };
 
-/// Approve exactly the LAN on a lab device that advertises it (SPEC §19):
+/// Approve exactly the LAN on a lab device that advertises it:
 /// never an exit node, never another subnet.
 pub const ApproveOp = struct {
     c: *ts.Client,
@@ -861,7 +861,7 @@ pub const ApproveOp = struct {
     pub fn read(op: *ApproveOp, ctx: *Context) !void {
         op.dev, _, const own = try labDevice(ctx, op.c, op.word);
         op.target = try clean(ctx, op.dev.machine);
-        // Only the subnet router carries the LAN (SPEC §9.6).
+        // Only the subnet router carries the LAN.
         if (!own.isRouter(op.dev))
             return ctx.fail(error.Refused, "{s} is not the subnet router (no tag {s}, no VM tagged role-router of that name); artoo approves the LAN on the router only", .{ op.target, tn.router_tag });
         op.current = try tn.routes(op.c, op.dev.id);
@@ -1059,7 +1059,7 @@ pub fn guestState(c: *pve.Client, vmid: u32) !GuestState {
 /// `--force-reauth` when a joined node moves to another tag (else empty:
 /// a node's advertised tags change only by logging in again). A tagged
 /// node that accepts no routes, advertises none, runs no Tailscale SSH and
-/// keeps its own DNS (SPEC §9.6).
+/// keeps its own DNS.
 const join_script =
     \\set -eu
     \\umask 077
@@ -1273,7 +1273,7 @@ pub const join = struct {
 // ---------------------------------------------------------------- policy apply
 
 /// Refuses, before any request, a policy that is not HuJSON or that
-/// grants Funnel (SPEC §9.6, §19): no override.
+/// grants Funnel: no override.
 pub fn checkPolicyLocally(ctx: *Context, word: []const u8, text: []const u8) !void {
     const a = ctx.arena;
     const json = tn.hujsonToJson(a, text) catch return ctx.fail(error.Refused, "{s} is not valid HuJSON (an unterminated string or comment, or a stray '/')", .{word});

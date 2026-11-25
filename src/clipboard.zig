@@ -1,6 +1,6 @@
 //! Copy text to the desktop clipboard through the platform's helper:
 //! `pbcopy` on macOS; `wl-copy`, `xclip` or `xsel` on Linux. The text
-//! travels only through the helper's stdin (SPEC §6).
+//! travels only through the helper's stdin.
 
 const std = @import("std");
 const builtin = @import("builtin");

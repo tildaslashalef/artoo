@@ -1,6 +1,6 @@
 //! Local file helpers shared by config and the file secret store:
 //! `~` expansion, private directories, and locked atomic replacement that
-//! refuses symlinked destinations (SPEC §5, §6).
+//! refuses symlinked destinations.
 
 const std = @import("std");
 const Io = std.Io;

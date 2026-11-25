@@ -1,4 +1,4 @@
-//! Snapshots before changes (SPEC §9.16): the `artoo-` naming, the cap
+//! Snapshots before changes: the `artoo-` naming, the cap
 //! and storage-headroom refusals, the snapshot step a guest-changing
 //! workflow runs first, prune selection and rollback blockers. A snapshot
 //! is a rollback point, not a backup; artoo never deletes one to make
@@ -105,7 +105,7 @@ pub fn stale(arena: Allocator, snaps: []const Snap, max_age_s: i64, now: i64) ![
 }
 
 /// The snapshots taken after `target`: on ZFS each of them blocks a
-/// rollback to `target` (SPEC §17.2), oldest first.
+/// rollback to `target`, oldest first.
 pub fn blockers(arena: Allocator, snaps: []const Snap, target: []const u8) ![]Snap {
     var t: ?i64 = null;
     for (snaps) |s| if (std.mem.eql(u8, s.name, target)) {
@@ -266,7 +266,7 @@ pub const Guard = struct {
     }
 };
 
-/// `vm verify`'s "snapshots" check (SPEC §9.16): how many, and a
+/// `vm verify`'s "snapshots" check: how many, and a
 /// warning per artoo-owned snapshot past `guests.snapshot_max_age_days`.
 pub const Verdict = struct { status: ui.style.Status, detail: []const u8 };
 

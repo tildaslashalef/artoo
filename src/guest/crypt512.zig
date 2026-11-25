@@ -1,5 +1,5 @@
 //! sha512-crypt (the `$6$` hash Proxmox's `cipassword` field accepts
-//! unchanged) plus the per-guest password generation of SPEC §9.1.
+//! unchanged) plus the per-guest password generation of `vm new`.
 //!
 //! The plaintext never leaves the workstation: it is generated here into
 //! caller-provided buffers, stored in the SecretStore (`guest/<name>`),

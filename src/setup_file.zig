@@ -1,4 +1,4 @@
-//! The encrypted setup file of `config export|import` (SPEC §6.1): a
+//! The encrypted setup file of `config export|import`: a
 //! passphrase-sealed copy of the config, the CA bundles and the API
 //! credentials, so artoo can be set up on another machine.
 //!

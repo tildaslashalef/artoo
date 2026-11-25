@@ -1,4 +1,4 @@
-//! The shared cloud-init vendor-data snippet (SPEC §9.1, §9.2): the guest
+//! The shared cloud-init vendor-data snippet: the guest
 //! baseline every VM receives through `cicustom: vendor=…`. Secret-free
 //! and identity-free — user, password hash, SSH key, hostname and address
 //! come from the VM's own cloud-init settings (Proxmox's user-data, which
@@ -58,7 +58,7 @@ pub const terminfo_source = "/usr/local/share/artoo/xterm-ghostty.terminfo";
 pub const tailscale_key = @embedFile("tailscale.asc");
 
 /// payload/README.md, plus Tailscale (installed, never enrolled); Alloy at
-/// its pin follows (SPEC §9.9: installed, started only by `watch enroll`).
+/// its pin follows (installed, started only by `watch enroll`).
 pub const packages = [_][]const u8{
     "git",       "vim",              "jq",     "coreutils", "curl", "ca-certificates", "tmux",    "htop",
     "fzf",       "eza",              "zoxide", "starship",  "fish", "ripgrep",         "fd-find", "unzip",
@@ -81,7 +81,7 @@ const sudoers_fmt =
 /// root disk is local: the initramfs needs no network.
 const dracut_no_network =
     \\# artoo: no networking in the initramfs (root is local), so udev can name
-    \\# the NIC as netplan says and the static address applies (SPEC §9.1)
+    \\# the NIC as netplan says and the static address applies
     \\omit_dracutmodules+=" dyn-netconf systemd-networkd network network-legacy "
     \\
 ;
@@ -115,12 +115,12 @@ pub const Snippet = struct {
     }
 };
 
-/// Security updates daily, Tailscale's too, never a reboot (SPEC §9.1).
+/// Security updates daily, Tailscale's too, never a reboot.
 /// Merged with the image's `50unattended-upgrades` (its Allowed-Origins
 /// keep the release and `-security` pockets).
 pub const unattended_path = "/etc/apt/apt.conf.d/52artoo-unattended-upgrades";
 pub const unattended =
-    \\// artoo guest baseline (SPEC §9.1): security updates daily, no reboot.
+    \\// artoo guest baseline: security updates daily, no reboot.
     \\APT::Periodic::Update-Package-Lists "1";
     \\APT::Periodic::Unattended-Upgrade "1";
     \\Unattended-Upgrade::Origins-Pattern {
@@ -138,7 +138,7 @@ pub fn render(arena: Allocator, codename: []const u8, user: []const u8) !Snippet
     const w = &out.writer;
     try w.writeAll(
         \\#cloud-config
-        \\# artoo guest baseline (vendor-data, SPEC §9.1). Shared by every guest and
+        \\# artoo guest baseline (vendor-data). Shared by every guest and
         \\# secret-free: user, password hash, SSH key, hostname and address come from
         \\# the VM's own cloud-init settings.
         \\ssh_pwauth: false
@@ -167,7 +167,7 @@ pub fn render(arena: Allocator, codename: []const u8, user: []const u8) !Snippet
         \\
     , .{codename});
     try keyBlock(w, tailscale_key);
-    // Alloy (SPEC §9.9): Grafana's repository, the key embedded in artoo.
+    // Alloy: Grafana's repository, the key embedded in artoo.
     try w.writeAll(
         \\    grafana.list:
         \\      source: "deb [signed-by=$KEY_FILE] https://apt.grafana.com stable main"

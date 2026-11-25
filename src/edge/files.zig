@@ -1,11 +1,11 @@
-//! What `artoo edge setup` puts on the edge VM (SPEC §9.7): every file is
+//! What `artoo edge setup` puts on the edge VM: every file is
 //! rendered here from config, so addresses cannot drift from the lab's.
 //! Each carries a header naming artoo as its owner.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// Pinned build inputs (SPEC §9.7). Bumping one is a deliberate SPEC edit.
+/// Pinned build inputs. Bumping one is a deliberate SPEC edit.
 pub const caddy_version = "v2.11.7";
 pub const cloudflare_module = "github.com/caddy-dns/cloudflare";
 pub const cloudflare_module_version = "v0.2.4";
@@ -36,7 +36,7 @@ pub const File = struct {
     content: []const u8,
 };
 
-const header = "# Managed by artoo (SPEC §9.7); 'artoo edge setup' overwrites edits.\n";
+const header = "# Managed by artoo; 'artoo edge setup' overwrites edits.\n";
 
 /// nftables policy: SSH only from Proxmox, HTTP(S) from the LAN; egress to
 /// the internet, UniFi's DNS and the guest pool (not their SSH) only.
@@ -125,7 +125,7 @@ pub const sysctl = header ++
 /// DNS token into the journal).
 pub const caddy_unit = header ++
     \\[Unit]
-    \\Description=Caddy, artoo edge (SPEC 9.7)
+    \\Description=Caddy, artoo edge
     \\After=network-online.target nftables.service
     \\Wants=network-online.target
     \\ConditionPathExists=/etc/caddy/cloudflare.env
@@ -173,7 +173,7 @@ pub const caddy_unit = header ++
 /// file `artoo edge tunnel` writes (never argv, never the journal).
 pub const cloudflared_unit = header ++
     \\[Unit]
-    \\Description=cloudflared, artoo edge (SPEC 9.7)
+    \\Description=cloudflared, artoo edge
     \\After=network-online.target nftables.service caddy.service
     \\Wants=network-online.target
     \\ConditionPathExists=/etc/cloudflared/tunnel.env
@@ -213,11 +213,11 @@ pub const cloudflared_unit = header ++
 ;
 
 /// The wildcard site; service routes are imported from
-/// `/etc/caddy/services/*.caddy` (SPEC §9.6, task: service names).
+/// `/etc/caddy/services/*.caddy` (written by `artoo svc`).
 /// Caddy's own propagation check would query Cloudflare's nameservers
 /// directly, which the egress policy forbids (DNS only via UniFi):
 /// it is off, and a fixed 60 s delay lets the record propagate before Let's
-/// Encrypt checks it (SPEC §9.7).
+/// Encrypt checks it.
 pub fn caddyfile(a: Allocator, apps_domain: []const u8) ![]const u8 {
     return std.fmt.allocPrint(a,
         \\{s}
@@ -363,7 +363,7 @@ pub fn all(a: Allocator, ad: Addresses, apps_domain: []const u8) ![]const File {
         .{ .path = "/etc/systemd/system/caddy.service", .mode = "0644", .owner = "root:root", .content = caddy_unit },
         .{ .path = "/etc/systemd/system/cloudflared.service", .mode = "0644", .owner = "root:root", .content = cloudflared_unit },
         .{ .path = "/etc/caddy/Caddyfile", .mode = "0644", .owner = "root:root", .content = try caddyfile(a, apps_domain) },
-        .{ .path = "/etc/caddy/services/000-none.caddy", .mode = "0644", .owner = "root:root", .content = "# Service routes (SPEC §9.6) are added next to this file.\n" },
+        .{ .path = "/etc/caddy/services/000-none.caddy", .mode = "0644", .owner = "root:root", .content = "# Service routes are added next to this file.\n" },
     });
 }
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Generate src/watch/dashboards/lab.json, the Proxmox · Homelab board that
-`artoo watch setup` provisions as Grafana's home page (SPEC §9.9).
+`artoo watch setup` provisions as Grafana's home page.
 
     scripts/gen-lab-board.py > src/watch/dashboards/lab.json
 
 Queries use the data sources' provisioned UIDs (victoriametrics, loki) and
-the metric names recorded in SPEC §9.9. Edit here, not the JSON.
+the metric names recorded in docs/SPEC.md. Edit here, not the JSON.
 """
 import json
 VM={"type":"prometheus","uid":"victoriametrics"}
@@ -85,7 +85,7 @@ panels+= [
  stat("Certificate",'min(probe_ssl_earliest_cert_expiry - time()) / 86400',6,4,"suffix: days",steps((None,"red"),(14,"yellow"),(30,"green")),0,spark=False,desc="*.apps wildcard, days until expiry; Caddy renews it at about 30"),
  stat("Tunnel connections",'sum(cloudflared_tunnel_ha_connections) or vector(0)',10,3,"none",steps((None,"red"),(1,"yellow"),(2,"green")),0,spark=False),
  stat("Router routes",'sum(artoo_tailscale_routes_primary) or vector(0)',13,3,"none",okth,0,spark=False,desc="Primary subnet routes on the Tailscale router"),
- stat("Edge → Proxmox/UniFi (24 h)",'sum(increase(artoo_drop_packets{table="artoo_edge",counter=~"to_pve|to_gateway"}[24h])) or vector(0)',16,4,"none",zero_good,0,spark=False,desc="Any packet here is a sign of compromise (SPEC 9.7)"),
+ stat("Edge → Proxmox/UniFi (24 h)",'sum(increase(artoo_drop_packets{table="artoo_edge",counter=~"to_pve|to_gateway"}[24h])) or vector(0)',16,4,"none",zero_good,0,spark=False,desc="Any packet here is a sign of compromise"),
  stat("Telemetry blocked (24 h)",'sum(increase(artoo_drop_packets{table="artoo_watch",counter="telemetry"}[24h])) or vector(0)',20,4,"none",zero_good,0,spark=False,desc="Outbound attempts by Grafana, Loki, VictoriaMetrics, Alloy, ntfy"),
 ]
 adv(4)
@@ -190,6 +190,6 @@ panels.append(r)
 
 dash={"uid":"artoo-lab","title":"Proxmox · Homelab","tags":["artoo"],"timezone":"browser","schemaVersion":41,
       "refresh":"30s","time":{"from":"now-6h","to":"now"},"editable":False,"graphTooltip":1,
-      "description":"Managed by artoo (SPEC §9.9); 'artoo watch setup' overwrites edits.","panels":panels,
+      "description":"Managed by artoo; 'artoo watch setup' overwrites edits.","panels":panels,
       "links":[{"title":"Alert rules","type":"link","url":"/alerting/list","icon":"bolt"},{"title":"Explore logs","type":"link","url":"/explore","icon":"compass"}]}
 print(json.dumps(dash,indent=2))

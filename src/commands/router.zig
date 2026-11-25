@@ -1,10 +1,10 @@
-//! `artoo router setup|status` (SPEC §9.8): the Tailscale subnet router,
+//! `artoo router setup|status`: the Tailscale subnet router,
 //! a small guest tagged `role-router` that advertises the LAN to the
 //! tailnet. Configured through the guest agent (root). Enrollment uses a
 //! single-use auth key from a hidden prompt, handed to the VM over the
 //! agent's stdin into a 0600 file under /run that is removed whatever
 //! happens — never argv, never stored. With a Tailscale credential
-//! (SPEC §19) artoo creates that key itself, approves the LAN route and
+//! artoo creates that key itself, approves the LAN route and
 //! checks the key expiry; the policy stays the operator's console.
 
 const std = @import("std");
@@ -35,7 +35,7 @@ const timeout_ms = 2 * 60 * 1000;
 
 pub const sysctl_path = "/etc/sysctl.d/90-artoo-router.conf";
 pub const sysctl =
-    \\# Managed by artoo (SPEC 9.8): the Tailscale subnet router forwards.
+    \\# Managed by artoo: the Tailscale subnet router forwards.
     \\net.ipv4.ip_forward = 1
     \\net.ipv6.conf.all.forwarding = 1
     \\
@@ -202,9 +202,9 @@ const SetupOp = struct {
     steps: Steps = .{},
     ledger: exec.Ledger = .{},
     after: State = .{},
-    /// `--snapshot` (SPEC §9.16).
+    /// `--snapshot`.
     guard: ?snapguard.Guard = null,
-    /// The Tailscale API, when its credential is set up (SPEC §19).
+    /// The Tailscale API, when its credential is set up.
     tsc: ?*tsapi.Client = null,
     /// The router as the tailnet sees it (null: not joined yet).
     ts_dev: ?tn.Device = null,
@@ -297,7 +297,7 @@ const SetupOp = struct {
         const id = op.vm.vmid;
         const l = &op.ledger;
         // Asked after the plan was confirmed and before any step starts
-        // (live progress draws once steps are added, SPEC §4.4).
+        // (live progress draws once steps are added).
         if (op.steps.enroll and op.key == null and op.tsc == null) {
             try ctx.out.flush();
             op.key = try askKey(ctx, op.from_stdin);
@@ -486,7 +486,7 @@ pub const setup = struct {
 };
 
 /// The router's device on the tailnet: the node the guest says it is
-/// (`Self.ID`), tagged `tag:lab-router` (SPEC §19). Never matched by
+/// (`Self.ID`), tagged `tag:lab-router`. Never matched by
 /// name: a stale device of the same name may still be listed.
 pub fn findRouter(c: *tsapi.Client, node_id: []const u8) !?tn.Device {
     if (node_id.len == 0) return null;
@@ -544,7 +544,7 @@ pub fn health(ctx: *Context, c: *pve.Client) !Health {
     return .{ .vm = v.name, .checks = checks.items };
 }
 
-/// The tailnet's view of the router (SPEC §19): tags, approved and
+/// The tailnet's view of the router: tags, approved and
 /// primary routes, key expiry and last seen.
 fn tailnetChecks(ctx: *Context, checks: *std.ArrayList(vm_new.Check), vm_name: []const u8, node_id: []const u8, route: []const u8) !void {
     const a = ctx.arena;
@@ -763,7 +763,7 @@ test "router setup with the Tailscale credential: artoo creates the key, joins, 
         std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
         return error.TestUnexpectedResult;
     };
-    // The key: created as SPEC §19 says, only ever in the agent's stdin.
+    // The key: single-use, ten minutes, preauthorized and tagged, only ever in the agent's stdin.
     for (g.srv.received) |req| if (req) |q| {
         if (std.mem.startsWith(u8, q, "POST /tailnet/-/keys")) try testing.expect(std.mem.endsWith(u8, q,
             \\{"keyType":"auth","description":"artoo router dagobah","expirySeconds":600,"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":false,"preauthorized":true,"tags":["tag:lab-router"]}}}}

@@ -1,4 +1,4 @@
-//! `artoo dns ls|add|rm` (SPEC §10.3): A records on UniFi, written
+//! `artoo dns ls|add|rm`: A records on UniFi, written
 //! through the one mutation pipeline (`exec.zig`). Short names get
 //! `guests.domain`; dotted names are taken as given.
 

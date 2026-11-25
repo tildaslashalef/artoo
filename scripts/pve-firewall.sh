@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Enable the Proxmox VE firewall on the host (SPEC §9.7: the host-side copy
+# Enable the Proxmox VE firewall on the host (the host-side copy
 # of the edge VM's policy needs it). Approved host change only.
 #
 # Host policy: inbound DROP except SSH (22), the web UI/API (8006) and the
@@ -41,7 +41,7 @@ ssh "${ssh_opts[@]}" "$host" bash -s -- "$lan" <<'REMOTE'
 set -euo pipefail
 lan=$1
 cat > /etc/pve/nodes/pve/host.fw <<EOF
-# artoo: host firewall (SPEC §9.7); managed by scripts/pve-firewall.sh
+# artoo: host firewall; managed by scripts/pve-firewall.sh
 [OPTIONS]
 enable: 1
 
@@ -55,7 +55,7 @@ systemctl stop artoo-fw-rollback.timer 2>/dev/null || true
 systemd-run --quiet --unit=artoo-fw-rollback --on-active=180 \
   /bin/sh -c "sed -i 's/^enable: 1/enable: 0/' /etc/pve/firewall/cluster.fw; pve-firewall restart"
 cat > /etc/pve/firewall/cluster.fw <<EOF
-# artoo: datacenter firewall (SPEC §9.7); managed by scripts/pve-firewall.sh
+# artoo: datacenter firewall; managed by scripts/pve-firewall.sh
 [OPTIONS]
 enable: 1
 policy_in: DROP

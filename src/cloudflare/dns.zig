@@ -1,4 +1,4 @@
-//! DNS records of the Cloudflare zone (SPEC §15). artoo marks what it
+//! DNS records of the Cloudflare zone. artoo marks what it
 //! creates with a comment and changes nothing else.
 
 const std = @import("std");

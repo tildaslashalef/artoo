@@ -1,6 +1,6 @@
-//! `artoo cf tunnel ls | route add | route rm` (SPEC §15): public names
+//! `artoo cf tunnel ls | route add | route rm`: public names
 //! through the lab's Cloudflare Tunnel. A public host always reaches an
-//! existing service (§9.6): Cloudflare → cloudflared on the edge VM →
+//! existing service: Cloudflare → cloudflared on the edge VM →
 //! Caddy on localhost → the service's route → guest. Each route is an
 //! ingress rule plus a marked, proxied CNAME to the tunnel.
 
@@ -20,7 +20,7 @@ const watch = @import("watch.zig");
 const vm_cmd = @import("vm.zig");
 const vms = @import("../pve/vm.zig");
 
-/// The search gateway's role (SPEC §9.9): unauthenticated search and
+/// The search gateway's role: unauthenticated search and
 /// fetch, so never public.
 pub const search_role = "search";
 
@@ -549,7 +549,7 @@ test "cf tunnel route add: a missing service is a usage error (exit 2)" {
     try testing.expect(std.mem.find(u8, g.h.stderr(), "no service ghost") != null);
 }
 
-/// SPEC §9.9: services on the watchdog (`role-watch`) and the search
+/// Services on the watchdog (`role-watch`) and the search
 /// gateway (`role-search`) are never public, with no override.
 fn refuseNeverPublic(ctx: *Context, c: *pve.Client, service: []const u8, vm: []const u8) !void {
     for (try vms.list(c)) |v| {

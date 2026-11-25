@@ -1,5 +1,5 @@
-//! Comptime catalog of the UniFi Network Integration API read surface
-//! (SPEC §10.2), built from the official v10.6.106 export
+//! Comptime catalog of the UniFi Network Integration API read surface,
+//! built from the official v10.6.106 export
 //! (`../homelab/api/unifi/network_v10.6.106_openapi.json`). Every GET
 //! operation appears exactly once; paths and operationIds are copied
 //! verbatim so the export test and `gw spec` can diff them.
@@ -79,7 +79,7 @@ pub const Extra = struct {
 
 pub const Method = enum { POST, PUT, PATCH, DELETE };
 
-/// One write operation (SPEC §10.2), generated from the export's request
+/// One write operation, generated from the export's request
 /// schemas. `fields`/`required` are top-level body keys (union over
 /// discriminator variants; deeper validation is the server's).
 pub const Write = struct {
@@ -88,7 +88,7 @@ pub const Write = struct {
     kind: Kind,
     method: Method,
     op: Op,
-    /// SPEC §3.4: typed-name confirmation, `--yes --confirm` otherwise.
+    /// Destructive: typed-name confirmation, `--yes --confirm` otherwise.
     destructive: bool = false,
     /// Fixed `action` value for action endpoints.
     action: ?[]const u8 = null,

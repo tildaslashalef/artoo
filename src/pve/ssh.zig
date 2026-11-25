@@ -1,5 +1,5 @@
 //! Root SSH to Proxmox for the one thing the API cannot do: placing the
-//! vendor snippet in `local:snippets` (SPEC §9.2, §17.2). BatchMode, strict
+//! vendor snippet in `local:snippets`. BatchMode, strict
 //! host-key checking, the configured key only; the remote script is fixed
 //! and the snippet travels on stdin. An existing file is never replaced:
 //! names are content-addressed, so a file with the right name and other

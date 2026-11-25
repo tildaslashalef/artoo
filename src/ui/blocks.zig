@@ -1,4 +1,4 @@
-//! Header line, detail views and plan blocks (SPEC §4.1). All strings must
+//! Header line, detail views and plan blocks. All strings must
 //! already be sanitized.
 
 const std = @import("std");

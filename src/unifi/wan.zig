@@ -1,4 +1,4 @@
-//! WAN health and outages (SPEC §10.4, §17.1). The Integration API knows a
+//! WAN health and outages. The Integration API knows a
 //! WAN only by ID and name; its state comes from undocumented sources the
 //! same API key opens, all read-only:
 //!
@@ -766,7 +766,7 @@ fn openFor(outages: []Outage, g: []const u8) ?*Outage {
     return null;
 }
 
-/// The cause of an ongoing outage from the WAN's state now (SPEC §10.4).
+/// The cause of an ongoing outage from the WAN's state now.
 /// A past outage keeps what its events showed (link, else unknown): no
 /// next-hop or monitor state was recorded for it.
 pub fn judgeOngoing(o: *Outage, w: ?*const Wan) void {
@@ -1075,7 +1075,7 @@ test "build: matched by name and group; port assignment; shared mark" {
     try testing.expect(find(ws, "a1b2c3d4-0000-4000-8000-000000000001") == &ws[0]);
 }
 
-// Generic fixtures shaped like the verified documents (SPEC §17.1).
+// Generic fixtures shaped like the verified documents.
 pub const fixture_wans =
     \\{"offset":0,"limit":200,"count":2,"totalCount":2,"data":[{"id":"a1b2c3d4-0000-4000-8000-000000000001","name":"Fiber-Main"},{"id":"a1b2c3d4-0000-4000-8000-000000000002","name":"Fiber-Backup"}]}
 ;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live run of the Proxmox VM verbs (SPEC §13): ordinary `artoo` invocations
+# Live run of the Proxmox VM verbs: ordinary `artoo` invocations
 # against a disposable guest created by this run. Ownership (VMID, name,
 # tag) is written to ~/.artoo/live-ledger.txt ($ARTOO_LEDGER) before any destructive
 # step; every destructive step re-checks it; the first failed guard or
@@ -73,7 +73,7 @@ owned "$CLONE_ID" "$CLONE"
 log "rm clone";          artoo vm rm "$CLONE" --yes --confirm "$CLONE"
 ledger "$CLONE_ID" "$CLONE" "destroyed (artoo vm rm)"
 owned "$VMID" "$NAME"
-# SPEC §9.16 on the OS-less guest: the parts that need no guest agent.
+# Snapshot guards on the OS-less guest: the parts that need no guest agent.
 log "reserved snapshot prefix (refused → exit 2)"
 if artoo vm snap add "$NAME" artoo-mine -y; then fail "artoo- prefix accepted"; else [ $? -eq 2 ] || fail "reserved prefix: wrong exit"; fi
 log "rollback past a newer snapshot (refused → exit 5)"

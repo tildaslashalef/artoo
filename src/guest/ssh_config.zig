@@ -1,4 +1,4 @@
-//! `~/.artoo/ssh_config` (SPEC §9.10): one `Host` block per artoo guest
+//! `~/.artoo/ssh_config`: one `Host` block per artoo guest
 //! with `vm ssh`'s settings, so plain ssh, scp and rsync are as strict as
 //! `vm ssh` once the operator includes the file from `~/.ssh/config`.
 //! artoo owns the file and rewrites it whole; it never edits

@@ -1,4 +1,4 @@
-//! `artoo svc ls|add|set|rm` (SPEC §9.6): service names
+//! `artoo svc ls|add|set|rm`: service names
 //! `<name>.apps.<guests.domain>`. A service is two halves and no local
 //! state: a Caddy route file on the edge VM (written through the guest
 //! agent, the record of the upstream) and a UniFi A record to the edge
@@ -53,7 +53,7 @@ pub const Domains = struct {
     guests: []const u8,
 };
 
-/// Where a service reports its health (SPEC §9.6): the path probed by
+/// Where a service reports its health: the path probed by
 /// the edge and the watchdog, and a text that means "down" in its answer.
 pub const Health = struct {
     path: []const u8 = "/",
@@ -396,7 +396,7 @@ pub const Row = struct {
     upstream: ?[]const u8,
     record: ?[]const u8,
     route: bool,
-    /// The path the probes request (SPEC §9.6).
+    /// The path the probes request.
     health: []const u8 = "/",
     health_down: ?[]const u8 = null,
     problems: []const []const u8,
@@ -548,7 +548,7 @@ const PutOp = struct {
     fp: []const u8 = "",
     ledger: exec.Ledger = .{},
     probe: Probe = .{},
-    /// Fenced guests whose fence the move opens or closes (SPEC §9.11).
+    /// Fenced guests whose fence the move opens or closes.
     fences: []const vm_fence.Follow = &.{},
 
     pub fn read(op: *PutOp, ctx: *Context) !void {
@@ -929,7 +929,7 @@ const RmOp = struct {
 
 // ---------------------------------------------------------------- fences
 
-/// The fences a route change moves (SPEC §9.11): the new upstream `to`
+/// The fences a route change moves: the new upstream `to`
 /// (null for `rm`) and the old one `from`, when they are fenced guests
 /// whose fence differs for the new route set. Reads nothing more unless
 /// one of them is fenced.
@@ -1020,7 +1020,7 @@ pub const group = cli.group("svc", "Service names NAME.apps.<guests.domain> on t
 const testing = std.testing;
 const test_domains: Domains = .{ .apps = "apps.lab.example.com", .guests = "lab.example.com" };
 
-test "render: the SPEC §9.6 route file" {
+test "render: the route file" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     try testing.expectEqualStrings(

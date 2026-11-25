@@ -1,4 +1,4 @@
-//! Configuration, schema 1 (SPEC §5): non-secret settings in
+//! Configuration, schema 1: non-secret settings in
 //! `~/.artoo/config.json` (dir 0700, file 0600). Absent keys take the
 //! defaults below; unknown keys and other schemas are rejected with a message.
 //! The file is kept as a JSON tree so `set`/`unset` change only one key.
@@ -38,7 +38,7 @@ pub const Config = struct {
         ca_bundle: []const u8 = "~/.artoo/tls/rootCA.pem",
         timeout_seconds: u32 = 15,
         /// Root SSH for the one thing the API cannot do: placing the
-        /// vendor snippet (SPEC §9.2). An address: the host key is known
+        /// vendor snippet. An address: the host key is known
         /// under it.
         ssh_host: []const u8 = "192.168.1.10",
         ssh_identity: []const u8 = "~/.ssh/id_ed25519",
@@ -49,14 +49,14 @@ pub const Config = struct {
         ca_bundle: []const u8 = "~/.artoo/tls/rootCA.pem",
         timeout_seconds: u32 = 10,
     };
-    /// SPEC §15: the public API, verified against the system roots.
+    /// Cloudflare: the public API, verified against the system roots.
     pub const Cloudflare = struct {
         zone: []const u8 = "example.com",
         timeout_seconds: u32 = 10,
         /// The lab's remotely managed tunnel (run by the edge VM).
         tunnel: []const u8 = "lab",
     };
-    /// SPEC §19: the tailnet's API through an OAuth client (its secret
+    /// Tailscale: the tailnet's API through an OAuth client (its secret
     /// is the `tailscale` credential), verified against the system roots.
     pub const Tailscale = struct {
         /// The OAuth client's ID (not secret); empty = not set up.
@@ -64,7 +64,7 @@ pub const Config = struct {
         /// `-` = the client's own tailnet.
         tailnet: []const u8 = "-",
         timeout_seconds: u32 = 10,
-        /// The tag `ts join` gives guests (SPEC §19, §9.6).
+        /// The tag `ts join` gives guests.
         /// Comma-separated `tag:…` values `ts join` may give guests; the
         /// first is the default.
         guest_tags: []const u8 = "tag:lab-guest",
@@ -86,17 +86,17 @@ pub const Config = struct {
         /// The account `vm new` creates on every guest (SSH key, sudo
         /// with a generated password); `vm ssh` and `vm cp` log in as it.
         user: []const u8 = "artoo",
-        /// Never a guest name and never published (SPEC §9.6): the lab's
+        /// Never a guest name and never published: the lab's
         /// own host and equipment names beyond the node and endpoints.
         reserved_names: []const u8 = "",
-        /// Outbound exceptions of fenced guests (SPEC §9.11): `VM PEER
+        /// Outbound exceptions of fenced guests: `VM PEER
         /// PROTO PORTS` entries separated by `;`.
         fence_allow_out: []const u8 = "",
-        /// artoo-owned snapshots a guest may hold (SPEC §9.16): the
+        /// artoo-owned snapshots a guest may hold: the
         /// `--snapshot` cap and what `vm snap prune` keeps.
         snapshot_keep: u32 = 2,
         /// Age in days past which an artoo-owned snapshot is a warning
-        /// and `vm snap prune` selects it (SPEC §9.16).
+        /// and `vm snap prune` selects it.
         snapshot_max_age_days: u32 = 14,
     };
 };
@@ -434,7 +434,7 @@ pub fn pathList(arena: Allocator, s: []const u8) Allocator.Error![]const []const
     return out.items;
 }
 
-/// One `guests.fence_allow_out` entry (SPEC §9.11).
+/// One `guests.fence_allow_out` entry.
 pub const FenceAllow = struct {
     vm: []const u8,
     /// A guest name, or an IPv4 address or CIDR.

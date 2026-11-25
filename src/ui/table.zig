@@ -1,4 +1,4 @@
-//! Width-aware tables (SPEC §4.1).
+//! Width-aware tables.
 //!
 //! Layout: natural column widths; on a narrow terminal drop columns by
 //! descending `drop` priority, then truncate truncatable columns (widest

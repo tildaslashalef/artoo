@@ -1,6 +1,6 @@
 //! Run a helper process with optional stdin bytes, capturing bounded
 //! stdout/stderr. Secrets travel only through these pipes, never argv or
-//! the environment (SPEC §6).
+//! the environment.
 
 const std = @import("std");
 const Io = std.Io;

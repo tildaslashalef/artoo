@@ -1,4 +1,4 @@
-//! Cloudflare API client (SPEC §15): `Authorization: Bearer` from the
+//! Cloudflare API client: `Authorization: Bearer` from the
 //! SecretStore at request time, TLS against the system root store, the
 //! `{success, errors, result, result_info}` envelope, page/per_page lists.
 
@@ -127,7 +127,7 @@ pub const TokenStatus = struct {
     expires_on: ?[]const u8,
 };
 
-/// The token is account-owned (SPEC §15): `GET /accounts/{id}/tokens/verify`
+/// The token is account-owned: `GET /accounts/{id}/tokens/verify`
 /// (needs no permission), the account taken from the zone.
 pub fn verifyToken(c: *Client) !TokenStatus {
     _ = try c.zoneId();

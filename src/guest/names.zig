@@ -1,4 +1,4 @@
-//! Guest names (SPEC §9.1): one DNS label per guest, from a curated list
+//! Guest names: one DNS label per guest, from a curated list
 //! — Star Wars planets and moons, Lord of the Rings places — or any other
 //! valid label. Purpose lives in the `role-…` tag, not in the name.
 
@@ -33,8 +33,8 @@ pub const middle_earth = [_][]const u8{
     "umbar",        "valinor",  "weathertop",
 };
 
-/// Never a guest name: generic words for the protected infrastructure
-/// (SPEC §9.6). The lab's own host and equipment names come from
+/// Never a guest name: generic words for the protected infrastructure.
+/// The lab's own host and equipment names come from
 /// `guests.reserved_names` and `pve.node` (exposure.zig).
 pub const reserved = [_][]const u8{ "pve", "proxmox", "unifi", "gateway" };
 

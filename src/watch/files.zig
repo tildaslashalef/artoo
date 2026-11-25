@@ -1,5 +1,5 @@
-//! What `artoo watch setup|enroll` puts on the watchdog VM and the guests
-//! (SPEC §9.9): every file is rendered here from config and the lab's
+//! What `artoo watch setup|enroll` puts on the watchdog VM and the guests:
+//! every file is rendered here from config and the lab's
 //! observed state, so nothing drifts from SPEC. Each carries a header
 //! naming artoo as its owner.
 
@@ -13,7 +13,7 @@ pub const write_file = edge_files.write_file;
 
 // ---------------------------------------------------------------- pins
 
-/// Pinned stack (SPEC §9.9). Bumping one is a deliberate SPEC edit.
+/// Pinned stack. Bumping one is a deliberate SPEC edit.
 pub const vm_version = "v1.153.0";
 pub const vm_url = "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/" ++ vm_version ++ "/victoria-metrics-linux-amd64-" ++ vm_version ++ ".tar.gz";
 /// From the release's `victoria-metrics-linux-amd64-v1.153.0_checksums.txt`.
@@ -40,7 +40,7 @@ pub const port_ntfy: u16 = 2586;
 
 /// ntfy topic for the lab's alerts.
 pub const topic = "lab";
-/// Service names (SPEC §9.6) Grafana and ntfy are served under.
+/// Service names Grafana and ntfy are served under.
 pub const grafana_service = "grafana";
 pub const ntfy_service = "ntfy";
 /// Service users whose internet traffic `scarif`'s firewall drops.
@@ -50,8 +50,8 @@ pub const quiet_users = [_][]const u8{ "grafana", "loki", "victoriametrics", "al
 pub const retention_metrics = "90d";
 pub const retention_logs = "744h";
 
-const header = "# Managed by artoo (SPEC §9.9); 'artoo watch setup' overwrites edits.\n";
-const header_guest = "# Managed by artoo (SPEC §9.9); 'artoo watch enroll' overwrites edits.\n";
+const header = "# Managed by artoo; 'artoo watch setup' overwrites edits.\n";
+const header_guest = "# Managed by artoo; 'artoo watch enroll' overwrites edits.\n";
 
 // ---------------------------------------------------------------- the lab
 
@@ -66,7 +66,7 @@ pub const Lab = struct {
     edge: []const u8,
     /// `lab.example.com`.
     domain: []const u8,
-    /// HTTPS probes through the edge: the service names (SPEC §9.6).
+    /// HTTPS probes through the edge: the service names.
     services: []const Service = &.{},
 
     pub fn appsUrl(l: Lab, a: Allocator, service: []const u8) ![]const u8 {
@@ -74,7 +74,7 @@ pub const Lab = struct {
     }
 };
 
-/// A service the watchdog probes: its name and health (SPEC §9.6, the
+/// A service the watchdog probes: its name and health (the `svc`
 /// route file's health lines, already validated there).
 pub const Service = struct {
     name: []const u8,
@@ -89,7 +89,7 @@ pub const Service = struct {
 /// Alloy names a probe's series `job="integrations/blackbox/<target>"`
 /// and the scrape gives them the watchdog as `host` (seen live), so the
 /// probe relabelling adds `service`, `url` and `vm` for the alerts
-/// (SPEC §9.9, probe labels). `$` is the replacement's group marker.
+/// (probe labels). `$` is the replacement's group marker.
 fn probeLabels(a: Allocator, out: *std.ArrayList(u8), l: Lab) !void {
     try out.appendSlice(a,
         \\
@@ -267,7 +267,7 @@ pub const guest_packages = [_][2][]const u8{.{ "alloy", alloy_version }};
 /// caches only.
 pub const vm_unit = std.fmt.comptimePrint(header ++
     \\[Unit]
-    \\Description=VictoriaMetrics, artoo watch (SPEC 9.9)
+    \\Description=VictoriaMetrics, artoo watch
     \\After=network-online.target nftables.service
     \\Wants=network-online.target
     \\
@@ -351,7 +351,7 @@ pub const loki_config = std.fmt.comptimePrint(header ++
 , .{ .port = port_loki, .retention = retention_logs });
 
 /// Every Grafana switch that contacts grafana.com or another outside
-/// service, off (SPEC §9.9); `watch status` reads these lines back.
+/// service, off; `watch status` reads these lines back.
 pub const grafana_telemetry = [_][3][]const u8{
     .{ "analytics", "reporting_enabled", "false" },
     .{ "analytics", "check_for_updates", "false" },
@@ -453,7 +453,7 @@ pub const dashboard_provider = header ++
     \\
 ;
 
-/// The notification's title and message (SPEC §9.9, readable
+/// The notification's title and message (readable
 /// notifications), from the rules' `summary` and `description`
 /// annotations: ntfy's built-in Grafana template shows only these two.
 /// One alert → its summary as the title; several → the rule's title
@@ -579,7 +579,7 @@ pub const ntfy_dropin = header ++
     \\
 ;
 
-/// `NTFY_AUTH_*` for ntfy's declarative users (SPEC §9.9): bcrypt hashes
+/// `NTFY_AUTH_*` for ntfy's declarative users: bcrypt hashes
 /// only (the phone's is made on the Mac), Grafana's token generated on the
 /// VM. `token` may be the shell expansion that the setup script fills.
 pub fn ntfyAuthEnv(a: Allocator, grafana_hash: []const u8, phone_hash: ?[]const u8, token: []const u8) ![]const u8 {
@@ -591,7 +591,7 @@ pub fn ntfyAuthEnv(a: Allocator, grafana_hash: []const u8, phone_hash: ?[]const 
     else
         "grafana:" ++ topic ++ ":wo";
     return std.fmt.allocPrint(a,
-        \\# Managed by artoo (SPEC §9.9): hashes and a token that never leaves this VM.
+        \\# Managed by artoo: hashes and a token that never leaves this VM.
         \\NTFY_AUTH_USERS='{s}'
         \\NTFY_AUTH_ACCESS='{s}'
         \\NTFY_AUTH_TOKENS='grafana:{s}:grafana'
@@ -695,7 +695,7 @@ pub const grafana_hash_placeholder = "@GRAFANA_HASH@";
 /// vendor-data): no start before enrollment, and no traffic beyond the
 /// private networks — telemetry cannot leave even if a switch is missed.
 pub const alloy_dropin =
-    \\# Managed by artoo (SPEC §9.9): starts only once enrolled; private networks only.
+    \\# Managed by artoo: starts only once enrolled; private networks only.
     \\[Unit]
     \\ConditionPathExists=/etc/alloy/artoo.alloy
     \\
@@ -729,7 +729,7 @@ pub const Guest = struct {
 pub fn alloyConfig(a: Allocator, g: Guest, l: Lab) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.print(a,
-        \\// Managed by artoo (SPEC §9.9); 'artoo watch enroll' overwrites edits.
+        \\// Managed by artoo; 'artoo watch enroll' overwrites edits.
         \\
         \\loki.relabel "journal" {{
         \\  forward_to = []
@@ -843,7 +843,7 @@ pub fn alloyConfig(a: Allocator, g: Guest, l: Lab) ![]const u8 {
 /// counters, the router's Tailscale route, the watchdog's telemetry drops.
 pub const facts_script =
     \\#!/bin/sh
-    \\# Managed by artoo (SPEC §9.9): facts for Alloy's textfile collector.
+    \\# Managed by artoo: facts for Alloy's textfile collector.
     \\set -u
     \\out=/var/lib/artoo-facts/artoo.prom
     \\t=$(mktemp /var/lib/artoo-facts/.artoo.XXXXXX)
@@ -875,7 +875,7 @@ pub const facts_script =
 
 pub const facts_service = header_guest ++
     \\[Unit]
-    \\Description=artoo facts for Alloy (SPEC 9.9)
+    \\Description=artoo facts for Alloy
     \\
     \\[Service]
     \\Type=oneshot
@@ -885,7 +885,7 @@ pub const facts_service = header_guest ++
 
 pub const facts_timer = header_guest ++
     \\[Unit]
-    \\Description=artoo facts every minute (SPEC 9.9)
+    \\Description=artoo facts every minute
     \\
     \\[Timer]
     \\OnBootSec=30s
@@ -1059,7 +1059,7 @@ test "alloy: reporting off, LAN only, pushes to the watchdog by name" {
     });
 }
 
-test "alloy: a service's health path and down text (SPEC §9.9)" {
+test "alloy: a service's health path and down text" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1091,7 +1091,7 @@ test "probeVmLabel is the text a probe's vm label renders as" {
     try std.testing.expect(std.mem.find(u8, watch, try probeVmLabel(a, "hoth")) == null);
 }
 
-test "alloy: probes named by service, URL and guest for the alerts (golden, SPEC §9.9)" {
+test "alloy: probes named by service, URL and guest for the alerts (golden)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1163,7 +1163,7 @@ test "alloy: probes named by service, URL and guest for the alerts (golden, SPEC
     try testing.expect(std.mem.find(u8, plain, "relabel \"probes\"") == null);
 }
 
-test "contact point: ntfy's template shows the artoo title and message (golden, SPEC §9.9)" {
+test "contact point: ntfy's template shows the artoo title and message (golden)" {
     try expectAll(contact_point, &.{
         "          url: http://localhost:2586/lab?template=grafana\n",
         "          title: '{{ template \"artoo.title\" . }}'\n          message: '{{ template \"artoo.message\" . }}'\n",

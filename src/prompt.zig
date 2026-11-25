@@ -1,4 +1,4 @@
-//! Terminal input: confirmations and hidden secret entry (SPEC §3.4, §6).
+//! Terminal input: confirmations and hidden secret entry.
 //! Prompts go to stderr; answers come from stdin only when it is a TTY.
 
 const std = @import("std");
@@ -83,7 +83,7 @@ pub fn ask(input: Input, io: Io, arena: Allocator, w: *Io.Writer, question: []co
     return if (std.ascii.eqlIgnoreCase(a, "y") or std.ascii.eqlIgnoreCase(a, "yes")) .yes else .no;
 }
 
-/// Typed-name confirmation for destructive actions (SPEC §3.4).
+/// Typed-name confirmation for destructive actions.
 pub fn askTyped(input: Input, io: Io, arena: Allocator, w: *Io.Writer, target: []const u8) Error!Answer {
     if (!try interactive(input, io)) return error.NonInteractive;
     w.print("Type '{s}' to confirm: ", .{target}) catch return error.ReadFailed;

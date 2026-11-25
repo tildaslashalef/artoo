@@ -1,4 +1,4 @@
-//! Tailnet resources (SPEC §19, §17.4): devices and their routes, auth
+//! Tailnet resources: devices and their routes, auth
 //! key metadata, DNS, the policy — typed views of the API's JSON, and the
 //! ownership rule that decides which devices artoo may change. Resource
 //! functions never print.
@@ -183,7 +183,7 @@ pub fn find(a: Allocator, list: []const Device, word: []const u8) !Match {
     return .missing;
 }
 
-/// What makes a device the lab's (SPEC §19 "Ownership"): one of artoo's
+/// What makes a device the lab's: one of artoo's
 /// tags, or a machine name that is a Proxmox VM tagged `artoo`.
 pub const Ownership = struct {
     /// Names of the VMs tagged `artoo` (templates excluded).
@@ -281,7 +281,7 @@ pub fn getKey(c: *ts.Client, id: []const u8) !?KeyInfo {
 /// invocation, handed to a guest over the agent's stdin, never shown.
 pub const NewKey = struct { id: []const u8, key: []const u8, expires: ?i64 = null };
 
-/// Join keys live ten minutes: none outlives a run (SPEC §19).
+/// Join keys live ten minutes: none outlives a run.
 pub const join_key_seconds = 600;
 
 /// `POST /tailnet/{t}/keys`: a single-use, preauthorized, non-ephemeral
@@ -490,7 +490,7 @@ fn skipString(s: []const u8, start: usize) !usize {
 /// The first object key anywhere in `v` that is not plain ASCII, or null.
 /// Tailscale folds policy keys like Go's JSON decoder, Unicode folds
 /// included (`ſ`, U+017F, matches `s`), so a key artoo cannot compare
-/// byte-wise is refused rather than guessed (SPEC §19).
+/// byte-wise is refused rather than guessed.
 pub fn nonAsciiKey(v: Value) ?[]const u8 {
     switch (v) {
         .object => |o| {
@@ -507,8 +507,8 @@ pub fn nonAsciiKey(v: Value) ?[]const u8 {
 }
 
 /// The `nodeAttrs` entries that grant Funnel (an `attr` naming `funnel`):
-/// artoo never applies a policy that opens the lab to the internet
-/// (SPEC §9.6, §19). Keys match ASCII-case-insensitively at every level,
+/// artoo never applies a policy that opens the lab to the internet.
+/// Keys match ASCII-case-insensitively at every level,
 /// as Tailscale reads them; every matching key is inspected.
 pub fn funnelAttrs(a: std.mem.Allocator, policy_json: Value) ![]const []const u8 {
     var hits: std.ArrayList([]const u8) = .empty;

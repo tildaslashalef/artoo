@@ -1,4 +1,4 @@
-//! A records on UniFi (SPEC §10.3): DNS policies of type `A_RECORD`
+//! A records on UniFi: DNS policies of type `A_RECORD`
 //! (`domain`, `ipv4Address`, `ttlSeconds`, `enabled`), typed for `artoo
 //! dns` and, later, `vm new`/`vm rm`. Names are validated locally before
 //! anything is sent.

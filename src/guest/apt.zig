@@ -1,4 +1,4 @@
-//! apt on a guest (SPEC §9.12): the simulated upgrade `vm verify` counts
+//! apt on a guest: the simulated upgrade `vm verify` counts
 //! and `vm upgrade` plans from, read on the guest's current package lists
 //! (never refreshed), and the script that installs it.
 
@@ -27,7 +27,7 @@ pub const stage_file = "/run/artoo-upgrade.stage";
 /// lines; written once, when apt has ended, and left until replaced.
 pub const rc_file = "/run/artoo-upgrade.rc";
 
-/// The transient systemd unit apt runs in (SPEC §9.12). Not a child of
+/// The transient systemd unit apt runs in. Not a child of
 /// the guest agent: upgrading `qemu-guest-agent` restarts the agent, and
 /// systemd stops every process in the agent's own unit with it — apt and
 /// dpkg included, leaving packages unconfigured. A second upgrade while

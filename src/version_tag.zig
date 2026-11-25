@@ -1,4 +1,4 @@
-//! `artoo --version` from the Git tags (docs/RELEASING.md §1), used by
+//! `artoo --version` from the Git tags, used by
 //! build.zig at configure time. Pure, so the test suite covers it.
 //!
 //! `git describe --match 'v[0-9]*' --long --abbrev=7` names the nearest

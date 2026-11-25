@@ -1,4 +1,4 @@
-//! `artoo config show|get|set|unset|edit|init` (SPEC §5).
+//! `artoo config show|get|set|unset|edit|init`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -81,7 +81,7 @@ pub const show = struct {
     }
 };
 
-/// Every settable key, completed for KEY (SPEC §3.5).
+/// Every settable key, completed for KEY.
 const key_choices = blk: {
     var out: [config.keys.len]cli.Choice = undefined;
     for (config.keys, 0..) |key, i| out[i] = .{ .text = key.name, .help = key.help };

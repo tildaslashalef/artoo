@@ -1,4 +1,4 @@
-//! `artoo watch setup|status|enroll|secret` (SPEC §9.9): the watchdog VM
+//! `artoo watch setup|status|enroll|secret`: the watchdog VM
 //! (the one tagged `role-watch`) with VictoriaMetrics, Loki, Grafana and
 //! ntfy, and Grafana Alloy on the guests. Configured through the guest
 //! agent like the edge VM: rendered files, fixed scripts, a step ledger.
@@ -32,7 +32,7 @@ const Check = vm_new.Check;
 const Rule = edge.Rule;
 
 pub const role = "watch";
-/// Tag of a guest kept out of the watchdog (`vm new --no-watch`, SPEC §9.9):
+/// Tag of a guest kept out of the watchdog (`vm new --no-watch`):
 /// never enrolled, so it pushes nothing and raises no alerts.
 pub const no_watch_tag = "no-watch";
 const step_timeout_ms = 10 * 60 * 1000;
@@ -129,7 +129,7 @@ fn managedFiles(ctx: *Context, v: vms.Vm, l: files.Lab) ![]const files.File {
 
 // ---------------------------------------------------------------- host firewall
 
-/// The §9.9 policy as Proxmox VM rules (first match wins): the host-side
+/// The watchdog's network policy as Proxmox VM rules (first match wins): the host-side
 /// copy of the watchdog's nftables, which root inside the VM cannot change.
 pub fn hostRules(l: files.Lab) [16]Rule {
     return .{
@@ -283,7 +283,7 @@ fn serviceOf(path: []const u8) ?[]const u8 {
 const Steps = struct {
     accounts: bool = false,
     /// The template's Tailscale probes the gateway (NAT-PMP); the
-    /// watchdog needs none (like the edge, SPEC §9.7).
+    /// watchdog needs none (like the edge).
     tailscale: bool = false,
     write: []const files.File = &.{},
     /// Dashboards artoo no longer renders.
@@ -406,7 +406,7 @@ const SetupOp = struct {
     host_steps: edge.HostSteps = .{},
     ledger: exec.Ledger = .{},
     fp: []const u8 = "",
-    /// `--snapshot` (SPEC §9.16).
+    /// `--snapshot`.
     guard: ?snapguard.Guard = null,
 
     pub fn read(op: *SetupOp, ctx: *Context) !void {
@@ -1179,7 +1179,7 @@ pub const status = struct {
 // ---------------------------------------------------------------- forget
 
 /// VictoriaMetrics on the watchdog, reached through its guest agent:
-/// `8428` is open to the guest pool and Proxmox only (SPEC §9.9).
+/// `8428` is open to the guest pool and Proxmox only.
 const metrics_url = "http://localhost:8428";
 
 /// Series of `host` stored in the last 3 days (the alert rules look back
@@ -1199,7 +1199,7 @@ pub fn hostSeriesSince(c: *pve.Client, w: vms.Vm, host: []const u8, start: []con
     return pve.items(pve.obj(v, "data")).len;
 }
 
-/// Delete every series of `host` (SPEC §9.9) and check none is left; its
+/// Delete every series of `host` and check none is left; its
 /// alerts resolve at the next evaluation. Returns how many were deleted.
 pub fn forgetHost(c: *pve.Client, w: vms.Vm, host: []const u8) !usize {
     const ctx = c.ctx;

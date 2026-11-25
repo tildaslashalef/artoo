@@ -1,6 +1,6 @@
 //! Linux Secret Service (GNOME Keyring / KWallet) through `secret-tool`,
 //! attributes `service=artoo account=<name>`; `store` reads the secret
-//! from stdin (SPEC §6).
+//! from stdin.
 
 const std = @import("std");
 const Io = std.Io;

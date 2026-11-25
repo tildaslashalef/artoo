@@ -3,7 +3,7 @@
 Curated, shared configuration for every artoo guest (the guest user's
 baseline fish/tmux/Vim environment), streamlined from the author's dotfiles. Embedded into the
 artoo binary at comptime and rendered into the shared cloud-init
-vendor-data snippet (`src/guest/vendor.zig`, SPEC §9.2); `artoo template
+vendor-data snippet (`src/guest/vendor.zig`); `artoo template
 vendor` prints it. A new file here must also be listed in `vendor.zig`.
 
 ## Rules
@@ -36,7 +36,7 @@ vendor` prints it. A new file here must also be listed in `vendor.zig`.
 | `tmux/tmux.conf` | `~artoo/.config/tmux/tmux.conf` | fish as default shell (no `default-command`) |
 | `starship.toml` | `~artoo/.config/starship.toml` | Gruvbox prompt |
 | `vimrc` | `~artoo/.vimrc` | self-contained server Vim config |
-| `terminfo/xterm-ghostty.terminfo` | `/usr/local/share/artoo/xterm-ghostty.terminfo`, compiled into `/etc/terminfo` | **must be compiled: `tic -x -o /etc/terminfo`, as root**, from vendor-data `bootcmd` before packages (SPEC §9.1) — system-wide, so root and `sudo` sessions work too |
+| `terminfo/xterm-ghostty.terminfo` | `/usr/local/share/artoo/xterm-ghostty.terminfo`, compiled into `/etc/terminfo` | **must be compiled: `tic -x -o /etc/terminfo`, as root**, from vendor-data `bootcmd` before packages — system-wide, so root and `sudo` sessions work too |
 
 ## Packages every guest gets (Ubuntu LTS baseline)
 

@@ -1,4 +1,4 @@
-//! Gruvbox-dark palette, glyph sets and status words (SPEC §4.1).
+//! Gruvbox-dark palette, glyph sets and status words.
 
 const std = @import("std");
 const Color = @import("../cli/command.zig").Color;
@@ -165,7 +165,7 @@ pub const Status = enum {
     }
 };
 
-/// Color decision (SPEC §3.1): `never` → none; `always` overrides
+/// Color decision: `never` → none; `always` overrides
 /// NO_COLOR; `auto` needs a TTY, no NO_COLOR and a non-dumb TERM.
 pub fn decideDepth(policy: Color, is_tty: bool, no_color: ?[]const u8, term: ?[]const u8, colorterm: ?[]const u8) Depth {
     switch (policy) {

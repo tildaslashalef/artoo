@@ -1,4 +1,4 @@
-//! `artoo image ls | fetch IMAGE | rm IMAGE` (SPEC §3.3, §9.2): pinned
+//! `artoo image ls | fetch IMAGE | rm IMAGE`: pinned
 //! guest images in Proxmox's `local:import`. `fetch` has Proxmox download
 //! the image itself and verify the pinned SHA-256 before keeping it; the
 //! workstation never stores an image.

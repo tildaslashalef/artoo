@@ -1,4 +1,4 @@
-//! The command tree. A command appears here only once it works (SPEC §3.3).
+//! The command tree. A command appears here only once it works.
 
 const cli = @import("../cli.zig");
 

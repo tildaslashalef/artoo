@@ -1,4 +1,4 @@
-//! GitHub releases for `artoo update` (SPEC §18, §17.3): this build's
+//! GitHub releases for `artoo update`: this build's
 //! release target, SemVer precedence, release discovery through the API
 //! and downloads that follow GitHub's own redirects, and nothing else.
 
@@ -18,7 +18,7 @@ pub const repo = "tildaslashalef/artoo";
 pub const api_base = "https://api.github.com";
 pub const download_base = "https://github.com";
 
-/// Hosts a download may be redirected to, `https` only (SPEC §18).
+/// Hosts a download may be redirected to, `https` only.
 const redirect_hosts = [_][]const u8{
     "github.com",
     "api.github.com",

@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
     const fmt_step = b.step("fmt", "Check formatting");
     fmt_step.dependOn(&fmt.step);
 
-    // SPEC §12: the Linux client builds must always compile.
+    // The Linux client builds must always compile.
     const cross_step = b.step("cross", "Compile for x86_64-linux and aarch64-linux");
     for ([_]std.Target.Cpu.Arch{ .x86_64, .aarch64 }) |arch| {
         const cross = b.addExecutable(.{
@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-/// `artoo --version` (docs/RELEASING.md §1): derived from the nearest
+/// `artoo --version`: derived from the nearest
 /// annotated release tag by `git describe` (src/version_tag.zig) — the
 /// tag's version at the tag, the next version as a dev build after it.
 /// `-Dversion` overrides it for a source tree without Git history.

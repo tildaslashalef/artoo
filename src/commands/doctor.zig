@@ -1,4 +1,4 @@
-//! `artoo doctor [--connect]` (SPEC §3.3): local install, config, secret
+//! `artoo doctor [--connect]`: local install, config, secret
 //! store, CA bundles; `--connect` adds read-only API probes. Any failed
 //! check → exit 8; warnings do not fail.
 
@@ -73,7 +73,7 @@ pub const doctor = struct {
                     have_ts = false;
                 }
                 // Created to change the policy and revoked afterwards: its
-                // absence is the normal state, no warning (SPEC §19).
+                // absence is the normal state, no warning.
                 have_ts_policy = store.exists(ctx.io, ctx.arena, "tailscale-policy") catch false;
                 if (!have_ts_policy) {
                     try r.add("tailscale policy client", .not_checked, "not stored (created only to change the policy)", .{});
@@ -83,7 +83,7 @@ pub const doctor = struct {
                 } else try r.add("tailscale policy client", .ok, "stored — revoke it once the policy change is done", .{});
             }
             // The policy writer is a separate, short-lived client: the same
-            // ID would make the everyday client a policy writer (SPEC §19).
+            // ID would make the everyday client a policy writer.
             if (cfg.tailscale.client_id.len > 0 and std.mem.eql(u8, cfg.tailscale.client_id, cfg.tailscale.policy_client_id))
                 try r.add("tailscale clients", .failed, "tailscale.client_id and tailscale.policy_client_id name the same OAuth client; the policy client must be a separate one", .{});
             try caCheck(&r, "unifi CA", cfg.unifi.ca_bundle);
@@ -255,7 +255,7 @@ fn probePve(r: *Report) !void {
     try r.add("pve", .ok, "{s}: Proxmox VE {s}", .{ c.base, v.version });
 }
 
-/// The zone, then the account token's status and expiry (SPEC §15).
+/// The zone, then the account token's status and expiry.
 fn probeCloudflare(r: *Report) !void {
     const ctx = r.ctx;
     var c = cf.Client.open(ctx) catch |err| return probeFailed(r, "cloudflare", err);
@@ -266,7 +266,7 @@ fn probeCloudflare(r: *Report) !void {
     try r.add("cloudflare", .ok, "token active (no expiry); zone {s}", .{c.zone_name});
 }
 
-/// The scopes SPEC §19 needs, and what each is for.
+/// The OAuth scopes the Tailscale integrations need, and what each is for.
 const ts_scopes = [_]struct { []const u8, []const u8 }{
     .{ "devices:core", "devices" },
     .{ "devices:routes", "routes" },
@@ -275,7 +275,7 @@ const ts_scopes = [_]struct { []const u8, []const u8 }{
     .{ "policy_file:read", "policy" },
 };
 
-/// The token exchange, then the granted scopes against SPEC §19's table
+/// The token exchange, then the granted scopes against `ts_scopes`
 /// (the response's `scope`; its tags are not reported there).
 fn probeTailscale(r: *Report) !void {
     const ctx = r.ctx;
@@ -286,7 +286,7 @@ fn probeTailscale(r: *Report) !void {
     for (ts_scopes) |s| if (!ts.grants(have, s[0])) try missing.print(ctx.arena, "{s}{s} ({s})", .{ if (missing.items.len > 0) ", " else "", s[0], s[1] });
     const granted = if (c.scopes.len > 0) c.scopes else "none reported";
     // The everyday client only reads the policy; writing it is the
-    // separate policy client's (SPEC §19).
+    // separate policy client's.
     for (have) |h| if (std.mem.eql(u8, h, "policy_file") or std.mem.eql(u8, h, "all"))
         return r.add("tailscale", .failed, "token granted: {s}; the main client may write the policy ({s}) — give it policy_file:read only and keep policy writes to the policy client", .{ granted, h });
     const cfg = try ctx.config();

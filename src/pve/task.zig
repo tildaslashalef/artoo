@@ -1,4 +1,4 @@
-//! Proxmox tasks (SPEC §3.2, §8.2): UPID parsing, short handles
+//! Proxmox tasks: UPID parsing, short handles
 //! (`qmstart:100@14:32`) that `artoo task …` accepts back, resolution of a
 //! TASK word, and waiting for completion. `stopped` alone is not success:
 //! only exit status `OK` or `WARNINGS: n` is.
@@ -79,7 +79,7 @@ pub fn wait(c: *pve.Client, upid: []const u8, timeout_ms: u64) !Done {
 }
 
 /// `wait`, reporting the task log's newest line to `note` while the task
-/// runs (download progress, disk import, …; SPEC §4.4).
+/// runs (download progress, disk import, …).
 pub fn waitNoted(c: *pve.Client, upid: []const u8, timeout_ms: u64, note: ?exec.Note) !Done {
     const ctx = c.ctx;
     const h = try handle(ctx.arena, upid, &ctx.ui.zone);

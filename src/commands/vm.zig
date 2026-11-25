@@ -1,4 +1,4 @@
-//! `artoo vm …` (SPEC §3.3): virtual machines on Proxmox. VM is a VMID or
+//! `artoo vm …`: virtual machines on Proxmox. VM is a VMID or
 //! an exact name; ambiguity lists the candidates.
 
 const std = @import("std");
@@ -69,7 +69,7 @@ pub const ls = struct {
             cells[5] = .{ .text = if (v.running()) try k.fmt(ctx, ui.values.duration(v.uptime)) else "--" };
             cells[6] = .{ .text = try k.clean(ctx, v.tags) };
             std.mem.rotate(ui.table.Cell, cells[2..8], 5);
-            // The machine name `vm new` gives every artoo guest (SPEC §9.6).
+            // The machine name `vm new` gives every artoo guest.
             cells[8] = if (!v.template and template.taggedWith(v.tags, vm_new.tag))
                 .{ .text = try std.fmt.allocPrint(ctx.arena, "{s}.{s}", .{ try k.clean(ctx, v.name), domain }) }
             else
@@ -94,7 +94,7 @@ pub const ls = struct {
     }
 };
 
-/// `artoo;role-edge` → `edge` (SPEC §9.1).
+/// `artoo;role-edge` → `edge`.
 pub fn roleOf(tags: []const u8) ?[]const u8 {
     var it = std.mem.tokenizeAny(u8, tags, ";, ");
     while (it.next()) |t| if (std.mem.cutPrefix(u8, t, "role-")) |r| return r;
@@ -113,12 +113,12 @@ pub const Detail = struct {
     /// Guest-agent addresses; null when not available (see `agent_note`).
     addresses: ?[]const vms.Address,
     agent_note: ?[]const u8,
-    /// The `vm fence` state (SPEC §9.11): `on …`, `drift — …`, `off`.
+    /// The `vm fence` state: `on …`, `drift — …`, `off`.
     fence: []const u8 = "off",
-    /// Keys waiting for the next start (SPEC §9.13); `config` is the
+    /// Keys waiting for the next start; `config` is the
     /// running configuration.
     pending: []const vms.Key = &.{},
-    /// What a running guest uses (SPEC §9.14); null when stopped or
+    /// What a running guest uses; null when stopped or
     /// unknown.
     guest_mem: ?vms.GuestMem = null,
 };
@@ -211,7 +211,7 @@ fn waitingKey(d: Detail, key: []const u8) ?vms.Key {
     return null;
 }
 
-/// `f`, its new side appended in the warning color (SPEC §9.13).
+/// `f`, its new side appended in the warning color.
 fn marked(ctx: *Context, d: Detail, f: ui.blocks.Field, new: []const u8) !ui.blocks.Field {
     return .{ .key = f.key, .value = try std.fmt.allocPrint(ctx.arena, "{s} → {s}  {s}", .{ f.value, new, pendingWord(d.vm) }), .role = .warn };
 }
@@ -374,7 +374,7 @@ pub const config = struct {
 };
 
 /// A pending key's new side: its value, `(removed)` or `(changed)` for
-/// the hidden password (SPEC §9.13).
+/// the hidden password.
 fn pendingText(ctx: *Context, key: vms.Key) ![]const u8 {
     if (key.delete) return "(removed)";
     if (std.mem.eql(u8, key.key, "cipassword")) return "(changed)";
@@ -620,7 +620,7 @@ test "vm show: boot order, protection, CPU and memory options" {
     });
 }
 
-test "vm show and vm config: pending values marked (SPEC §9.13)" {
+test "vm show and vm config: pending values marked" {
     var g: testkit.Gateway = undefined;
     try g.init(&.{
         .{ .respond = .{ .body = resources_body } },

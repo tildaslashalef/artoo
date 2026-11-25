@@ -1,4 +1,4 @@
-//! Grafana's provisioned content on the watchdog (SPEC §9.9): the alert
+//! Grafana's provisioned content on the watchdog: the alert
 //! rules, generated from a table so queries live in one place and are
 //! tested, and the lab board. Rules use the plain three-step form: the
 //! query returns the raw value, B reduces it (`last`) and C compares it
@@ -29,7 +29,7 @@ pub const Rule = struct {
     description: []const u8,
 };
 
-/// The initial rules (SPEC §9.9). Guests' and Alloy's series name the
+/// The initial rules. Guests' and Alloy's series name the
 /// guest in `host`; Proxmox's name the node (`object="nodes"`) or the
 /// storage (`object="storages"`) there; probes carry `service`, `url`
 /// and `vm` from the watchdog's relabelling (`files.alloyConfig`).
@@ -119,7 +119,7 @@ pub const rules = [_]Rule{
         .@"for" = "0s",
         .severity = .critical,
         .summary = "{{ $labels.host }} (edge) tried to reach {{ if eq $labels.counter \"to_pve\" }}Proxmox{{ else }}UniFi{{ end }}: possible compromise",
-        .description = "{{ printf \"%.0f\" $values.B.Value }} packets from the edge VM towards {{ if eq $labels.counter \"to_pve\" }}Proxmox{{ else }}UniFi{{ end }} dropped in 10 minutes; nothing on the edge should try (SPEC §9.7). Check now: artoo edge status",
+        .description = "{{ printf \"%.0f\" $values.B.Value }} packets from the edge VM towards {{ if eq $labels.counter \"to_pve\" }}Proxmox{{ else }}UniFi{{ end }} dropped in 10 minutes; nothing on the edge should try. Check now: artoo edge status",
     },
     .{
         .uid = "artoo-telemetry",
@@ -128,7 +128,7 @@ pub const rules = [_]Rule{
         .threshold = "0",
         .@"for" = "0s",
         .summary = "{{ $labels.host }}: a service tried to reach the internet",
-        .description = "{{ printf \"%.0f\" $values.B.Value }} packets from Grafana, Loki, VictoriaMetrics, Alloy or ntfy dropped in 10 minutes: a telemetry or update attempt (SPEC §9.9). Check: artoo watch status",
+        .description = "{{ printf \"%.0f\" $values.B.Value }} packets from Grafana, Loki, VictoriaMetrics, Alloy or ntfy dropped in 10 minutes: a telemetry or update attempt. Check: artoo watch status",
     },
     .{
         .uid = "artoo-tunnel",
@@ -182,7 +182,7 @@ pub const rules = [_]Rule{
 pub fn rulesYaml(a: Allocator) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(a,
-        \\# Managed by artoo (SPEC §9.9); 'artoo watch setup' overwrites edits.
+        \\# Managed by artoo; 'artoo watch setup' overwrites edits.
         \\apiVersion: 1
         \\groups:
         \\  - orgId: 1

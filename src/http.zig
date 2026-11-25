@@ -1,4 +1,4 @@
-//! HTTP transport for both APIs (SPEC §8.1).
+//! HTTP transport for both APIs.
 //!
 //! - CA bundle from config only; `now` is pinned so the stdlib never
 //!   replaces the bundle with system roots. Hostnames verified.
@@ -6,7 +6,7 @@
 //!   `Connection: close` (pveproxy closes idle sockets after 5 s; the prototype lost
 //!   writes on reused dead sockets).
 //! - Redirects refused unless a caller asks for them back (the self-update,
-//!   SPEC §18, follows GitHub's own under its policy); `accept-encoding:
+//!   `artoo update`, follows GitHub's own under its policy); `accept-encoding:
 //!   identity`; bodies capped while streaming.
 //! - Every request has a deadline: the attempt runs as a concurrent task
 //!   raced against a sleep in an `Io.Select`; on expiry the attempt is
@@ -46,7 +46,7 @@ pub const Response = struct {
     reason: []const u8 = "",
     /// `Location` of a 3xx returned with `redirect = .give_back`.
     location: ?[]const u8 = null,
-    /// The `ETag` header, when sent (Tailscale's policy, SPEC §19).
+    /// The `ETag` header, when sent (Tailscale's policy).
     etag: ?[]const u8 = null,
 };
 
@@ -67,7 +67,7 @@ pub const Options = struct {
     /// and with `system_roots`.
     ca_bundle: ?[]const u8,
     /// Trust the operating system's root store instead (the one public
-    /// API, Cloudflare — SPEC §15).
+    /// API, Cloudflare).
     system_roots: bool = false,
     timeout_ms: u64,
     max_body: usize = 16 << 20,

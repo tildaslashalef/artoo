@@ -1,4 +1,4 @@
-//! Declarative CLI: command table, parser, help, suggestions (SPEC §3).
+//! Declarative CLI: command table, parser, help, suggestions.
 
 const command = @import("cli/command.zig");
 

@@ -1,4 +1,4 @@
-//! Request bodies for catalog writes (SPEC §10.2): load a `--from FILE`
+//! Request bodies for catalog writes: load a `--from FILE`
 //! document, check it against the operation's allowed/required fields,
 //! and the pure helpers plans and verification need — flattening for
 //! display (secrets hidden), diffs, and the "fresh read contains what we

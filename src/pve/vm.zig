@@ -1,4 +1,4 @@
-//! Virtual machines on the configured node (SPEC §3.2): listing, VM
+//! Virtual machines on the configured node: listing, VM
 //! target resolution (VMID or exact name; ambiguity lists candidates),
 //! config and status reads, and guest-agent addresses. Resource modules
 //! never print.
@@ -161,7 +161,7 @@ pub fn bootDisk(cfg: Value) ?[]const u8 {
     return pve.str(cfg, "bootdisk");
 }
 
-/// `PUT …/resize` (SPEC §17.2): grow `disk` to `size` (`\d+[KMGT]?`,
+/// `PUT …/resize`: grow `disk` to `size` (`\d+[KMGT]?`,
 /// absolute), guarded by the config digest. The answer is the task's
 /// UPID (or null from an older, synchronous Proxmox).
 pub fn resizeDisk(c: *pve.Client, vmid: u32, disk: []const u8, size: []const u8, digest: ?[]const u8) !Value {
@@ -171,7 +171,7 @@ pub fn resizeDisk(c: *pve.Client, vmid: u32, disk: []const u8, size: []const u8,
     return c.send(.PUT, try c.nodePath("/qemu/{d}/resize", .{vmid}), params.items);
 }
 
-/// One key of `GET …/pending` (SPEC §9.13): the running value, the one
+/// One key of `GET …/pending`: the running value, the one
 /// stored for the next start, and a stored delete.
 pub const Key = struct {
     key: []const u8,
@@ -244,7 +244,7 @@ pub fn storedConfig(arena: Allocator, ks: []const Key) !Value {
     return .{ .object = m };
 }
 
-/// A running guest's memory (SPEC §9.14), in bytes.
+/// A running guest's memory, in bytes.
 pub const GuestMem = struct {
     source: enum { agent, balloon },
     total: u64,

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Point Proxmox's built-in External Metric Server at the watchdog VM
-# (SPEC §9.9): InfluxDB line protocol over HTTP to VictoriaMetrics on
+# Point Proxmox's built-in External Metric Server at the watchdog VM:
+# InfluxDB line protocol over HTTP to VictoriaMetrics on
 # ADDRESS:8428; organization, bucket and token stay empty (VictoriaMetrics'
 # documented Proxmox setup). No agent on Proxmox. Approved host change only:
-# it needs Sys.Modify on /, which artoo's token deliberately lacks (SPEC §7).
+# it needs Sys.Modify on /, which artoo's token deliberately lacks.
 #
 # Usage: scripts/pve-metrics.sh ADDRESS     (the role-watch VM's address)
 #

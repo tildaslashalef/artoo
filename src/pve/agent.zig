@@ -1,4 +1,4 @@
-//! QEMU guest agent through the Proxmox API (SPEC §9.3, §9.4): ping,
+//! QEMU guest agent through the Proxmox API: ping,
 //! command execution with bounded polling, and file reads. Commands run
 //! as root inside the guest; the token needs `VM.GuestAgent.Unrestricted`
 //! (in `PVEVMAdmin`, verified on 9.2).
@@ -52,7 +52,7 @@ pub fn exec(c: *pve.Client, vmid: u32, argv: []const []const u8, input: ?[]const
 }
 
 /// A guest file a long script writes its current stage to, reported to a
-/// ledger step while the script runs (SPEC §4.4).
+/// ledger step while the script runs.
 pub const Watch = struct {
     file: []const u8,
     note: exec_mod.Note,
@@ -66,7 +66,7 @@ pub fn execWatched(c: *pve.Client, vmid: u32, argv: []const []const u8, input: ?
 }
 
 /// Start `argv` in the guest without waiting for it: its pid. The one
-/// write; its errors keep their meaning (SPEC §8.1).
+/// write; its errors keep their meaning.
 pub fn start(c: *pve.Client, vmid: u32, argv: []const []const u8, input: ?[]const u8) !i64 {
     const ctx = c.ctx;
     var params: std.ArrayList(pve.Param) = .empty;

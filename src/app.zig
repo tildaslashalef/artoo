@@ -21,7 +21,7 @@ pub const Context = struct {
     err: *Io.Writer,
     env: *const std.process.Environ.Map,
     /// argv[0] as the shell passed it (`artoo update` checks the path it
-    /// was invoked by, SPEC §18); empty in tests.
+    /// was invoked by); empty in tests.
     argv0: []const u8 = "",
     /// Command-line globals with config defaults applied.
     globals: cli.Globals = .{},
@@ -36,7 +36,7 @@ pub const Context = struct {
     /// Message for the error a handler returns (rendered by main).
     diag: ?[]const u8 = null,
     /// The step ledger of the workflow that ran (`exec.run`), for the JSON
-    /// error object (SPEC §4.2).
+    /// error object.
     steps: []const @import("exec.zig").Ledger.Step = &.{},
     /// The config file as loaded by main (defaults when absent).
     loaded: LoadedConfig = .{ .failed = .{ .err = error.ConfigMissing, .message = "config not loaded" } },
@@ -46,7 +46,7 @@ pub const Context = struct {
     store_override: ?secrets.Store = null,
     /// Tests point API clients at an in-process plain-HTTP server.
     test_hooks: TestHooks = .{},
-    /// The activity line, when one is shown (SPEC §4.5).
+    /// The activity line, when one is shown.
     activity: ?*Activity = null,
 
     pub const TestHooks = struct {
@@ -60,7 +60,7 @@ pub const Context = struct {
         runner: ?proc.Runner = null,
         /// Argon2id memory (KiB) for `config export`, kept small in tests.
         kdf_kib: ?u32 = null,
-        /// `artoo update` against the fake server (SPEC §18).
+        /// `artoo update` against the fake server.
         update: ?Update = null,
         /// A fixed password and salt for `vm password --reset`, so a test
         /// can answer with the exact shadow hash.
@@ -92,7 +92,7 @@ pub const Context = struct {
         return err;
     }
 
-    /// Detail for the activity line (SPEC §4.5); nothing when none is shown.
+    /// Detail for the activity line; nothing when none is shown.
     pub fn busy(ctx: *const Context, comptime fmt: []const u8, args: anytype) void {
         if (ctx.activity) |a| a.note(fmt, args);
     }
@@ -120,7 +120,7 @@ pub const Context = struct {
         };
     }
 
-    /// Normal confirmation (SPEC §3.4): `--yes` skips it; without a TTY and
+    /// Normal confirmation: `--yes` skips it; without a TTY and
     /// without `--yes` the action is refused.
     pub fn confirm(ctx: *Context, comptime fmt: []const u8, args: anytype) !void {
         if (ctx.globals.yes) return;

@@ -1,4 +1,4 @@
-//! `artoo vm upgrade VM` (SPEC §9.12): install a guest's pending package
+//! `artoo vm upgrade VM`: install a guest's pending package
 //! updates through the guest agent, on the one pipeline — the plan lists
 //! every package from a simulated upgrade on the guest's current lists,
 //! apt runs once in its own systemd unit (an upgraded guest agent
@@ -28,7 +28,7 @@ const watch = @import("watch.zig");
 
 const Context = app.Context;
 
-/// apt's own deadline; past it the outcome is unknown (SPEC §9.12).
+/// apt's own deadline; past it the outcome is unknown.
 const deadline_ms: u64 = 30 * 60 * 1000;
 /// The agent not answering this long while apt runs: the outcome is
 /// unknown. A restart (an upgraded `qemu-guest-agent`) takes seconds.
@@ -47,7 +47,7 @@ const UpgradeOp = struct {
     ledger: exec.Ledger = .{},
     /// `/run/reboot-required.pkgs` after the run; null when no reboot is wanted.
     reboot: ?[]const []const u8 = null,
-    /// `--snapshot` (SPEC §9.16).
+    /// `--snapshot`.
     guard: ?snapguard.Guard = null,
 
     pub fn read(op: *UpgradeOp, ctx: *Context) !void {
@@ -184,7 +184,7 @@ const UpgradeOp = struct {
     }
 };
 
-/// Roles `vm upgrade --all` leaves out (SPEC §9.12): the guests needed to
+/// Roles `vm upgrade --all` leaves out: the guests needed to
 /// reach, serve and watch the rest — the same set `vm fence` refuses.
 const own_run_roles = [_][]const u8{ edge.role, router.role, watch.role };
 
@@ -559,7 +559,7 @@ pub fn unfinishedText(ctx: *Context, names: []const []const u8) ![]const u8 {
     });
 }
 
-/// The simulated upgrade (SPEC §9.12); a failing `apt-get -s` refuses.
+/// The simulated upgrade; a failing `apt-get -s` refuses.
 fn simulate(ctx: *Context, c: *pve.Client, vmid: u32, target: []const u8) !apt.Pending {
     const r = try agent.sh(c, vmid, apt.simulate_script, 120_000);
     // Unfinished packages can break `apt-get -s` too: they are the cause to name.

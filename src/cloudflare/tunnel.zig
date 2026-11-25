@@ -1,4 +1,4 @@
-//! The lab's Cloudflare Tunnel (SPEC §15): remotely managed, its ingress
+//! The lab's Cloudflare Tunnel: remotely managed, its ingress
 //! list lives in Cloudflare and `cloudflared` on the edge VM fetches it.
 //! Configurations are handled as JSON values so rules and settings artoo
 //! did not write survive a `PUT` unchanged.
@@ -62,7 +62,7 @@ pub fn create(c: *cf.Client, name: []const u8) !Tunnel {
 }
 
 /// The connector token. A secret: the caller hands it to the edge VM and
-/// drops it; it is never printed, logged or stored (SPEC §9.7).
+/// drops it; it is never printed, logged or stored.
 pub fn token(c: *cf.Client, id: []const u8) ![]const u8 {
     const v = try c.get(try std.fmt.allocPrint(c.ctx.arena, "/accounts/{s}/cfd_tunnel/{s}/token", .{ try account(c), id }));
     if (v != .string or v.string.len == 0) return c.ctx.fail(error.Protocol, "Cloudflare sent no token for tunnel {s}", .{id});

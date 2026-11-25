@@ -1,4 +1,4 @@
-//! The one mutation pipeline (SPEC §8.2), used by every write:
+//! The one mutation pipeline, used by every write:
 //!
 //!   read target → plan (no-op refused) → preview → `--dry-run` stops →
 //!   confirm → re-read if the prompt took long (abort on drift) → send once
@@ -91,7 +91,7 @@ pub fn run(ctx: *Context, op: anytype, opts: Options) !void {
     try ctx.out.print("{s}{s}{s} {s}\n", .{ p.on(.ok), ctx.ui.glyphs.ok, p.off(.ok), op.done() });
 }
 
-/// SPEC §3.4: normal → `[y/N]` (or `--yes`); destructive → typed target
+/// Confirmation by risk: normal → `[y/N]` (or `--yes`); destructive → typed target
 /// interactively, `--yes --confirm TARGET` otherwise.
 fn confirm(ctx: *Context, target: []const u8, risk: ui.blocks.Risk, confirm_flag: ?[]const u8) !void {
     if (risk == .normal) return ctx.confirm("Proceed?", .{});
@@ -110,10 +110,10 @@ fn confirm(ctx: *Context, target: []const u8, risk: ui.blocks.Risk, confirm_flag
     if (answer == .no) return ctx.fail(error.Declined, "confirmation did not match; nothing was sent", .{});
 }
 
-/// Step ledger for multi-step workflows (SPEC §8.2): every step ends as
+/// Step ledger for multi-step workflows: every step ends as
 /// done, failed, not run or unknown, and the ledger is printed whatever
 /// happened — workflows never auto-destroy to compensate. With a
-/// `Progress` attached (by `run`), steps are also shown live (SPEC §4.4):
+/// `Progress` attached (by `run`), steps are also shown live:
 /// steps run in the order they were added, so the first added step and
 /// the step after each finished one start automatically; nothing may
 /// prompt once steps are added.
@@ -127,7 +127,7 @@ pub const Ledger = struct {
         name: []const u8,
         state: State = .not_run,
         detail: []const u8 = "",
-        /// How long the step ran, when it was shown running (SPEC §4.2).
+        /// How long the step ran, when it was shown running.
         seconds: ?u64 = null,
     };
 
@@ -179,7 +179,7 @@ pub const Ledger = struct {
     }
 
     /// The end-of-run summary on stdout — unless the live lines already
-    /// were the ledger on this terminal (SPEC §4.4).
+    /// were the ledger on this terminal.
     pub fn render(l: *const Ledger, w: *Io.Writer, u: *const ui.Ui) !void {
         if (l.progress) |p| if (p.replaces) return;
         const width = l.nameWidth();
@@ -188,7 +188,7 @@ pub const Ledger = struct {
 };
 
 /// Where a long wait reports its latest status: the running step's
-/// detail (SPEC §4.4). Waits take `?Note`; null reports nothing.
+/// detail. Waits take `?Note`; null reports nothing.
 pub const Note = struct {
     ledger: *Ledger,
     step: usize,
@@ -243,7 +243,7 @@ fn timeOfDay(w: *Io.Writer, epoch: i64, zone: *const ui.values.Zone) !void {
     try w.print("{d:0>2}:{d:0>2}:{d:0>2}", .{ day / 3600, day % 3600 / 60, day % 60 });
 }
 
-/// Live step progress on stderr (SPEC §4.4). On a terminal the running
+/// Live step progress on stderr. On a terminal the running
 /// step is redrawn by a concurrent ticker; otherwise one timestamped line
 /// per step start and end. All drawing happens under `mutex`.
 pub const Progress = struct {

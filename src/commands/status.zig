@@ -1,4 +1,4 @@
-//! `artoo status` (SPEC §11): one screen over the lab — Proxmox (host,
+//! `artoo status`: one screen over the lab — Proxmox (host,
 //! guests, storage, tasks), UniFi (gateway, guest DNS records), the
 //! edge, the router, the tunnel and service drift. Each system is read by
 //! its own concurrent task with its own `Context` copy
@@ -53,11 +53,11 @@ const Guest = struct {
     reboot_pending: ?bool = null,
     /// The packages that want it (`/run/reboot-required.pkgs`).
     reboot_packages: []const []const u8 = &.{},
-    /// A fenced guest whose fence drifted (SPEC §9.11): what differs.
+    /// A fenced guest whose fence drifted: what differs.
     fence_drift: ?[]const u8 = null,
-    /// What a running guest uses (SPEC §9.14); `mem` is the host's figure.
+    /// What a running guest uses; `mem` is the host's figure.
     guest_mem: ?vms.GuestMem = null,
-    /// Snapshots (SPEC §9.16): how many, the oldest's time, and the
+    /// Snapshots: how many, the oldest's time, and the
     /// artoo-owned ones past `guests.snapshot_max_age_days`.
     snaps: usize = 0,
     oldest_snap: ?i64 = null,
@@ -70,7 +70,7 @@ const Gateway = struct {
     devices_total: usize,
     clients: usize,
     wans: []const []const u8,
-    /// Each WAN's status and role (SPEC §10.4).
+    /// Each WAN's status and role.
     wan_states: []const WanState = &.{},
     /// Outages of the last 24 hours on WANs with a port, and their total
     /// downtime; null when the system log did not answer.
@@ -168,7 +168,7 @@ fn guests(c: *pve.Client, templates: *usize) ![]const Guest {
                     error.OutOfMemory, error.Canceled => |e| return e,
                     else => ctx.diag = null,
                 }
-                // SPEC §9.1: the operator reboots; status shows who waits.
+                // Guests never reboot themselves: the operator reboots; status shows who waits.
                 if (agent.sh(c, v.vmid, reboot_script, 30_000)) |r| {
                     var lines = std.mem.tokenizeAny(u8, r.out, "\r\n");
                     if (lines.next()) |first| reboot = std.mem.eql(u8, first, "yes");
@@ -361,7 +361,7 @@ pub const status = struct {
 const Part = struct {
     ctx: Context,
     errors: std.ArrayList(SectionError) = .empty,
-    /// The activity detail's count (SPEC §4.5); this part's index in it.
+    /// The activity detail's count; this part's index in it.
     tally: ?*activity.Tally = null,
     index: usize = 0,
 
@@ -555,7 +555,7 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
     if (r.storage) |ss| {
         var fields: std.ArrayList(ui.blocks.Field) = .empty;
         for (ss) |s| try fields.append(a, .{ .key = try std.fmt.allocPrint(a, "  {s}", .{try k.clean(ctx, s.name)}), .value = try k.usage(ctx, s.used, s.total) });
-        // Snapshots (SPEC §9.16): one line, then each artoo-owned one past its age.
+        // Snapshots: one line, then each artoo-owned one past its age.
         var n_snaps: usize = 0;
         var n_vms: usize = 0;
         var oldest: ?i64 = null;
@@ -654,7 +654,7 @@ fn render(ctx: *Context, r: Report, errors: []const SectionError) !void {
     } else try failLine(ctx, unavailable(errors, "services") orelse unavailable(errors, "edge") orelse unavailable(errors, "dns") orelse unavailable(errors, "guests") orelse "--");
 }
 
-/// One line (SPEC §10.4): each WAN's status and role, then the outages of
+/// One line: each WAN's status and role, then the outages of
 /// the last 24 hours. An offline active WAN fails; outages warn.
 fn wanField(ctx: *Context, g: Gateway) !ui.blocks.Field {
     const a = ctx.arena;

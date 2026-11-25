@@ -1,4 +1,4 @@
-//! `artoo task ls | show TASK | log TASK | wait TASK` (SPEC §3.3): Proxmox
+//! `artoo task ls | show TASK | log TASK | wait TASK`: Proxmox
 //! tasks. TASK is a UPID, a handle as printed (`qmstart:100@14:32`) or a
 //! unique fragment of a UPID.
 

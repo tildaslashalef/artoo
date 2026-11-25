@@ -1,4 +1,4 @@
-//! `artoo gw wans ls|show|log` (SPEC §10.4): WAN health and outages from
+//! `artoo gw wans ls|show|log`: WAN health and outages from
 //! the gateway's own WAN data (`unifi/wan.zig`). All read-only; the
 //! system-log search is a `POST` that changes nothing, sent once.
 
@@ -23,7 +23,7 @@ pub const Loaded = struct {
     raw: wan.Raw,
 
     /// Exit 8: nothing beyond names answered, or a source failed for a
-    /// reason other than the firmware (SPEC §10.4).
+    /// reason other than the firmware.
     pub fn partial(l: Loaded) bool {
         if (wan.nothingAnswered(l.raw)) return true;
         for (l.problems.items) |p| if (!p.firmware) return true;

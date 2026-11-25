@@ -1,4 +1,4 @@
-//! Tailscale API client (SPEC §19, §17.4): an OAuth client's secret from
+//! Tailscale API client: an OAuth client's secret from
 //! the SecretStore is exchanged once per invocation for an access token
 //! (`POST /oauth/token`, client-credentials grant, form-encoded) that
 //! lives in memory only; requests carry it as `Authorization: Bearer`.
@@ -46,7 +46,7 @@ pub const Credential = enum {
     }
 };
 
-/// True when the integrations are on (SPEC §19): the client ID is set
+/// True when the integrations are on: the client ID is set
 /// and its secret is stored. A store that cannot answer counts as off.
 pub fn configured(ctx: *Context) !bool {
     const cfg = ctx.config() catch return false;
@@ -90,7 +90,7 @@ pub const Client = struct {
     scopes: []const u8 = "",
     /// The tags the token may use, when the token response names them
     /// (`tags`, a list or a space/comma-separated string); null when it
-    /// does not — the documented answer has no such field (SPEC §17.4).
+    /// does not — the documented answer has no such field.
     tags: ?[]const []const u8 = null,
     /// Seconds the token is valid.
     expires_in: ?i64 = null,

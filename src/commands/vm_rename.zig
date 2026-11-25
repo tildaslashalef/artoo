@@ -1,4 +1,4 @@
-//! `artoo vm rename OLD NEW` (SPEC §9.18): a guest's name is also its
+//! `artoo vm rename OLD NEW`: a guest's name is also its
 //! hostname, its UniFi client record and DNS record, its pinned host key
 //! and ssh_config block, its password entry, the service upstreams and
 //! fence exceptions that name it, its tailnet name and the watchdog's
@@ -624,7 +624,7 @@ const RenameOp = struct {
         const cfg = try ctx.config();
         // NEW resolves before anything points at it; OLD's places that
         // mark a stopped rename (hostname, UniFi record, OLD's DNS record)
-        // go last, OLD's DNS record very last (SPEC §9.18).
+        // go last, OLD's DNS record very last.
         const s_pve = if (p.proxmox) try l.add(a, "rename on Proxmox") else null;
         const s_dns_add = if (p.dns_add) try l.add(a, "add DNS record") else null;
         const s_svc = if (p.services) try l.add(a, "move the services") else null;
@@ -740,7 +740,7 @@ const RenameOp = struct {
             if (op.tsc) |*t| if (s.node_id.len > 0) {
                 // The control plane takes a moment to show the new
                 // hostname; only a name set by hand in the console keeps
-                // the old one — then the device itself is renamed (SPEC §19).
+                // the old one — then the device itself is renamed.
                 var tries: usize = 0;
                 while (true) : (tries += 1) {
                     const d = (try tn.getDevice(t, s.node_id)) orelse break;
@@ -795,7 +795,7 @@ const RenameOp = struct {
         }
     }
 
-    /// The watchdog step (SPEC §9.18): the probes re-rendered for the
+    /// The watchdog step: the probes re-rendered for the
     /// services that moved, the guest re-enrolled under NEW, then — only
     /// once NEW's samples arrive — OLD's series deleted as 'watch forget'.
     fn moveWatch(op: *RenameOp, ctx: *Context, i: usize, w: vms.Vm) !void {

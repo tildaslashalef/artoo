@@ -1,4 +1,4 @@
-//! `artoo vm disk grow` (SPEC §9.15): grow a VM disk on Proxmox, then the
+//! `artoo vm disk grow`: grow a VM disk on Proxmox, then the
 //! guest's root filesystem on it, on the one pipeline. Proxmox cannot
 //! shrink a disk, so the plan says the change is final.
 
@@ -42,7 +42,7 @@ pub fn parseSize(s: []const u8) ?Size {
     return .{ .grow = by, .bytes = @as(u64, @intFromFloat(mib)) << 20 };
 }
 
-/// Disk slots `PUT …/resize` takes (SPEC §17.2), CD-ROMs excluded later.
+/// Disk slots `PUT …/resize` takes, CD-ROMs excluded later.
 pub fn validSlot(s: []const u8) bool {
     const buses = [_]struct { []const u8, u8 }{ .{ "scsi", 30 }, .{ "virtio", 15 }, .{ "sata", 5 }, .{ "ide", 3 } };
     for (buses) |b| {

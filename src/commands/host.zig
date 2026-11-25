@@ -1,4 +1,4 @@
-//! `artoo host show` (SPEC §3.3, §11): the Proxmox node — versions, boot,
+//! `artoo host show`: the Proxmox node — versions, boot,
 //! CPU, load, memory, root filesystem, uptime. Read-only.
 
 const std = @import("std");

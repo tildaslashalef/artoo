@@ -13,7 +13,7 @@
   },
   "editable": false,
   "graphTooltip": 1,
-  "description": "Managed by artoo (SPEC \u00a79.9); 'artoo watch setup' overwrites edits.",
+  "description": "Managed by artoo; 'artoo watch setup' overwrites edits.",
   "panels": [
     {
       "id": 1,
@@ -783,7 +783,7 @@
       "id": 12,
       "type": "stat",
       "title": "Edge \u2192 Proxmox/UniFi (24 h)",
-      "description": "Any packet here is a sign of compromise (SPEC 9.7)",
+      "description": "Any packet here is a sign of compromise",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"

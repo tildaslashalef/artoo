@@ -1,4 +1,4 @@
-//! Shared rendering kit (SPEC §4): every command renders through this.
+//! Shared rendering kit: every command renders through this.
 
 pub const text = @import("ui/text.zig");
 pub const style = @import("ui/style.zig");

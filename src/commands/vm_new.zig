@@ -1,4 +1,4 @@
-//! `artoo vm new | verify | ssh | password` (SPEC §9.3–9.5, §7): a ready
+//! `artoo vm new | verify | ssh | password`: a ready
 //! Ubuntu guest from the template in one confirmed workflow, its read-only
 //! readiness checks, SSH with the host key pinned through the guest agent,
 //! and the per-guest password of the guest user (`guests.user`).
@@ -49,7 +49,7 @@ const vm_arg: cli.Positional = .{ .name = "VM", .complete = .vm, .help = "VMID o
 
 // ---------------------------------------------------------------- inputs
 
-/// Presets (SPEC §9.1): vCPU, RAM in MiB, disk in GiB. 20 GiB is the
+/// Presets: vCPU, RAM in MiB, disk in GiB. 20 GiB is the
 /// floor: a guest uses ~4 GiB after first boot and disks only grow.
 pub const Size = enum {
     tiny,
@@ -85,7 +85,7 @@ pub const Size = enum {
     }
 };
 
-/// SPEC §9.1: a valid label, never a protected or equipment name.
+/// A valid label, never a protected or equipment name.
 fn checkName(ctx: *Context, nm: []const u8) !void {
     if (!names.valid(nm)) return ctx.fail(error.Usage, "NAME must be one lowercase DNS label (letter first; letters, digits, single hyphens; 2-{d} characters), got '{s}'", .{ names.max_len, nm });
     if (names.isReserved(nm) or exposure.protected(try ctx.config(), nm, null) != null)
@@ -93,7 +93,7 @@ fn checkName(ctx: *Context, nm: []const u8) !void {
 }
 
 /// A free curated name: no VM, no DNS record under the guest domain and
-/// no UniFi client record carries it (SPEC §9.1).
+/// no UniFi client record carries it.
 fn pickName(ctx: *Context, c: *pve.Client) ![]const u8 {
     const a = ctx.arena;
     const domain = (try ctx.config()).guests.domain;
@@ -229,7 +229,7 @@ fn secretName(ctx: *Context, name: []const u8) ![]const u8 {
 /// Why UniFi will not reserve `address` for `mac`, or null: another
 /// client record with that Fixed IP, or another client UniFi still counts
 /// as connected on it. A VM just destroyed by `vm rm` stays connected for
-/// several minutes after its record is forgotten (SPEC §9.5), and UniFi
+/// several minutes after its record is forgotten, and UniFi
 /// then answers the reservation with a bare `api.err.Invalid`.
 fn addressHolder(ctx: *Context, u: *unifi.Client, address: []const u8, mac: []const u8) !?[]const u8 {
     const a = ctx.arena;
@@ -293,9 +293,9 @@ const NewOp = struct {
     /// Classic `_id` of the guests' network (UniFi client records).
     network_id: []const u8 = "",
     steps: Steps = .{},
-    /// The watchdog (role-watch) the guest is enrolled with (SPEC §9.9).
+    /// The watchdog (role-watch) the guest is enrolled with.
     watch_vm: ?[]const u8 = null,
-    /// `~/.artoo/ssh_config` exists and gets the guest's block (SPEC §9.10).
+    /// `~/.artoo/ssh_config` exists and gets the guest's block.
     ssh_config: bool = false,
     state: []const u8 = "",
     ledger: exec.Ledger = .{},
@@ -398,8 +398,7 @@ const NewOp = struct {
     }
 
     /// `--ip`, or the lowest pool address nobody uses: no VM config, no
-    /// DNS record, no Fixed IP on a client record, no connected client
-    /// (SPEC §9.5).
+    /// DNS record, no Fixed IP on a client record, no connected client.
     fn chooseAddress(op: *NewOp, ctx: *Context, all: []const vms.Vm) !void {
         const cfg = try ctx.config();
         const a = ctx.arena;
@@ -793,7 +792,7 @@ pub const scripts = struct {
         return std.fmt.allocPrint(a, "test -e /etc/terminfo/x/xterm-ghostty && infocmp -x xterm-ghostty >/dev/null && runuser -u {s} -- infocmp -x xterm-ghostty >/dev/null && tput -T xterm-ghostty colors", .{user});
     }
     const tools = "for t in fish tmux vim starship zoxide eza fzf rg fdfind jq htop git curl unzip tailscale; do command -v $t >/dev/null || printf '%s ' $t; done";
-    /// The edge VM has no Tailscale (SPEC §9.7).
+    /// The edge VM has no Tailscale.
     const tools_edge = "for t in fish tmux vim starship zoxide eza fzf rg fdfind jq htop git curl unzip; do command -v $t >/dev/null || printf '%s ' $t; done";
     const tailscale_absent = "command -v tailscale || echo absent";
     /// A `tailnet` guest's node, as one JSON object of the fields
@@ -803,7 +802,7 @@ pub const scripts = struct {
         \\p=$(tailscale debug prefs) || exit 1
         \\printf '%s\n%s\n' "$s" "$p" | jq -sc '{state: .[0].BackendState, tags: (.[0].Self.Tags // []), route_all: .[1].RouteAll, ssh: .[1].RunSSH, exit_node: .[1].ExitNodeID, routes: (.[1].AdvertiseRoutes // [])}'
     ;
-    /// `key value` lines for `judgeUpdates` (SPEC §9.1).
+    /// `key value` lines for `judgeUpdates`.
     const updates =
         \\d=$(apt-config dump)
         \\v() { printf '%s\n' "$d" | sed -n "s/^$1 \"\(.*\)\";$/\1/p" | tail -1; }
@@ -821,7 +820,7 @@ pub const scripts = struct {
     pub const reboot = "if [ -f /run/reboot-required ]; then echo yes; cat /run/reboot-required.pkgs 2>/dev/null || true; else echo no; fi";
 };
 
-/// SPEC §9.13: Proxmox keys stored for the VM's next start.
+/// Pending changes: Proxmox keys stored for the VM's next start.
 fn configPending(ctx: *Context, c: *pve.Client, v: vms.Vm, running: bool) !Check {
     const a = ctx.arena;
     const raw = vms.pendingRaw(c, v.vmid) catch |err| switch (err) {
@@ -848,8 +847,8 @@ fn payloadScript(arena: std.mem.Allocator, user: []const u8) ![]const u8 {
     return out.items;
 }
 
-/// SPEC §9.4. Never mutates; `no_dns` leaves the DNS checks not checked;
-/// `watched` names the watchdog the guest should push to (SPEC §9.9).
+/// The checks of `vm verify`. Never mutates; `no_dns` leaves the DNS checks not checked;
+/// `watched` names the watchdog the guest should push to.
 pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: bool, watched: ?[]const u8) ![]const Check {
     const a = ctx.arena;
     var out: std.ArrayList(Check) = .empty;
@@ -869,10 +868,10 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
         argv: []const []const u8,
         judge: *const fn (*Context, agent.Result, []const u8, []const u8) anyerror!Check,
     };
-    // The edge and the watchdog run without Tailscale (SPEC §9.7, §9.9).
+    // The edge and the watchdog run without Tailscale.
     const edge = if (vm_role(pve.str(cfg, "tags") orelse "")) |r| std.mem.eql(u8, r, "edge") or std.mem.eql(u8, r, watch.role) else false;
     const router = if (vm_role(pve.str(cfg, "tags") orelse "")) |r| std.mem.eql(u8, r, "router") else false;
-    // A guest the operator put on the tailnet on purpose (SPEC §9.6).
+    // A guest the operator put on the tailnet on purpose.
     const tailnet = hasTailnetTag(pve.str(cfg, "tags") orelse "");
     const guest_checks = [_]Guest{
         .{ .name = "cloud-init done", .argv = &.{ "sh", "-c", scripts.cloud_init }, .judge = judgeCloudInit },
@@ -961,7 +960,7 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
     return out.items;
 }
 
-/// Alloy enrolled and running when a watchdog exists (SPEC §9.9).
+/// Alloy enrolled and running when a watchdog exists.
 fn alloyCheck(ctx: *Context, c: *pve.Client, v: vms.Vm, agent_ok: bool, watched: ?[]const u8) !Check {
     const label = "alloy enrolled";
     if (watch.roleOf(v.tags) == .watch) return .{ .name = label, .status = .not_checked, .detail = "the watchdog itself ('artoo watch status')" };
@@ -976,7 +975,7 @@ fn alloyCheck(ctx: *Context, c: *pve.Client, v: vms.Vm, agent_ok: bool, watched:
 }
 
 /// UniFi's client record for the VM's MAC carries the VM's name and
-/// its address as Fixed IP (SPEC §9.5).
+/// its address as Fixed IP.
 fn clientCheck(ctx: *Context, u: ?*unifi.Client, unreachable_detail: []const u8, name: []const u8, cfg: Value, address: ?[]const u8) !Check {
     const a = ctx.arena;
     const label = "UniFi client";
@@ -1015,7 +1014,7 @@ fn dnsAnswer(ctx: *Context, gw: []const u8, fqdn: []const u8, address: ?[]const 
     }
 }
 
-/// SPEC §9.3 step 6: a fresh guest whose first boot installed a newer
+/// The `vm new` step after first boot: a fresh guest whose first boot installed a newer
 /// kernel reboots once, before it is in service; skipped otherwise.
 fn rebootForUpdates(c: *pve.Client, vmid: u32, l: *exec.Ledger, i: usize) !void {
     const ctx = c.ctx;
@@ -1098,7 +1097,7 @@ fn judgeCloudInit(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) 
     return .{ .name = "", .status = st, .detail = detail.items };
 }
 
-/// First-boot messages artoo handles itself (SPEC §9.1): the 26.04
+/// First-boot messages artoo handles itself: the 26.04
 /// initramfs brings the NIC up before cloud-init, so the rename to `eth0`
 /// and the wait for the network fail; vendor `bootcmd` runs `netplan
 /// apply`, and later boots have no initramfs network. The outcome (static
@@ -1189,7 +1188,7 @@ fn judgeTools(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !Che
     return .{ .name = "", .status = if (r.ok() and missing.len == 0) .ok else .failed, .detail = if (missing.len == 0) "all present" else try std.fmt.allocPrint(ctx.arena, "missing: {s}", .{try k.clean(ctx, missing)}) };
 }
 
-/// SPEC §9.1: failed when updates cannot run or would reboot; a warning
+/// The guest baseline's updates: failed when they cannot run or would reboot; a warning
 /// for a baseline without Tailscale's origin.
 fn judgeUpdates(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !Check {
     const a = ctx.arena;
@@ -1232,7 +1231,7 @@ fn judgeUpdates(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !C
 /// through: the timers fire daily and catch up after downtime.
 const stale_daily_s: u64 = 2 * 24 * 3600;
 
-/// What `vm upgrade` would install (SPEC §9.4, §9.12): security updates
+/// What `vm upgrade` would install: security updates
 /// waiting are a warning (the unattended run installs them within a
 /// day), others only a count; stale package lists are a warning too.
 /// Packages an interrupted dpkg left unfinished fail the check.
@@ -1294,7 +1293,7 @@ fn judgeTailscale(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) 
     return .{ .name = "", .status = if (ok) .ok else .failed, .detail = try std.fmt.allocPrint(ctx.arena, "installed, {s}", .{try k.clean(ctx, state)}) };
 }
 
-/// The subnet router (SPEC §9.8): Running is ok; not enrolled yet is a
+/// The subnet router: Running is ok; not enrolled yet is a
 /// warning ('artoo router setup' follows 'vm new').
 fn judgeTailscaleRouter(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !Check {
     const v = std.json.parseFromSliceLeaky(Value, ctx.arena, r.out, .{}) catch
@@ -1304,7 +1303,7 @@ fn judgeTailscaleRouter(ctx: *Context, r: agent.Result, _: []const u8, _: []cons
     return .{ .name = "", .status = .warning, .detail = try std.fmt.allocPrint(ctx.arena, "{s} — next: 'artoo router setup'", .{try k.clean(ctx, state)}) };
 }
 
-/// The guest tag that admits a tailnet node (SPEC §9.6).
+/// The guest tag that admits a tailnet node.
 pub const tailnet_tag = "tailnet";
 
 fn hasTailnetTag(tags: []const u8) bool {
@@ -1318,7 +1317,7 @@ fn judgeTailnetOnEdge(_: *Context, _: agent.Result, _: []const u8, _: []const u8
     return .{ .name = "", .status = .failed, .detail = "tag tailnet on the edge or watchdog, which run without Tailscale" };
 }
 
-/// A guest tagged `tailnet` (SPEC §9.6): enrolled as a tagged node that
+/// A guest tagged `tailnet`: enrolled as a tagged node that
 /// accepts no routes, advertises none, uses no exit node and runs no
 /// Tailscale SSH. Not enrolled yet is a warning.
 fn judgeTailscaleNode(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !Check {
@@ -1360,7 +1359,7 @@ pub fn renderChecks(ctx: *Context, checks: []const Check) !void {
     }, rows);
 }
 
-/// `vm verify --all` without --full (SPEC §9.4): only what needs
+/// `vm verify --all` without --full: only what needs
 /// attention — one row per warning or failure (a guest that could not be
 /// checked is one failed row), the guest named on its first row only —
 /// then the guests with nothing to report on one line.
@@ -1456,13 +1455,13 @@ pub const verify = struct {
 };
 
 /// One guest of `vm verify --all`: its own `Context` copy (shared
-/// thread-safe arena, own `diag`), as `status` (SPEC §11).
+/// thread-safe arena, own `diag`), as `status`.
 const VerifySlot = struct {
     ctx: Context,
     vm: vms.Vm,
     checks: []const Check = &.{},
     err: ?[]const u8 = null,
-    /// The activity detail's count (SPEC §4.5); this guest's index in it.
+    /// The activity detail's count; this guest's index in it.
     tally: ?*activity.Tally = null,
     index: usize = 0,
 };

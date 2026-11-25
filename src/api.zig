@@ -14,7 +14,7 @@ const Context = app.Context;
 pub const Endpoint = struct {
     /// Base URL without trailing slash.
     base: []const u8,
-    /// PEM bundle from config; null trusts the system root store (§15).
+    /// PEM bundle from config; null trusts the system root store.
     ca_bundle: ?[]const u8,
     timeout_seconds: u32,
 };

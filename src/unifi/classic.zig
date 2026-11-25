@@ -1,5 +1,5 @@
-//! UniFi client records through the classic, undocumented API
-//! (SPEC §9.5, §17.1): the only place artoo uses it. A record ties a MAC to
+//! UniFi client records through the classic, undocumented API:
+//! the only place artoo uses it. A record ties a MAC to
 //! a name (the UI alias) and optionally a Fixed IP (a DHCP reservation);
 //! `vm new` creates one per guest before its first start and `vm rm`
 //! forgets it. Request shapes verified 2026-10-10
@@ -68,7 +68,7 @@ pub fn reserve(c: *unifi.Client, mac: []const u8, name: []const u8, network_id: 
 }
 
 /// Rename record `id` (the UI alias): `PUT rest/user/{_id}` with `name`
-/// alone. Expected from the classic API (SPEC §9.18, §17.1), not yet
+/// alone. Expected from the classic API, not yet
 /// verified live.
 pub fn rename(c: *unifi.Client, id: []const u8, name: []const u8) !void {
     const body = try std.json.Stringify.valueAlloc(c.ctx.arena, .{ .name = name }, .{});

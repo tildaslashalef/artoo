@@ -1,4 +1,4 @@
-//! Human value formatting (SPEC §4.1): IEC sizes, percentages, bars,
+//! Human value formatting: IEC sizes, percentages, bars,
 //! durations, relative and absolute times. Missing values render `--`.
 //!
 //! Each formatter is a small value usable with `{f}`; `alloc` turns one

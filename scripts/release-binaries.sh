@@ -8,7 +8,7 @@
 #
 # Run from a checkout of the tag. artoo links no libc, so every target is
 # cross-compiled from one machine. The version is the annotated release
-# tag at HEAD (docs/RELEASING.md §1); anything else is refused.
+# tag at HEAD; anything else is refused.
 set -eu
 
 dist=${1:?usage: release-binaries.sh DIST_DIR}

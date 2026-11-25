@@ -1,4 +1,4 @@
-//! The hard rule of SPEC §9.6: the Proxmox host and the UniFi gateway are
+//! The exposure hard rule: the Proxmox host and the UniFi gateway are
 //! never publicly exposed. Every operation that could publish a name or
 //! route (Cloudflare records and tunnels, edge routes, public names under
 //! the guest domain) asks `protected` first; there is no override.

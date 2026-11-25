@@ -1,6 +1,6 @@
-//! `artoo cf dns ls|add|rm` (SPEC §15): records of the Cloudflare zone,
+//! `artoo cf dns ls|add|rm`: records of the Cloudflare zone,
 //! written through the one mutation pipeline. artoo changes only records
-//! it marked; the §9.6 hard rule and the no-LAN-addresses rule are checked
+//! it marked; the exposure hard rule and the no-LAN-addresses rule are checked
 //! before anything is planned.
 
 const std = @import("std");
@@ -240,7 +240,7 @@ pub const add = struct {
         if (note.len > 80) return ctx.fail(error.Usage, "--note must be at most 80 characters", .{});
         for (note) |ch| if (ch < 0x20 or ch == 0x7f) return ctx.fail(error.Usage, "--note must be printable", .{});
 
-        // SPEC §9.6 / §15: refused before anything is planned, no override.
+        // Protected names and addresses: refused before anything is planned, no override.
         const target_name: ?[]const u8 = if (rtype == .CNAME) content else null;
         if (exposure.protected(try ctx.config(), fqdn, if (rtype == .A or rtype == .AAAA) content else null) orelse
             (if (target_name) |t| exposure.protected(try ctx.config(), t, null) else null)) |why|

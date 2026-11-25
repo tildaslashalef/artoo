@@ -1,4 +1,4 @@
-//! JSON output (SPEC §4.2): exactly one document on stdout,
+//! JSON output: exactly one document on stdout,
 //! `{"schema_version":1,"target":…,"data":…,"meta":…}`; errors as one JSON
 //! object on stderr. Non-ASCII is \u-escaped so no control sequence (incl.
 //! UTF-8 C1) can reach a terminal that displays the output.
@@ -29,7 +29,7 @@ pub fn writeError(w: *Io.Writer, kind: []const u8, exit_code: u8, message: []con
     return writeErrorSteps(w, kind, exit_code, message, &[_]u8{});
 }
 
-/// `writeError` with a workflow's step ledger (SPEC §4.2), when it ran any.
+/// `writeError` with a workflow's step ledger, when it ran any.
 pub fn writeErrorSteps(w: *Io.Writer, kind: []const u8, exit_code: u8, message: []const u8, steps: anytype) Io.Writer.Error!void {
     const e = .{ .kind = kind, .exit_code = exit_code, .message = message };
     if (steps.len == 0) {

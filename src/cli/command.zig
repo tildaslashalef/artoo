@@ -1,4 +1,4 @@
-//! Declarative command table (SPEC §3). One tree of `Command` nodes drives
+//! Declarative command table. One tree of `Command` nodes drives
 //! parsing, help and suggestions, so help cannot drift from behavior.
 //!
 //! A leaf command is declared as a struct and converted with `leaf`:
@@ -33,7 +33,7 @@ pub const Flag = struct {
     }
 };
 
-/// Where shell completion finds a positional's candidates (SPEC §3.5).
+/// Where shell completion finds a positional's candidates.
 pub const Complete = enum { none, vm, template, guest_name, file };
 
 /// A fixed completion candidate for a positional. A text ending in `=`
@@ -109,7 +109,7 @@ pub const Value = union(enum) {
 pub const Output = enum { table, json };
 pub const Color = enum { auto, always, never };
 
-/// Global flags (SPEC §3.1), accepted anywhere after the program name.
+/// Global flags, accepted anywhere after the program name.
 pub const Globals = struct {
     output: ?Output = null,
     color: ?Color = null,

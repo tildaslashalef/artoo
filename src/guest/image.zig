@@ -1,4 +1,4 @@
-//! Pinned guest images (SPEC §9.1, §9.2). Proxmox downloads them itself
+//! Pinned guest images. Proxmox downloads them itself
 //! into `local:import` and verifies the SHA-256 before keeping the file;
 //! no image is ever stored on the workstation. Advancing a pin changes
 //! new templates only — existing guests never change.

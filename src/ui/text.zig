@@ -1,7 +1,7 @@
 //! Terminal-safe text: sanitizing, display width, fitting to a column.
 //!
 //! Every server- or user-supplied string passes through `sanitize` before it
-//! reaches a renderer (SPEC §4.1): C0 controls, DEL, C1 controls (raw and
+//! reaches a renderer: C0 controls, DEL, C1 controls (raw and
 //! UTF-8 encoded), bidi overrides and invalid UTF-8 become `?`.
 
 const std = @import("std");

@@ -1,4 +1,4 @@
-//! `artoo template ls | show T | build T | rm T | vendor` (SPEC §3.3, §9.2).
+//! `artoo template ls | show T | build T | rm T | vendor`.
 //!
 //! A template is named after its image pin (`ubuntu-2604`) and built
 //! entirely through the API — image fetched by Proxmox, VM created from the

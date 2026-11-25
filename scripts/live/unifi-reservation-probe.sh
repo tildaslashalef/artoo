@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live probe of UniFi's classic client API (SPEC §9.5, §17.1): can the
+# Live probe of UniFi's classic client API: can the
 # artoo API key create a client record with a name and a fixed IP before the
 # device ever connects, and forget it again? Uses a locally administered MAC
 # that no real device carries and the top pool address. Ownership is written

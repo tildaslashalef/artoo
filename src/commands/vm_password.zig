@@ -1,4 +1,4 @@
-//! `artoo vm password VM` (SPEC §9.1, §9.17): reveal the guest user's
+//! `artoo vm password VM`: reveal the guest user's
 //! stored sudo password, or `--reset` it — a new random password set
 //! through the guest agent (as a SHA-512 crypt hash) and stored in this
 //! machine's secret store, so any machine holding the Proxmox token can
@@ -86,7 +86,7 @@ pub const password = struct {
     }
 };
 
-/// `vm password --reset` on the mutation pipeline (SPEC §8.2).
+/// `vm password --reset` on the mutation pipeline.
 const ResetOp = struct {
     c: *pve.Client,
     word: []const u8,
