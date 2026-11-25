@@ -69,6 +69,7 @@ Dry run: nothing was sent.
 | **Reach the lab from away**: a Tailscale subnet router guest, the tailnet's devices, routes, split DNS and policy | `router setup`, `ts …` |
 | **Watch the lab**: a watchdog guest with VictoriaMetrics, Loki, Grafana and ntfy; metrics and logs from every guest and the host, alerts on your phone | `watch setup`, `watch enroll`, `status` |
 | **Drive the gateway** through UniFi's Integration API, every endpoint checked against the official OpenAPI export | `gw …`, `dns …` |
+| **Run coding agents on guests** with [Rex](https://www.superlogical.com/rex) (experimental, see below) | `vm new --rex`, `rex setup`, `rex status`, `rex hosts sync` |
 
 It is scriptable and agent-friendly: stable exit codes, `-o json` with a
 versioned envelope, help generated from the command table, and shell
@@ -77,6 +78,43 @@ written so an AI agent can operate a lab safely with it. artoo is native
 Zig 0.17 using only the standard library, and ships as one static binary
 for macOS and Linux (arm64, x86-64) that updates itself from verified
 releases (`artoo update`).
+
+## Coding agents on guests with Rex (experimental)
+
+> **Experimental.** Rex support is new and takes shape over the coming
+> releases: commands, output and defaults may still change. Rex itself
+> is in preview; artoo installs it from Superlogical's `preview` channel.
+
+[Rex](https://www.superlogical.com/rex) by
+[Superlogical](https://www.superlogical.com) is a terminal and
+multiplexer whose server runs on the guest and whose client runs on your
+workstation, so a session (and the agent in it) outlives the connection.
+artoo turns an ordinary guest into a place to run coding agents:
+
+```sh
+artoo vm new hoth --rex       # a new guest with Rex, or 'artoo rex setup hoth' for an existing one
+artoo rex hosts sync          # add every Rex guest to the workstation's Rex hosts
+artoo rex status hoth         # package, pins, server, skills, profile, permissions, agents at work
+```
+
+- **Rex from its signed apt repository**, pinned, with linger so sessions
+  survive logout, the terminfo, and Rex's agent skill for Claude Code and
+  Antigravity (`agy`). You install and sign in to the agents yourself;
+  artoo never touches their credentials.
+- **One agent setup on every guest**: point `agents.profile` at a
+  directory (your skills, `CLAUDE.md`, settings) and `rex setup` copies it
+  to each guest, merging JSON settings with what the guest already has.
+- **Permissions follow reach**: a fenced guest with no SSH keys lets the
+  agents run without asking; every other guest keeps them asking.
+- **The lab knows an agent is working**: `vm reboot --pending` skips a
+  guest whose agent is busy, `vm upgrade` names them, and `vm rm` and
+  `vm rename` remove or rename its Rex host.
+- **Reached over SSH** (`ssh://user@guest`) through the config of
+  `vm ssh-config`: no listener on the guest, no tailnet node per guest.
+  Rex for Mac lists only hosts saved in the app, so add a guest there
+  with the same address (Settings > Remote Hosts).
+
+The details are in [docs/SPEC.md](docs/SPEC.md) §18.
 
 ## Is this for you?
 
