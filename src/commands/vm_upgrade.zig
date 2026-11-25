@@ -25,6 +25,8 @@ const vm_cmd = @import("vm.zig");
 const edge = @import("edge.zig");
 const router = @import("router.zig");
 const watch = @import("watch.zig");
+const rex_guest = @import("../rex/guest.zig");
+const rex_state = @import("../rex/state.zig");
 
 const Context = app.Context;
 
@@ -49,6 +51,8 @@ const UpgradeOp = struct {
     reboot: ?[]const []const u8 = null,
     /// `--snapshot`.
     guard: ?snapguard.Guard = null,
+    /// The agents at work on a guest tagged `rex` (SPEC §20.8), a plan note.
+    agents: ?[]const u8 = null,
 
     pub fn read(op: *UpgradeOp, ctx: *Context) !void {
         const a = ctx.arena;
@@ -61,6 +65,7 @@ const UpgradeOp = struct {
         if (!try agent.ping(op.c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{op.target});
         op.pending = try simulate(ctx, op.c, v.vmid, op.target);
         if (op.pending.unfinished.len > 0) return ctx.fail(error.Refused, "dpkg on {s} was interrupted: {s}; finish it first with 'sudo dpkg --configure -a' on the guest ('artoo vm ssh {s}')", .{ op.target, try unfinishedText(ctx, op.pending.unfinished), op.target });
+        op.agents = if (op.pending.packages.len > 0) try agentsNote(ctx, op.c, v, op.target) else null;
         var fp: std.ArrayList(u8) = .empty;
         try fp.print(a, "{?d}", .{op.pending.lists});
         for (op.pending.packages) |p| try fp.print(a, " {s}={s}", .{ p.name, p.to });
@@ -86,6 +91,7 @@ const UpgradeOp = struct {
         if (p.deferred > 0) try notes.append(a, try std.fmt.allocPrint(a, "{f} deferred by Ubuntu's phased rollout stay for now.", .{ui.values.count(p.deferred, "update")}));
         if (p.kept_back > 0) try notes.append(a, try std.fmt.allocPrint(a, "{f} kept back (they would need a removal) are not touched.", .{ui.values.count(p.kept_back, "package")}));
         try notes.append(a, "Pinned packages (Alloy, the watchdog's stack) stay at their pins.");
+        if (op.agents) |n| try notes.append(a, n);
         const sec = p.security();
         const pl: exec.Plan = .{
             .action = try std.fmt.allocPrint(a, "Upgrade {f} on {s} ({d}){s}", .{
@@ -194,6 +200,22 @@ pub fn ownRunRole(tags: []const u8) ?[]const u8 {
     return null;
 }
 
+/// A plan note naming the agents at work on a guest tagged `rex` (SPEC
+/// §20.8): the upgrade goes ahead (it restarts no user session, §20.1);
+/// null when none is busy or the guest has no Rex.
+fn agentsNote(ctx: *Context, c: *pve.Client, v: vms.Vm, name: []const u8) !?[]const u8 {
+    if (!rex_guest.tagged(v)) return null;
+    const found = rex_state.agents(ctx, c, v.vmid, (try ctx.config()).guests.user) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            defer ctx.diag = null;
+            return try std.fmt.allocPrint(ctx.arena, "The agents on {s} could not be read ({s}).", .{ name, try k.clean(ctx, ctx.diag orelse @errorName(err)) });
+        },
+    };
+    const busy = try rex_state.busyText(ctx, found) orelse return null;
+    return try std.fmt.allocPrint(ctx.arena, "Agents at work on {s}: {s}; the upgrade restarts no user session and reboots nothing.", .{ name, busy });
+}
+
 /// One guest of `vm upgrade --all`.
 const Guest = struct {
     vm: vms.Vm,
@@ -208,6 +230,8 @@ const Guest = struct {
     reboot: bool = false,
     /// The reboot check itself failed: neither "pending" nor "not needed".
     reboot_unknown: bool = false,
+    /// The agents at work on a guest tagged `rex` (SPEC §20.8), a plan note.
+    agents: ?[]const u8 = null,
 };
 
 const UpgradeAllOp = struct {
@@ -260,7 +284,7 @@ const UpgradeAllOp = struct {
             try fp.append(a, ';');
             if (p.packages.len == 0) {
                 try current.append(a, name);
-            } else try todo.append(a, .{ .vm = v, .name = name, .pending = p });
+            } else try todo.append(a, .{ .vm = v, .name = name, .pending = p, .agents = try agentsNote(ctx, op.c, v, name) });
         }
         op.todo = todo.items;
         op.current = current.items;
@@ -311,6 +335,7 @@ const UpgradeAllOp = struct {
         try notes.append(a, "Pinned packages (Alloy) stay at their pins.");
         if (op.current.len > 0) try notes.append(a, try std.fmt.allocPrint(a, "Up to date: {s}.", .{try std.mem.join(a, ", ", op.current)}));
         for (op.skipped) |sk| try notes.append(a, try std.fmt.allocPrint(a, "Skipped: {s}.", .{sk}));
+        for (op.todo) |g| if (g.agents) |n| try notes.append(a, n);
         return .{
             .action = try std.fmt.allocPrint(a, "Upgrade {f} on {f}{s}", .{
                 ui.values.count(op.packages(), "package"),                                ui.values.count(op.todo.len, "guest"),
@@ -1055,5 +1080,28 @@ test "vm upgrade: a lost systemd-run answer and no unit after the grace is unkno
     try expectAll(g.h.stderr(), &.{"outcome unknown (artoo-upgrade.service ended without an exit code)"});
     try testing.expectEqual(Exit.unknown, g.h.run(&root, "vm upgrade naboo -y"));
     try expectAll(g.h.stderr(), &.{"outcome unknown (/run/artoo-upgrade.rc holds no exit code)"});
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+}
+
+test "vm upgrade: the plan names the agents at work on a guest tagged rex, and goes ahead" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rex_list = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"}]}";
+    const one = try execStatus(a, 0, "lists 1000\nnow 1100\nInst tmux [1] (2 Ubuntu:26.04/resolute-updates [amd64])\n", "");
+    const working = try execStatus(a, 0, "{\"server\":{\"running\":true},\"agents\":[{\"session\":\"naboo-api\",\"block\":\"block:1\",\"app\":\"claude-code\",\"state\":\"working\"},{\"session\":\"naboo-web\",\"block\":\"block:2\",\"app\":\"agy\",\"state\":\"idle\"}],\"errors\":[]}", "");
+    const off = try execStatus(a, 0, "{\"server\":{\"running\":false},\"agents\":[],\"errors\":[]}", "");
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        ans(rex_list), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(working), // naboo -n
+        ans(rex_list), ans(ping_body), ans(pid_body), ans(one), ans(pid_body), ans(off), // --all -n, no server
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm upgrade naboo -n"));
+    try expectAll(g.h.stdout(), &.{ "Agents at work on naboo: claude-code working in naboo-api; the upgrade restarts no user session and reboots nothing.", "Dry run: nothing was sent.\n" });
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "agy") == null);
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm upgrade --all -n"));
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "Agents") == null);
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
