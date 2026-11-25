@@ -833,7 +833,12 @@ is refused), and always runs the agent, cloud-init, reboot and host key
 steps. Any other VM of that name is refused.
 
 `vm rm VM` (destructive, typed confirmation) runs these steps, each only
-when there is something to remove, stopping at the first failure:
+when there is something to remove. Up to the DNS record, the first
+failure stops the run. From the Keychain password on, the steps are
+independent of each other: a failed one fails only itself, the rest
+still run, and the run ends with exit 8 naming every leftover with the
+command that repairs it (`vm ssh-config`, `watch forget`, `ts device
+rm`, `rex hosts sync`).
 
 | Step | Does |
 | --- | --- |

@@ -1078,6 +1078,10 @@ const RmOp = struct {
             ctx.out.writeAll("\n") catch {};
             l.render(ctx.out, &ctx.ui) catch {};
         }
+        // After the destroy, a failed local, watch or tailnet step fails
+        // only itself: the others are independent, so they still run, and
+        // the run fails at the end naming every leftover.
+        var left: std.ArrayList([]const u8) = .empty;
         if (stop) |i| {
             const upid = try tasks.upidOf(c, try c.send(.POST, try c.nodePath("/qemu/{d}/status/stop", .{v.vmid}), &.{}), "the stop");
             l.set(i, .unknown, "");
@@ -1101,45 +1105,51 @@ const RmOp = struct {
             try dns.delete(&u, op.record.?.id);
             l.set(i, .done, try k.clean(ctx, op.record.?.domain));
         }
-        if (key_step) |i| {
+        if (key_step) |i| key: {
             const store = try ctx.secretStore();
             _ = store.delete(ctx.io, a, try std.fmt.allocPrint(a, "guest/{s}", .{v.name})) catch |err| {
                 l.set(i, .failed, @errorName(err));
-                return ctx.fail(error.Partial, "VM destroyed, but the Keychain entry guest/{s} could not be deleted", .{v.name});
+                try left.append(a, try std.fmt.allocPrint(a, "the Keychain entry guest/{s} could not be deleted", .{v.name}));
+                break :key;
             };
             l.set(i, .done, "");
         }
-        if (host_step) |i| {
+        if (host_step) |i| host: {
             known_hosts.record(ctx, v.name, null) catch |err| {
                 l.set(i, .failed, @errorName(err));
-                return ctx.fail(error.Partial, "VM destroyed, but its host key stays in {s}", .{known_hosts.default_path});
+                try left.append(a, try std.fmt.allocPrint(a, "its host key stays in {s}", .{known_hosts.default_path}));
+                break :host;
             };
             l.set(i, .done, "");
         }
-        if (ssh_step) |i| {
+        if (ssh_step) |i| ssh: {
             vm_ssh.put(ctx, v.name, null) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
                 else => {
                     l.set(i, .failed, ctx.diag orelse @errorName(err));
-                    return ctx.fail(error.Partial, "VM destroyed, but its block stays in {s}; run 'artoo vm ssh-config'", .{ssh_config.default_path});
+                    ctx.diag = null;
+                    try left.append(a, try std.fmt.allocPrint(a, "its block stays in {s}; run 'artoo vm ssh-config'", .{ssh_config.default_path}));
+                    break :ssh;
                 },
             };
             l.set(i, .done, "");
         }
         // A failure fails only this step; 'rex hosts sync' repairs it.
         if (rex_step) |i| try op.removeRexHost(ctx, i);
-        if (watch_step) |i| {
+        if (watch_step) |i| watch_blk: {
             l.set(i, .unknown, "");
             const n = watch.forgetHost(c, op.watch_vm.?, v.name) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
                 else => {
                     l.set(i, .failed, ctx.diag orelse @errorName(err));
-                    return ctx.fail(error.Partial, "VM destroyed, but its metrics stay on {s}; run 'artoo watch forget {s}'", .{ op.watch_vm.?.name, v.name });
+                    ctx.diag = null;
+                    try left.append(a, try std.fmt.allocPrint(a, "its metrics stay on {s}; run 'artoo watch forget {s}'", .{ op.watch_vm.?.name, v.name }));
+                    break :watch_blk;
                 },
             };
             l.set(i, .done, try std.fmt.allocPrint(a, "{d} series on {s}", .{ n, op.watch_vm.?.name }));
         }
-        if (ts_step) |i| {
+        if (ts_step) |i| ts: {
             const d = op.ts_dev.?;
             l.set(i, .unknown, "");
             tn.deleteDevice(&op.tsc.?, d.id) catch |err| switch (err) {
@@ -1147,14 +1157,23 @@ const RmOp = struct {
                 // The request may have applied: never claimed either way.
                 error.OutcomeUnknown => {
                     l.set(i, .unknown, ctx.diag orelse @errorName(err));
-                    return ctx.fail(error.Partial, "VM destroyed; whether its tailnet device was removed is unknown — check with 'artoo ts device show {s}', then 'artoo ts device rm {s}' if it is still listed", .{ v.name, v.name });
+                    ctx.diag = null;
+                    try left.append(a, try std.fmt.allocPrint(a, "whether its tailnet device was removed is unknown — check with 'artoo ts device show {s}', then 'artoo ts device rm {s}' if it is still listed", .{ v.name, v.name }));
+                    break :ts;
                 },
                 else => {
                     l.set(i, .failed, ctx.diag orelse @errorName(err));
-                    return ctx.fail(error.Partial, "VM destroyed, but its tailnet device stays; run 'artoo ts device rm {s}'", .{v.name});
+                    ctx.diag = null;
+                    try left.append(a, try std.fmt.allocPrint(a, "its tailnet device stays; run 'artoo ts device rm {s}'", .{v.name}));
+                    break :ts;
                 },
             };
             l.set(i, .done, try k.clean(ctx, d.name));
+        }
+        if (left.items.len > 0) {
+            if (rex_step) |i| if (l.steps.items[i].state == .failed)
+                try left.append(a, try std.fmt.allocPrint(a, "its Rex host {s} stays: {s}; run 'artoo rex hosts sync' to remove it", .{ op.rex.?.label, l.steps.items[i].detail }));
+            return ctx.fail(error.Partial, "VM destroyed, but {s}", .{try std.mem.join(a, "; ", left.items)});
         }
     }
 
@@ -2151,6 +2170,38 @@ test "vm rm: a failed Rex host removal fails only its step (exit 8); no running 
         try testing.expect(std.mem.find(u8, out, "Rex host web-01 kept: no running Rex on this machine ('rex hosts list' failed (exit 1): no server); 'artoo rex hosts sync' removes it later.") != null);
         try testing.expect(std.mem.find(u8, out, "remove Rex host       skipped  no running Rex on this machine") != null);
     }
+}
+
+test "vm rm: a failed ssh config step fails only itself; the later steps still run (exit 8)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var g: testkit.Gateway = undefined;
+    try rmWithRex(&g, arena.allocator());
+    defer g.deinit();
+    const ar = g.h.arena.allocator();
+    const blocks: []const ssh_config.Block = &.{.{ .name = "web-01", .address = "192.168.1.200", .jump = false }};
+    const s: ssh_config.Settings = .{ .domain = "lab.example.com", .user = "artoo", .identity = "/k", .known_hosts = "/kh", .proxy = "/p" };
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/ssh_config", .data = try ssh_config.render(ar, s, blocks) });
+    const exe = try @import("rex_hosts.zig").fakeRex(&g);
+    var fake: FakeRunner = .{ .arena = ar };
+    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try @import("rex_hosts.zig").listJson(ar, &.{.{ .label = "web-01", .endpoints = &.{"ssh://artoo@web-01.lab.example.com"} }}) });
+    try fake.expect(&.{ exe, "hosts", "remove", "web-01", "--autostart=false" }, null, .{});
+    g.h.hooks.runner = fake.runner();
+    // A read-only ~/.artoo: the ssh config cannot be rewritten (nor the
+    // Rex record), but the Rex host is still removed.
+    var dir = try g.tmp.dir.openDir(testing.io, ".artoo", .{});
+    defer dir.close(testing.io);
+    try dir.setPermissions(testing.io, .fromMode(0o555));
+    defer dir.setPermissions(testing.io, .fromMode(0o755)) catch {};
+    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
+    try fake.done();
+    const out = g.h.stdout();
+    try testing.expect(std.mem.find(u8, out, "✗ remove from ssh config") != null);
+    try testing.expect(std.mem.find(u8, out, "remove Rex host") != null);
+    try testing.expect(std.mem.find(u8, out, "✓ destroy VM and disks") != null);
+    const err = g.h.stderr();
+    try testing.expect(std.mem.find(u8, err, "VM destroyed, but its block stays in ~/.artoo/ssh_config; run 'artoo vm ssh-config'") != null);
+    try testing.expect(std.mem.find(u8, err, "its Rex host web-01 stays") != null);
 }
 
 test "vm rm: a refused device removal (501) is a failed step, a 5xx an unknown one" {
