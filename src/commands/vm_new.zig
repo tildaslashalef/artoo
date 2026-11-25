@@ -1246,7 +1246,7 @@ fn judgeUpdates(ctx: *Context, r: agent.Result, _: []const u8, _: []const u8) !C
     else
         "not run yet";
     if (std.mem.eql(u8, f.installed, "yes") and std.mem.eql(u8, f.tailscale, "0"))
-        return .{ .name = "", .status = .warning, .detail = try std.fmt.allocPrint(a, "security daily, {s}; Tailscale not among the origins (baseline before 2026-10-11)", .{when}) };
+        return .{ .name = "", .status = .warning, .detail = try std.fmt.allocPrint(a, "security daily, {s}; Tailscale not among the origins (an older baseline: add origin=Tailscale,codename=${{distro_codename}} to /etc/apt/apt.conf.d/52artoo-unattended-upgrades)", .{when}) };
     return .{ .name = "", .status = if (stale) .warning else .ok, .detail = try std.fmt.allocPrint(a, "security daily, no auto-reboot, {s}", .{when}) };
 }
 
@@ -2077,6 +2077,8 @@ test "judgeUpdates, judgePending and judgeReboot" {
     c = try judgeUpdates(&ctx, R(base ++ "tailscale 0\ninstalled yes\nlast \nnow 4600\n"), "", "");
     try testing.expectEqual(ui.style.Status.warning, c.status);
     try testing.expect(std.mem.find(u8, c.detail, "not run yet; Tailscale not among the origins") != null);
+    try testing.expect(std.mem.find(u8, c.detail, "add origin=Tailscale,codename=${distro_codename} to /etc/apt/apt.conf.d/52artoo-unattended-upgrades") != null);
+    try testing.expect(std.mem.find(u8, c.detail, "2026") == null);
     // A run older than two days: the daily job is not getting through.
     c = try judgeUpdates(&ctx, R(base ++ "tailscale 1\ninstalled yes\nlast 0\nnow 412000\n"), "", "");
     try testing.expectEqual(ui.style.Status.warning, c.status);
