@@ -34,6 +34,7 @@ const ts_cmd = @import("ts.zig");
 const tsapi = @import("../tailscale/client.zig");
 const tn = @import("../tailscale/tailnet.zig");
 const k = @import("node.zig");
+const rex_hosts = @import("../rex/hosts.zig");
 
 const Context = app.Context;
 const Value = std.json.Value;
@@ -193,6 +194,8 @@ const RenameOp = struct {
     ledger: exec.Ledger = .{},
     /// False for verify's read: a finished rename leaves no trace of OLD.
     check_trace: bool = true,
+    /// OLD's Rex host on this machine, when artoo recorded it (SPEC §20.8).
+    rex: ?rex_hosts.Recorded = null,
     fence_want: []const FenceWant = &.{},
 
     fn observe(op: *RenameOp, ctx: *Context) !Observed {
@@ -466,6 +469,7 @@ const RenameOp = struct {
         op.target = op.old;
         op.o = try op.observe(ctx);
         op.p = op.pending(op.o);
+        op.rex = try rex_hosts.recordedHost(ctx, op.old);
         const o = op.o;
         op.fp = try std.fmt.allocPrint(ctx.arena, "{s}|{s}|{s}|{}|{}|{}|{}|{d}|{d}|{d}", .{
             o.vm.name,    o.digest,        o.hostname,   o.hosts_old, o.record != null, o.dns_old != null, o.secret_old,
@@ -477,7 +481,7 @@ const RenameOp = struct {
         const a = ctx.arena;
         const o = op.o;
         const p = op.p;
-        if (!p.any()) return null;
+        if (!p.any() and !op.rexPending()) return null;
         const arrow = ctx.ui.glyphs.arrow;
         const none = "not present";
         var ch: std.ArrayList(ui.blocks.Change) = .empty;
@@ -495,6 +499,7 @@ const RenameOp = struct {
         } else try ch.append(a, .{ .field = "service", .from = none, .to = "nothing to change" });
         try ch.append(a, if (p.ssh) .{ .field = "SSH", .from = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ if (o.key_old != null) "pinned key" else "", if (o.key_old != null and o.ssh_old) " and " else "", if (o.ssh_old) "ssh_config block" else "" }), .to = try std.fmt.allocPrint(a, "HostKeyAlias {s}{s}", .{ op.new, if (o.ssh_old) ", Host block rewritten" else "" }) } else .{ .field = "SSH", .from = if (o.key_new != null or o.ssh_new) try same(a, "pinned key") else none, .to = if (o.key_new != null or o.ssh_new) op.new else none });
         try ch.append(a, if (o.secret_old) .{ .field = "secret store", .from = try std.fmt.allocPrint(a, "guest/{s}", .{op.old}), .to = try std.fmt.allocPrint(a, "guest/{s} (read back before guest/{s} is removed)", .{ op.new, op.old }) } else if (o.secret_new) .{ .field = "secret store", .from = try same(a, "password"), .to = try std.fmt.allocPrint(a, "guest/{s}", .{op.new}) } else .{ .field = "secret store", .from = none, .to = "nothing to change" });
+        if (op.rex != null) try ch.append(a, try op.rexChange(ctx));
         try ch.append(a, if (o.fence_entries > 0) .{ .field = "fence", .from = try std.fmt.allocPrint(a, "{d} guests.fence_allow_out entr{s} naming {s}", .{ o.fence_entries, if (o.fence_entries == 1) "y" else "ies", op.old }), .to = try std.fmt.allocPrint(a, "naming {s}; fences re-derived ({s})", .{ op.new, if (o.fenced.len > 0) try std.mem.join(a, ", ", o.fenced) else "none fenced" }) } else if (p.fence) .{ .field = "fence", .from = "unchanged entries", .to = try std.fmt.allocPrint(a, "fences re-derived ({s}), applied where they differ", .{try std.mem.join(a, ", ", o.fenced)}) } else .{ .field = "fence", .from = none, .to = "nothing to change" });
         try op.fenceDiffs(ctx, &ch);
         try ch.append(a, if (o.ts_state) |s| .{ .field = "tailnet", .from = if (p.tailnet) try std.fmt.allocPrint(a, "{s}{s}", .{ if (s.running()) try k.clean(ctx, s.hostname) else "not joined", if (o.device) |d| try std.fmt.allocPrint(a, " (device {s})", .{try k.clean(ctx, d.name)}) else "" }) else try same(a, "tailnet name"), .to = try std.fmt.allocPrint(a, "{s} (tailscale set --hostname{s})", .{ op.new, if (op.tsc != null) ", checked with the API" else "" }) } else .{ .field = "tailnet", .from = none, .to = "nothing to change" });
@@ -513,6 +518,8 @@ const RenameOp = struct {
             }
         };
         if (o.ts_note) |n| try notes.append(a, n);
+        if (op.rex) |r| if (r.skipped()) |why|
+            try notes.append(a, try std.fmt.allocPrint(a, "Rex host {s} kept: {s}; 'artoo rex hosts sync' replaces it with {s} later.", .{ r.label, why, op.new }));
         try notes.append(a, "Steps run in this order, each checking observed state first; after a failure run the same command again to continue.");
         try notes.append(a, "The UniFi rename uses PUT rest/user/{_id} with the name alone: expected from the classic API, not yet verified live.");
         try notes.append(a, try std.fmt.allocPrint(a, "Cloud-init's instance ID follows the name: at {s}'s next boot (a reboot too) cloud-init starts over as a new instance, regenerates the SSH host keys and runs its first-boot commands again. 'ssh {s}' then refuses the new key: compare the fingerprint it shows with the one 'artoo vm ssh-config --repin {s} -n' reads through the guest agent, then re-pin without -n.", .{ op.new, op.new, op.new }));
@@ -574,6 +581,71 @@ const RenameOp = struct {
         op.fence_want = wants.items;
     }
 
+    /// OLD's recorded Rex host is renamed (Rex reachable).
+    fn rexPending(op: *const RenameOp) bool {
+        const r = op.rex orelse return false;
+        return r.rex() != null;
+    }
+
+    /// `ssh://<guests.user>@<NEW's fqdn>`.
+    fn rexEndpoint(op: *const RenameOp, ctx: *Context) ![]const u8 {
+        const cfg = try ctx.config();
+        return rex_hosts.endpoint(ctx.arena, cfg.guests.user, try dns.fqdn(ctx.arena, op.new, cfg.guests.domain));
+    }
+
+    /// The Rex host's plan line.
+    fn rexChange(op: *const RenameOp, ctx: *Context) !ui.blocks.Change {
+        const a = ctx.arena;
+        const r = op.rex.?;
+        const field = "Rex host";
+        if (r.skipped() != null) return .{ .field = field, .from = r.label, .to = "kept (no Rex here; see the note)" };
+        const h = r.listed orelse return .{ .field = field, .from = try std.fmt.allocPrint(a, "{s} in {s} (no such host now)", .{ r.label, rex_hosts.record_path }), .to = "dropped from the record" };
+        return .{
+            .field = field,
+            .from = try std.fmt.allocPrint(a, "{s} ({s})", .{ try k.clean(ctx, h.label), try k.clean(ctx, try std.mem.join(a, ", ", h.endpoints)) }),
+            .to = try std.fmt.allocPrint(a, "{s} ({s})", .{ op.new, try op.rexEndpoint(ctx) }),
+        };
+    }
+
+    /// `rex hosts edit OLD --label NEW --endpoint E`, then the record;
+    /// skipped without Rex. A failure fails only this step: its reason
+    /// is returned for the end of the run.
+    fn renameRexHost(op: *RenameOp, ctx: *Context, i: usize) !?[]const u8 {
+        const a = ctx.arena;
+        const l = &op.ledger;
+        const r = op.rex.?;
+        const x = r.rex() orelse {
+            l.set(i, .skipped, r.skipped().?);
+            return null;
+        };
+        var record = try rex_hosts.without(a, r.record, r.label);
+        const ep = try op.rexEndpoint(ctx);
+        if (r.listed != null) {
+            l.set(i, .unknown, "");
+            x.edit(r.label, op.new, ep) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    const why = ctx.diag orelse @errorName(err);
+                    ctx.diag = null;
+                    l.set(i, .failed, why);
+                    return why;
+                },
+            };
+            record = try rex_hosts.with(a, record, op.new);
+        }
+        rex_hosts.saveRecord(ctx, record) catch |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => {
+                const why = ctx.diag orelse @errorName(err);
+                ctx.diag = null;
+                l.set(i, .failed, why);
+                return why;
+            },
+        };
+        l.set(i, .done, if (r.listed != null) ep else try std.fmt.allocPrint(a, "{s} not listed; dropped from the record", .{r.label}));
+        return null;
+    }
+
     /// The watchdog's plan line.
     fn watchChange(op: *const RenameOp, ctx: *Context) !ui.blocks.Change {
         const a = ctx.arena;
@@ -630,6 +702,7 @@ const RenameOp = struct {
         const s_svc = if (p.services) try l.add(a, "move the services") else null;
         const s_ssh = if (p.ssh) try l.add(a, "move the pinned key") else null;
         const s_secret = if (p.secret) try l.add(a, "move the password") else null;
+        const s_rex = if (op.rex != null) try l.add(a, "rename the Rex host") else null;
         const s_fence = if (p.fence) try l.add(a, "update the fences") else null;
         const s_ts = if (p.tailnet) try l.add(a, "rename on the tailnet") else null;
         const s_watch = if (p.watch) try l.add(a, "move the watchdog series") else null;
@@ -705,6 +778,8 @@ const RenameOp = struct {
             _ = try store.delete(ctx.io, a, s_old);
             l.set(i, .done, s_new);
         }
+        // A failure fails only this step; the run goes on and ends exit 8.
+        const rex_failed = if (s_rex) |i| try op.renameRexHost(ctx, i) else null;
         if (s_fence) |i| {
             l.set(i, .unknown, "");
             if (try renameFenceList(a, cfg.guests.fence_allow_out, op.old, op.new)) |text| try saveFenceList(ctx, text);
@@ -793,6 +868,7 @@ const RenameOp = struct {
             const w = o.watch_vm.?;
             return ctx.fail(error.Partial, "the watchdog {s} is {s}, so its step is pending ({s}'s Alloy still reports as {s}); start {s}", .{ w.name, if (w.running()) "not answering" else w.status, op.new, if (o.label.len > 0) try k.clean(ctx, o.label) else op.old, w.name });
         }
+        if (rex_failed) |why| return ctx.fail(error.Partial, "the Rex host {s} was not renamed ({s}); 'artoo rex hosts sync' replaces it with {s}", .{ op.rex.?.label, why, op.new });
     }
 
     /// The watchdog step: the probes re-rendered for the
@@ -856,6 +932,11 @@ const RenameOp = struct {
         if ((op.o.secret_old or op.o.secret_new) and !o.secret_new) return false;
         if (op.o.key_old != null and o.key_new == null) return false;
         if (op.o.ssh_old and (o.ssh_old or !o.ssh_new)) return false;
+        if (op.rexPending()) {
+            const rec = try rex_hosts.loadRecord(ctx);
+            if (rex_hosts.has(rec, op.old)) return false;
+            if (op.rex.?.listed != null and !rex_hosts.has(rec, op.new)) return false;
+        }
         return true;
     }
 
@@ -886,6 +967,8 @@ pub const rename = struct {
         \\  - the services routed to it
         \\  - the pinned host key and ~/.artoo/ssh_config
         \\  - the stored password guest/NAME
+        \\  - its Rex host on this machine, when 'artoo rex hosts sync' added
+        \\    it (skipped with a note without a running Rex)
         \\  - the fence exceptions that name it
         \\  - its tailnet name and the watchdog
         \\  - the guest's hostname and /etc/hosts
@@ -947,6 +1030,7 @@ test "hostsNames and renameFenceList" {
 
 const testkit = @import("../testkit.zig");
 const Exit = testkit.Exit;
+const FakeRunner = @import("../secrets/common.zig").FakeRunner;
 const R = testkit.Gateway.FakeServer.Route;
 const root = cli.group("artoo", "test", &.{@import("vm.zig").group});
 
@@ -1195,6 +1279,120 @@ test "vm rename: a guest without a static address gets NEW's ssh_config block fr
     const text = try g.tmp.dir.readFileAlloc(testing.io, ".artoo/ssh_config", a, .limited(1 << 16));
     try testing.expect(std.mem.find(u8, text, "Host hoth hoth.lab.example.com\n  HostName 192.168.1.231\n") != null);
     try testing.expect(std.mem.find(u8, text, "Host naboo") == null);
+}
+
+/// A rename of naboo to hoth that only touches Proxmox and the hostname
+/// (and the Rex host): the routes for one run, then its verify.
+fn rexRenameRoutes(a: std.mem.Allocator) ![]const R {
+    const cfg = "{\"data\":{\"name\":\"naboo\",\"net0\":\"virtio=BC:24:11:00:00:01,bridge=vmbr0\",\"tags\":\"artoo;rex\",\"digest\":\"d1\"}}";
+    const none = "{\"meta\":{\"rc\":\"ok\"},\"data\":[]}";
+    const no_dns = "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}";
+    const reads = struct {
+        fn f(al: std.mem.Allocator, list: []const u8, c: []const u8, host: []const u8, site: bool) ![]const R {
+            var out: std.ArrayList(R) = .empty;
+            try out.appendSlice(al, &.{
+                rt("GET /api2/json/nodes/pve/qemu HTTP", list),
+                rt("agent/ping", "{\"data\":{\"result\":{}}}"),
+                rt("GET /api2/json/nodes/pve/qemu/201/config", c),
+                rt("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+                rt("exec-status", try agentOut(al, 0, try std.fmt.allocPrint(al, "{s}\n---\n127.0.0.1 localhost\n", .{host}))),
+                rt("rest/user HTTP", none),
+            });
+            if (site) try out.append(al, rt("GET /v1/sites?", sites));
+            try out.appendSlice(al, &.{
+                rt("GET /v1/sites/S1/dns/policies", no_dns),
+                rt("GET /api2/json/nodes/pve/qemu HTTP", list),
+            });
+            return out.items;
+        }
+    }.f;
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try reads(a, list_old, cfg, "naboo", true));
+    try routes.appendSlice(a, &.{
+        rt("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        rt("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        rt("exec-status", try agentOut(a, 0, "")),
+    });
+    try routes.appendSlice(a, try reads(a, list_new, cfg, "hoth", false));
+    return routes.items;
+}
+
+test "vm rename: the recorded Rex host is renamed, its endpoint NEW's machine name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(try rexRenameRoutes(a));
+    defer g.deinit();
+    const rh = @import("rex_hosts.zig");
+    const exe = try rh.fakeRex(&g);
+    try g.tmp.dir.createDirPath(testing.io, ".artoo");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/rex-hosts.json", .data = "{\"labels\":[\"naboo\",\"tatooine\"]}\n" });
+    var fake: FakeRunner = .{ .arena = a };
+    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try rh.listJson(a, &.{.{ .label = "naboo", .endpoints = &.{"ssh://artoo@naboo.lab.example.com"} }}) });
+    try fake.expect(&.{ exe, "hosts", "edit", "naboo", "--label", "hoth", "--endpoint", "ssh://artoo@hoth.lab.example.com", "--autostart=false" }, null, .{});
+    g.h.hooks.runner = fake.runner();
+    const code = g.h.run(&root, "vm rename naboo hoth -y --confirm naboo");
+    if (code != .ok) std.debug.print("--- out:\n{s}\n--- err:\n{s}\n", .{ g.h.stdout(), g.h.stderr() });
+    try testing.expectEqual(Exit.ok, code);
+    try fake.done();
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    const out = g.h.stdout();
+    for ([_][]const u8{
+        "Rex host      naboo (ssh://artoo@naboo.lab.example.com) → hoth (ssh://artoo@hoth.lab.example.com)\n",
+        "✓ rename the Rex host  done  ssh://artoo@hoth.lab.example.com",
+    }) |line| if (std.mem.find(u8, out, line) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+        return error.TestUnexpectedResult;
+    };
+    try testing.expectEqualStrings("{\n  \"labels\": [\n    \"hoth\",\n    \"tatooine\"\n  ]\n}\n", try g.tmp.dir.readFileAlloc(testing.io, ".artoo/rex-hosts.json", a, .limited(1 << 16)));
+}
+
+test "vm rename: a failed Rex host rename fails only its step; the rest runs, exit 8 names rex hosts sync" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var routes: std.ArrayList(R) = .empty;
+    try routes.appendSlice(a, try rexRenameRoutes(a));
+    // No verify read after a failed step.
+    routes.items.len -= 8;
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(routes.items);
+    defer g.deinit();
+    const rh = @import("rex_hosts.zig");
+    const exe = try rh.fakeRex(&g);
+    try g.tmp.dir.createDirPath(testing.io, ".artoo");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/rex-hosts.json", .data = "{\"labels\":[\"naboo\"]}\n" });
+    var fake: FakeRunner = .{ .arena = a };
+    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try rh.listJson(a, &.{.{ .label = "naboo", .endpoints = &.{"ssh://artoo@naboo.lab.example.com"} }}) });
+    try fake.expect(&.{ exe, "hosts", "edit", "naboo", "--label", "hoth", "--endpoint", "ssh://artoo@hoth.lab.example.com", "--autostart=false" }, null, .{ .code = 1, .stderr = "a host called hoth exists\n" });
+    g.h.hooks.runner = fake.runner();
+    try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
+    try fake.done();
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "✓ set the hostname") != null);
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "the Rex host naboo was not renamed ('rex hosts edit' failed (exit 1): a host called hoth exists); 'artoo rex hosts sync' replaces it with hoth") != null);
+    try testing.expectEqualStrings("{\"labels\":[\"naboo\"]}\n", try g.tmp.dir.readFileAlloc(testing.io, ".artoo/rex-hosts.json", a, .limited(1 << 16)));
+}
+
+test "vm rename: without a running Rex the Rex host step is skipped with a note" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(try rexRenameRoutes(a));
+    defer g.deinit();
+    const exe = try @import("rex_hosts.zig").fakeRex(&g);
+    try g.tmp.dir.createDirPath(testing.io, ".artoo");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/rex-hosts.json", .data = "{\"labels\":[\"naboo\"]}\n" });
+    var fake: FakeRunner = .{ .arena = a };
+    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .code = 1, .stderr = "no server\n" });
+    g.h.hooks.runner = fake.runner();
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));
+    try fake.done();
+    const out = g.h.stdout();
+    try testing.expect(std.mem.find(u8, out, "Rex host naboo kept: no running Rex on this machine ('rex hosts list' failed (exit 1): no server); 'artoo rex hosts sync' replaces it with hoth later.") != null);
+    try testing.expect(std.mem.find(u8, out, "rename the Rex host  skipped  no running Rex") != null);
 }
 
 test "vm rename: the /etc/hosts rewrite keeps a line's CR out of the comparison and puts it back" {
