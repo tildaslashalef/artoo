@@ -7,17 +7,20 @@
 # On failure the record is left in place and reported — remove it with
 # `forget-sta` or the UniFi UI.
 #
-# Usage: scripts/live/unifi-reservation-probe.sh
+# Usage: UNIFI_NETWORK_ID=<classic _id> scripts/live/unifi-reservation-probe.sh
+#   UNIFI_NETWORK_ID  the classic API's _id of the network the record joins
+#                     (rest/networkconf; never committed: it is the lab's)
+#   UNIFI_BASE        default https://unifi.home.arpa/proxy/network/api/s/default
 
 set -euo pipefail
 
 LEDGER="${ARTOO_LEDGER:-$HOME/.artoo/live-ledger.txt}"
-BASE=https://unifi.home.arpa/proxy/network/api/s/default
+BASE="${UNIFI_BASE:-https://unifi.home.arpa/proxy/network/api/s/default}"
 CA="$HOME/.artoo/tls/rootCA.pem"
 MAC=02:a7:00:00:00:01
 NAME=artoo-probe
 IP=192.168.1.254
-NET=6956ef9623496924ef8d526f   # classic _id of network Default
+NET="${UNIFI_NETWORK_ID:?set UNIFI_NETWORK_ID to the classic _id of the network (rest/networkconf)}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
