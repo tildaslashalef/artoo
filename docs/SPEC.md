@@ -441,7 +441,10 @@ replaced only when the edited copy is a valid config. An unchanged copy
 is deleted ("No changes."); an invalid one, or one left by a failed
 editor, is kept and its path printed (exit 2), so no edit is lost. There is no migration: a file with another
 `schema_version` is refused, and `config init` writes a fresh file and
-refuses to overwrite an existing one.
+refuses to overwrite an existing one. With `-n`, `config set`, `config
+unset` and `config init` print what they would write ("Would set …") and
+"Dry run: nothing written.", and leave the file alone; `config edit`
+refuses `-n` (exit 2).
 
 ## 6. Credentials
 

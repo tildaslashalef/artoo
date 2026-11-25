@@ -148,9 +148,10 @@ pub const set = struct {
             return;
         }
         const text = try config.edit(ctx.arena, &l.tree, key, value);
-        try save(ctx, l.path, text);
+        if (!ctx.globals.dry_run) try save(ctx, l.path, text);
         const p = ctx.ui.palette;
-        try ctx.out.print("Set {s}: {s}{s}{s} {s} {s}{s}{s}\n", .{
+        try ctx.out.print("{s} {s}: {s}{s}{s} {s} {s}{s}{s}\n", .{
+            if (ctx.globals.dry_run) "Would set" else "Set",
             key,
             p.on(.muted),
             try ui.text.sanitize(ctx.arena, before, .line),
@@ -160,8 +161,11 @@ pub const set = struct {
             try ui.text.sanitize(ctx.arena, after, .line),
             p.off(.changed),
         });
+        if (ctx.globals.dry_run) try ctx.out.writeAll(dry_run_line);
     }
 };
+
+const dry_run_line = "Dry run: nothing written.\n";
 
 pub const unset = struct {
     pub const name = "unset";
@@ -184,6 +188,10 @@ pub const unset = struct {
             return;
         }
         const text = try config.edit(ctx.arena, &l.tree, key, null);
+        if (ctx.globals.dry_run) {
+            try ctx.out.print("Would unset {s} (default would apply: {s})\n{s}", .{ key, default, dry_run_line });
+            return;
+        }
         try save(ctx, l.path, text);
         try ctx.out.print("Unset {s} (default applies: {s})\n", .{ key, default });
     }
@@ -211,7 +219,12 @@ pub const init = struct {
         if (try files.exists(ctx.io, path)) {
             return ctx.fail(error.ConfigExists, "{s} already exists; change it with 'artoo config set' or 'artoo config edit', or move it aside first", .{ctx.tilde(path)});
         }
-        try save(ctx, path, try config.defaultFile(ctx.arena));
+        const text = try config.defaultFile(ctx.arena);
+        if (ctx.globals.dry_run) {
+            try ctx.out.print("Would write {s} with defaults.\n{s}", .{ ctx.tilde(path), dry_run_line });
+            return;
+        }
+        try save(ctx, path, text);
         try ctx.out.print("Wrote {s} with defaults.\nNext: 'artoo auth set unifi' and 'artoo doctor'.\n", .{ctx.tilde(path)});
     }
 };
@@ -230,6 +243,7 @@ pub const edit = struct {
     pub const examples = [_][]const u8{"EDITOR=vim artoo config edit"};
 
     pub fn run(ctx: *Context, _: cli.Args(@This())) !void {
+        if (ctx.globals.dry_run) return ctx.fail(error.Usage, "config edit opens an editor and has no dry run; preview one key with 'artoo config set KEY VALUE -n'", .{});
         const l = try loaded(ctx);
         const original = if (l.exists)
             try Io.Dir.cwd().readFileAlloc(ctx.io, l.path, ctx.arena, .limited(1 << 20))
@@ -417,6 +431,34 @@ test "config: set/unset/get validation and JSON" {
     try testing.expectEqualStrings("Unset output.format (default applies: table)\n", h.stdout());
     try testing.expectEqual(.ok, h.run(&root, "config unset output.format"));
     try testing.expectEqualStrings("output.format is not set in the file (default: table)\n", h.stdout());
+}
+
+test "config: -n previews set, unset and init and leaves the file alone; edit refuses it" {
+    var h = try Harness.init();
+    defer h.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try setup(&h, &tmp);
+
+    try testing.expectEqual(.ok, h.run(&root, "config init -n"));
+    try testing.expectEqualStrings("Would write ~/.artoo/config.json with defaults.\nDry run: nothing written.\n", h.stdout());
+    try testing.expect(!try files.exists(testing.io, path));
+
+    try testing.expectEqual(.ok, h.run(&root, "config init"));
+    const before = try Io.Dir.cwd().readFileAlloc(testing.io, path, h.arena.allocator(), .limited(1 << 20));
+    try testing.expectEqual(.ok, h.run(&root, "config set unifi.timeout_seconds 30 -n"));
+    try testing.expect(std.mem.startsWith(u8, h.stdout(), "Would set unifi.timeout_seconds: "));
+    try testing.expect(std.mem.endsWith(u8, h.stdout(), "Dry run: nothing written.\n"));
+    try testing.expectEqualStrings(before, try Io.Dir.cwd().readFileAlloc(testing.io, path, h.arena.allocator(), .limited(1 << 20)));
+
+    try testing.expectEqual(.ok, h.run(&root, "config set unifi.timeout_seconds 20"));
+    const set_file = try Io.Dir.cwd().readFileAlloc(testing.io, path, h.arena.allocator(), .limited(1 << 20));
+    try testing.expectEqual(.ok, h.run(&root, "config unset unifi.timeout_seconds --dry-run"));
+    try testing.expectEqualStrings("Would unset unifi.timeout_seconds (default would apply: 10)\nDry run: nothing written.\n", h.stdout());
+    try testing.expectEqualStrings(set_file, try Io.Dir.cwd().readFileAlloc(testing.io, path, h.arena.allocator(), .limited(1 << 20)));
+
+    try testing.expectEqual(.usage, h.run(&root, "config edit -n"));
+    try testing.expect(std.mem.find(u8, h.stderr(), "config edit opens an editor and has no dry run") != null);
 }
 
 test "config: another schema and a symlinked file are refused" {
