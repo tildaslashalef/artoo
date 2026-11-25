@@ -159,6 +159,16 @@ change it in your fork.
 first `Host` line), and plain `ssh naboo`, `scp` and `rsync` work with
 the same strict settings.
 
+### Rex and coding agents (optional)
+
+To work on a guest in [Rex](https://www.superlogical.com/rex) with
+Claude Code or `agy`, add `--rex` to `vm new` (or run `artoo rex setup
+naboo` later): artoo installs Rex from its signed apt repository, keeps
+sessions across logouts and sets up the agents' Rex skill. Point
+`agents.profile` at a directory of your agent rules, skills and settings
+to copy them to every such guest (SPEC §18.5); install and sign in to
+the agents yourself.
+
 ## Without Cloudflare or Tailscale
 
 Guests, templates, the gateway and `status` need only Proxmox and
