@@ -1332,7 +1332,7 @@ test "parseProbe: base64 fields, hashes in order, private key names" {
     try testing.expectError(error.BadProbe, parseProbe(a, "no json", &.{}));
 }
 
-const ProbeFixture = struct {
+pub const ProbeFixture = struct {
     agents: []const u8 = "claude ",
     hashes: []const []const u8 = &.{},
     manifest: ?[]const u8 = null,
@@ -1347,7 +1347,8 @@ fn b64(a: Allocator, s: []const u8) ![]const u8 {
 }
 
 /// The probe's output for a fixture, as the script prints it.
-fn probeOut(a: Allocator, f: ProbeFixture) ![]const u8 {
+/// A probe answer for tests (here and in `rex status`).
+pub fn probeOut(a: Allocator, f: ProbeFixture) ![]const u8 {
     var s: std.ArrayList(u8) = .empty;
     try s.print(a, "{{\"home\":\"{s}\",\"agents\":\"{s}\",\"hashes\":[", .{ try b64(a, "/home/naboo"), f.agents });
     for (f.hashes, 0..) |h, i| try s.print(a, "{s}\"{s}\"", .{ if (i > 0) "," else "", h });
