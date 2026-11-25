@@ -20,6 +20,7 @@ pub const root = cli.group("artoo", "Home-lab CLI for a Proxmox VE host, a UniFi
     @import("svc.zig").group,
     @import("router.zig").group,
     @import("watch.zig").group,
+    @import("rex.zig").group,
     @import("status.zig").command,
     @import("update.zig").command,
     cli.leaf(@import("completion.zig").completion),
@@ -54,6 +55,7 @@ test {
     _ = @import("cf_tunnel.zig");
     _ = @import("router.zig");
     _ = @import("watch.zig");
+    _ = @import("rex.zig");
     _ = @import("completion.zig");
     _ = @import("../unifi/body.zig");
     _ = @import("../pve/client.zig");
