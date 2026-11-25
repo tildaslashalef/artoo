@@ -663,8 +663,9 @@ pub fn plan(a: Allocator, profile: ?Profile, g: Guest, kind: Kind, force: bool) 
         try manifest.put(a, key, want);
     };
 
-    // The permission kind (SPEC §20.6).
-    if (!claude_done) switch (try mergeFile(a, g.claude_settings, null, kind)) {
+    // The permission kind (SPEC §20.6), for Claude where it is (on the
+    // PATH, or its settings exist), as for agy's fish file below.
+    if (!claude_done and (g.claude or g.claude_settings != null)) switch (try mergeFile(a, g.claude_settings, null, kind)) {
         .current => {},
         .invalid => try left.append(a, .{ .path = try tilde(a, Merge.claude_settings.target()), .why = "not a JSON object on the guest; its permissions are not set" }),
         .write => |content| try writes.append(a, .{
@@ -1337,6 +1338,7 @@ pub const ProbeFixture = struct {
     hashes: []const []const u8 = &.{},
     manifest: ?[]const u8 = null,
     claude_settings: ?[]const u8 = null,
+    fish: ?[]const u8 = null,
     keys: []const u8 = "",
 };
 
@@ -1356,7 +1358,9 @@ pub fn probeOut(a: Allocator, f: ProbeFixture) ![]const u8 {
     if (f.manifest) |m| try s.print(a, "\"{s}\"", .{try b64(a, m)}) else try s.appendSlice(a, "null");
     try s.appendSlice(a, ",\"claude_settings\":");
     if (f.claude_settings) |m| try s.print(a, "\"{s}\"", .{try b64(a, m)}) else try s.appendSlice(a, "null");
-    try s.print(a, ",\"agy_settings\":null,\"agy_hooks\":null,\"fish\":null,\"ssh_keys\":\"{s}\"}}\n", .{try b64(a, f.keys)});
+    try s.appendSlice(a, ",\"agy_settings\":null,\"agy_hooks\":null,\"fish\":");
+    if (f.fish) |m| try s.print(a, "\"{s}\"", .{try b64(a, m)}) else try s.appendSlice(a, "null");
+    try s.print(a, ",\"ssh_keys\":\"{s}\"}}\n", .{try b64(a, f.keys)});
     return s.items;
 }
 
