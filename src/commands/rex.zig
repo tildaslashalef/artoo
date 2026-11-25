@@ -13,4 +13,5 @@ test {
     _ = @import("rex_status.zig");
     _ = @import("rex_hosts.zig");
     _ = @import("../rex/guest.zig");
+    _ = @import("../rex/profile.zig");
 }
