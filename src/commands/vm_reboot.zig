@@ -3,6 +3,8 @@
 //! its agent answering and the request gone before the next — the first
 //! that does not come back stops the run. The edge, the router and the
 //! watchdog are left to their own `vm reboot`, as with `vm upgrade --all`.
+//! On guests tagged `rex` the agents are read first (SPEC §20.8): a guest
+//! where one is working or blocked is skipped unless `--force-agents`.
 
 const std = @import("std");
 const app = @import("../app.zig");
@@ -16,6 +18,8 @@ const vm_new = @import("vm_new.zig");
 const vm_upgrade = @import("vm_upgrade.zig");
 const k = @import("node.zig");
 const tasks = @import("../pve/task.zig");
+const rex_guest = @import("../rex/guest.zig");
+const rex_state = @import("../rex/state.zig");
 
 const Context = app.Context;
 
@@ -24,6 +28,11 @@ const Guest = struct {
     name: []const u8,
     /// `/run/reboot-required.pkgs`, deduplicated.
     pkgs: []const []const u8,
+    /// Tagged `rex`: its agents are read again before the reboot.
+    rex: bool = false,
+    /// With `--force-agents`: the agents busy there (or why they could not
+    /// be read), named in the plan; null when none is.
+    agents: ?[]const u8 = null,
 };
 
 /// Whether `vm` wants a reboot: null when it does not, else its packages.
@@ -49,11 +58,22 @@ fn pkgList(a: std.mem.Allocator, pkgs: []const []const u8) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}{s}", .{ try std.mem.join(a, ", ", shown), more });
 }
 
+/// The typed confirmation when `--force-agents` reboots a guest whose
+/// agents are busy (SPEC §20.8).
+pub const forced_target = "every-guest";
+
 pub const RebootPendingOp = struct {
     c: *pve.Client,
+    /// `.destructive` when `--force-agents` includes a busy guest.
     risk: ui.blocks.Risk = .normal,
     api: ui.json.Target = .pve,
     target: []const u8 = "every guest",
+    /// `--force-agents`: guests whose agents are busy (or unreadable) are rebooted too.
+    force_agents: bool = false,
+    /// `guests.user`, as whom the agents are read.
+    user: []const u8 = "",
+    /// Guests skipped in `send` because an agent was busy by then.
+    agent_skips: usize = 0,
     todo: []const Guest = &.{},
     not_needed: []const []const u8 = &.{},
     /// Edge, router, watchdog that want a reboot: named, never rebooted here.
@@ -71,6 +91,8 @@ pub const RebootPendingOp = struct {
         var own_run: std.ArrayList([]const u8) = .empty;
         var skipped: std.ArrayList([]const u8) = .empty;
         var fp: std.ArrayList(u8) = .empty;
+        op.risk = .normal;
+        op.target = "every guest";
         for (try vms.list(op.c)) |v| {
             if (v.template or !template.taggedWith(v.tags, vm_new.tag)) continue;
             const name = try k.clean(ctx, v.name);
@@ -104,8 +126,21 @@ pub const RebootPendingOp = struct {
                 try own_run.append(a, try std.fmt.allocPrint(a, "{s} (artoo runs here: reboot it last, on its own; {s})", .{ name, try pkgList(a, pkgs) }));
                 continue;
             }
-            try fp.print(a, "{d}:{s}:{s};", .{ v.vmid, name, try std.mem.join(a, ",", pkgs) });
-            try todo.append(a, .{ .vm = v, .name = name, .pkgs = pkgs });
+            // SPEC §20.8: an agent working or blocked holds the reboot back.
+            var busy: ?[]const u8 = null;
+            if (rex_guest.tagged(v)) {
+                busy = try busyAgents(ctx, op.c, v.vmid, op.user);
+                if (busy) |b| {
+                    if (!op.force_agents) {
+                        try skipped.append(a, try std.fmt.allocPrint(a, "{s} ({s}; --force-agents to reboot anyway)", .{ name, b }));
+                        continue;
+                    }
+                    op.risk = .destructive;
+                    op.target = forced_target;
+                }
+            }
+            try fp.print(a, "{d}:{s}:{s}{s};", .{ v.vmid, name, try std.mem.join(a, ",", pkgs), if (busy != null) ":agents" else "" });
+            try todo.append(a, .{ .vm = v, .name = name, .pkgs = pkgs, .rex = rex_guest.tagged(v), .agents = busy });
         }
         op.todo = todo.items;
         op.not_needed = not_needed.items;
@@ -134,15 +169,27 @@ pub const RebootPendingOp = struct {
         for (op.own_run) |o| try notes.append(a, try std.fmt.allocPrint(a, "Wants a reboot, on its own: {s}.", .{o}));
         if (op.not_needed.len > 0) try notes.append(a, try std.fmt.allocPrint(a, "Not needed: {s}.", .{try std.mem.join(a, ", ", op.not_needed)}));
         for (op.skipped) |s| try notes.append(a, try std.fmt.allocPrint(a, "Skipped: {s}.", .{s}));
+        var impact: std.ArrayList([]const u8) = .empty;
+        try impact.appendSlice(a, &.{
+            "One guest after another; each guest's services are briefly unavailable",
+            "Each guest must run again, its agent answer and its reboot request be gone before the next starts",
+            "The first guest that does not come back stops the run; the rest are not rebooted",
+        });
+        var forced: std.ArrayList([]const u8) = .empty;
+        for (op.todo) |g| if (g.agents) |b| try forced.append(a, try std.fmt.allocPrint(a, "{s} ({s})", .{ g.name, b }));
+        if (forced.items.len > 0) {
+            try impact.append(a, try std.fmt.allocPrint(a, "--force-agents: the reboot cuts off the agents at work on {s}; their sessions end", .{try std.mem.join(a, "; ", forced.items)}));
+        } else if (op.force_agents) {
+            try notes.append(a, "--force-agents: no agent is busy on these guests now; one that becomes busy is rebooted anyway.");
+        }
+        for (op.todo) |g| if (g.rex and !op.force_agents)
+            try notes.append(a, try std.fmt.allocPrint(a, "{s} runs Rex: its agents are read again right before its reboot; one busy by then skips it.", .{g.name}));
         return .{
             .action = try std.fmt.allocPrint(a, "Reboot {f} that want it", .{ui.values.count(op.todo.len, "guest")}),
+            .risk = op.risk,
             .target = try k.nodeTarget(ctx, op.c),
             .changes = changes.items,
-            .impact = try a.dupe([]const u8, &.{
-                "One guest after another; each guest's services are briefly unavailable",
-                "Each guest must run again, its agent answer and its reboot request be gone before the next starts",
-                "The first guest that does not come back stops the run; the rest are not rebooted",
-            }),
+            .impact = impact.items,
             .notes = notes.items,
         };
     }
@@ -158,6 +205,15 @@ pub const RebootPendingOp = struct {
         for (op.todo) |g| _ = try l.add(a, try std.fmt.allocPrint(a, "reboot {s}", .{g.name}));
         for (op.todo, first..) |g, i| {
             var sent = false;
+            if (g.rex and !op.force_agents) {
+                // Read again right before the write: an agent busy by now
+                // skips the guest (SPEC §20.8).
+                if (try busyAgents(ctx, op.c, g.vm.vmid, op.user)) |b| {
+                    l.set(i, .skipped, try std.fmt.allocPrint(a, "{s}; --force-agents to reboot anyway", .{b}));
+                    op.agent_skips += 1;
+                    continue;
+                }
+            }
             rebootOne(ctx, op.c, g, l, i, &sent) catch |err| {
                 if (err == error.OutOfMemory) return err;
                 if (!ctx.json()) {
@@ -182,6 +238,7 @@ pub const RebootPendingOp = struct {
         }
         var n: usize = 0;
         for (op.ledger.steps.items) |st| n += @intFromBool(st.state == .done);
+        if (n == 0 and op.agent_skips > 0) return ctx.fail(error.NoChange, "no guest was rebooted: when its turn came, an agent was busy on {f} and the rest no longer wanted it", .{ui.values.count(op.agent_skips, "guest")});
         if (n == 0) return ctx.fail(error.NoChange, "no guest was rebooted: none wanted it any more when its turn came", .{});
         return op.ledger.complete();
     }
@@ -193,6 +250,17 @@ pub const RebootPendingOp = struct {
         return std.fmt.allocPrint(a, "{f} rebooted and back; no reboot request left on them", .{ui.values.count(n, "guest")}) catch "rebooted";
     }
 };
+
+/// The busy agents of a guest tagged `rex`, described ("claude-code
+/// working in naboo-api"), or why they could not be read ("agents
+/// unreadable: …") — both hold its reboot back; null when none is busy.
+fn busyAgents(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8) !?[]const u8 {
+    const found = rex_state.agents(ctx, c, vmid, user) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => return try std.fmt.allocPrint(ctx.arena, "agents unreadable: {s}", .{try reason(ctx, err)}),
+    };
+    return rex_state.busyText(ctx, found);
+}
 
 /// The host name without its domain.
 fn shortName(h: []const u8) []const u8 {
@@ -286,11 +354,12 @@ fn rebootOne(ctx: *Context, c: *pve.Client, g: Guest, l: *exec.Ledger, i: usize,
     l.set(i, .done, try std.fmt.allocPrint(a, "kernel {s}", .{kern}));
 }
 
-pub fn runPending(ctx: *Context) !void {
+/// `force_agents`: `--force-agents`; `confirm`: `--confirm TARGET`.
+pub fn runPending(ctx: *Context, force_agents: bool, confirm: ?[]const u8) !void {
     var c = try pve.Client.open(ctx);
     defer c.deinit();
-    var op: RebootPendingOp = .{ .c = &c };
-    try exec.run(ctx, &op, .{});
+    var op: RebootPendingOp = .{ .c = &c, .force_agents = force_agents, .user = (try ctx.config()).guests.user };
+    try exec.run(ctx, &op, .{ .confirm = confirm });
 }
 
 // ---------------------------------------------------------------- tests
@@ -457,4 +526,61 @@ test "vm reboot VM: one VM still reboots as before" {
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     try testing.expectEqualStrings("POST /api2/json/nodes/pve/qemu/205/status/reboot HTTP/1.1", g.request(1));
     try expectAll(g.h.stdout(), &.{ "Plan · Reboot VM naboo (205)\n", "✓ naboo is running (" });
+}
+
+const rex_two = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"},{\"vmid\":207,\"name\":\"tatooine\",\"status\":\"running\",\"tags\":\"artoo\"}]}";
+const agents_working = "{\"server\":{\"running\":true,\"version\":\"0.1.0-snapshot.23\",\"sessions\":1},\"agents\":[{\"session\":\"naboo-api\",\"block\":\"block:1\",\"app\":\"claude-code\",\"state\":\"working\",\"title\":\"\",\"updated_at\":\"2026-11-25T01:52:40+01:00\"}],\"errors\":[]}";
+const agents_idle = "{\"server\":{\"running\":true,\"version\":\"0.1.0-snapshot.23\",\"sessions\":1},\"agents\":[{\"session\":\"naboo-api\",\"block\":\"block:1\",\"app\":\"claude-code\",\"state\":\"idle\",\"title\":\"\",\"updated_at\":\"\"}],\"errors\":[]}";
+
+test "vm reboot --pending: a rex guest with an agent working is skipped; --force-agents includes it behind the typed target" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const yes = try execStatus(a, 0, "yes\nlinux-base\n");
+    const working = try execStatus(a, 0, agents_working);
+    const read = [_]B{ ans(rex_two), ans(ping), ans(pid), ans(yes), ans(pid), ans(working), ans(ping), ans(pid), ans(yes) };
+    const back = [_]B{ ans(pid), ans(yes), ans(upid_body), ans(task_ok), ans(ping), ans(pid), ans(try execStatus(a, 0, "7.0.0-45-generic\n")) };
+    var g: testkit.Gateway = undefined;
+    try g.init(&(read ++ read ++ read ++ back ++ back));
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm reboot --pending -n"));
+    try expectAll(g.h.stdout(), &.{
+        "Plan · Reboot 1 guest that want it\n",
+        "Change    tatooine  running → rebooted (linux-base)\n",
+        "Skipped: naboo (claude-code working in naboo-api; --force-agents to reboot anyway).",
+    });
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "destructive") == null);
+    // --force-agents: destructive, the typed target is every-guest.
+    try testing.expectEqual(Exit.refused, g.h.run(&root, "vm reboot --pending --force-agents -y"));
+    try expectAll(g.h.stdout(), &.{ "destructive", "Change    naboo     running → rebooted (linux-base)\n", "--force-agents: the reboot cuts off the agents at work on naboo (claude-code working in naboo-api); their sessions end" });
+    try expectAll(g.h.stderr(), &.{"add --confirm every-guest to proceed with --yes"});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm reboot --pending --force-agents -y --confirm every-guest"));
+    try expectAll(g.h.stdout(), &.{ "✓ reboot naboo     done  kernel 7.0.0-45-generic\n", "✓ 2 guests rebooted and back" });
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm reboot naboo --force-agents"));
+}
+
+test "vm reboot --pending: the agents are read again before each rex guest's reboot; busy by then, or unreadable, skips it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const yes = try execStatus(a, 0, "yes\nlinux-base\n");
+    const read = [_]B{ ans(rex_two), ans(ping), ans(pid), ans(yes), ans(pid), ans(try execStatus(a, 0, agents_idle)), ans(ping), ans(pid), ans(yes) };
+    const back = [_]B{ ans(pid), ans(yes), ans(upid_body), ans(task_ok), ans(ping), ans(pid), ans(try execStatus(a, 0, "7.0.0-45-generic\n")) };
+    const unreadable = [_]B{ ans(rex_two), ans(ping), ans(pid), ans(yes), ans(pid), ans(try execStatus(a, 1, "")), ans(ping), ans(pid), ans(yes) };
+    var g: testkit.Gateway = undefined;
+    try g.init(&(read ++ [_]B{ ans(pid), ans(try execStatus(a, 0, agents_working)) } ++ back ++ unreadable));
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm reboot --pending -y"));
+    try expectAll(g.h.stdout(), &.{
+        "naboo runs Rex: its agents are read again right before its reboot; one busy by then skips it.",
+        "reboot naboo     skipped  claude-code working in naboo-api; --force-agents to reboot anyway\n",
+        "✓ reboot tatooine  done",
+        "✓ 1 guest rebooted and back",
+    });
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm reboot --pending -n"));
+    try expectAll(g.h.stdout(), &.{"Skipped: naboo (agents unreadable: the read exited 1; --force-agents to reboot anyway)."});
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
