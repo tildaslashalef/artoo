@@ -849,7 +849,7 @@ rm`, `rex hosts sync`).
 | delete Keychain password | the stored `guest/<name>` |
 | forget SSH host key | its entry in `~/.artoo/known_hosts` |
 | remove from ssh config | its block in `~/.artoo/ssh_config` |
-| remove Rex host | its Rex host on the workstation, when `~/.artoo/rex-hosts.json` records it (§18.9); skipped with a note without a running Rex; its failure fails only this step |
+| remove Rex host | its Rex host on the workstation, when `~/.artoo/rex-hosts.json` records it (§18.9); skipped with a note without a running Rex; a host saved in Rex for Mac is noted, to be removed there too (§18.9) |
 | forget in watch | its metrics on a running watchdog, so alerts about it resolve (§9.9) |
 | remove from the tailnet | its device, when it is a lab device (§17) |
 
@@ -2277,7 +2277,7 @@ under either name, so a stopped run continues.
   | Services | each `svc` with upstream OLD moved to `NEW:PORT` as `svc set` does, fence steps included (§9.6, §9.11) |
   | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config`: NEW's block written as `vm ssh-config` writes it (static address, else the agent's IPv4), then OLD's removed — never OLD's alone (§9.10) |
   | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
-  | Rex host | when `~/.artoo/rex-hosts.json` records OLD: `rex hosts edit OLD --label NEW --endpoint ssh://USER@NEWFQDN`, then the record (§18.9); skipped with a note without a running Rex; its failure fails only this step (exit 8, `rex hosts sync` repairs it) |
+  | Rex host | when `~/.artoo/rex-hosts.json` records OLD: `rex hosts edit OLD --label NEW --endpoint ssh://USER@NEWFQDN`, then the record (§18.9); skipped with a note without a running Rex; a host saved in Rex for Mac is noted, to be renamed there too (§18.9); its failure fails only this step (exit 8, `rex hosts sync` repairs it) |
   | Fence | entries naming OLD rewritten in `guests.fence_allow_out` (`~/.artoo/config.json`); the fences of the guest and of fenced guests whose exceptions name it re-derived, those that differ re-applied. The plan shows each one's rule diff as the renamed lab derives it, and the step applies only those rules (a fresh derivation that differs fails the step). Runs only alongside another step |
   | Tailnet | tag `tailnet` or `role-router`: `tailscale set --hostname=NEW` through the agent, read back from `tailscale status --json`; with a Tailscale credential, the device (by the node ID the guest reports) read every 2 s for up to about 30 s until the control plane shows NEW, renamed through the API only if it keeps the old hand-set name. Another device already named NEW refuses at read time (§17) |
   | Watchdog | below (§9.9) |
@@ -3324,6 +3324,11 @@ per guest tagged `rex`, labelled with the guest's name, endpoint
   saved in the app ([API.md](API.md) §5), with the way to open them
   there: `rex hosts remove LABEL`, then Add Remote Host… in the app with
   the same address, which the next sync adopts.
+- A host saved in Rex for Mac (its record has no `added_from`) keeps a
+  copy in the app, which puts it back after a CLI removal or edit
+  ([API.md](API.md) §5). Removing or editing one (here, in `vm rm` and in
+  `vm rename`) still goes through `rex hosts`, and the plan notes to do
+  the same in the app (Settings > Remote Hosts).
 - Nothing to change (foreign hosts aside, which it names) is a no-op
   (exit 5).
 

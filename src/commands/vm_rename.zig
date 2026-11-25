@@ -518,8 +518,10 @@ const RenameOp = struct {
             }
         };
         if (o.ts_note) |n| try notes.append(a, n);
-        if (op.rex) |r| if (r.skipped()) |why|
+        if (op.rex) |r| if (r.skipped()) |why| {
             try notes.append(a, try std.fmt.allocPrint(a, "Rex host {s} kept: {s}; 'artoo rex hosts sync' replaces it with {s} later.", .{ r.label, why, op.new }));
+        } else if (r.listed) |h| if (h.in_app)
+            try notes.append(a, try rex_hosts.appNote(a, try k.clean(op.c.ctx, h.label), try std.fmt.allocPrint(a, "rename it to {s}", .{op.new})));
         try notes.append(a, "Steps run in this order, each checking observed state first; after a failure run the same command again to continue.");
         try notes.append(a, "The UniFi rename uses PUT rest/user/{_id} with the name alone: expected from the classic API, not yet verified live.");
         try notes.append(a, try std.fmt.allocPrint(a, "Cloud-init's instance ID follows the name: at {s}'s next boot (a reboot too) cloud-init starts over as a new instance, regenerates the SSH host keys and runs its first-boot commands again. 'ssh {s}' then refuses the new key: compare the fingerprint it shows with the one 'artoo vm ssh-config --repin {s} -n' reads through the guest agent, then re-pin without -n.", .{ op.new, op.new, op.new }));
@@ -1329,7 +1331,9 @@ test "vm rename: the recorded Rex host is renamed, its endpoint NEW's machine na
     try g.tmp.dir.createDirPath(testing.io, ".artoo");
     try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/rex-hosts.json", .data = "{\"labels\":[\"naboo\",\"tatooine\"]}\n" });
     var fake: FakeRunner = .{ .arena = a };
-    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try rh.listJson(a, &.{.{ .label = "naboo", .endpoints = &.{"ssh://artoo@naboo.lab.example.com"} }}) });
+    // Saved in Rex for Mac: renamed all the same, and the plan says to
+    // rename it there too.
+    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try rh.listJson(a, &.{.{ .label = "naboo", .endpoints = &.{"ssh://artoo@naboo.lab.example.com"}, .in_app = true }}) });
     try fake.expect(&.{ exe, "hosts", "edit", "naboo", "--label", "hoth", "--endpoint", "ssh://artoo@hoth.lab.example.com", "--autostart=false" }, null, .{});
     g.h.hooks.runner = fake.runner();
     const code = g.h.run(&root, "vm rename naboo hoth -y --confirm naboo");
@@ -1341,6 +1345,7 @@ test "vm rename: the recorded Rex host is renamed, its endpoint NEW's machine na
     for ([_][]const u8{
         "Rex host      naboo (ssh://artoo@naboo.lab.example.com) → hoth (ssh://artoo@hoth.lab.example.com)\n",
         "✓ rename the Rex host  done  ssh://artoo@hoth.lab.example.com",
+        "Rex host naboo was saved in Rex for Mac, which keeps its own copy and puts it back: rename it to hoth there too",
     }) |line| if (std.mem.find(u8, out, line) == null) {
         std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
         return error.TestUnexpectedResult;
@@ -1364,7 +1369,9 @@ test "vm rename: a failed Rex host rename fails only its step; the rest runs, ex
     try g.tmp.dir.createDirPath(testing.io, ".artoo");
     try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/rex-hosts.json", .data = "{\"labels\":[\"naboo\"]}\n" });
     var fake: FakeRunner = .{ .arena = a };
-    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try rh.listJson(a, &.{.{ .label = "naboo", .endpoints = &.{"ssh://artoo@naboo.lab.example.com"} }}) });
+    // Saved in Rex for Mac: renamed all the same, and the plan says to
+    // rename it there too.
+    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try rh.listJson(a, &.{.{ .label = "naboo", .endpoints = &.{"ssh://artoo@naboo.lab.example.com"}, .in_app = true }}) });
     try fake.expect(&.{ exe, "hosts", "edit", "naboo", "--label", "hoth", "--endpoint", "ssh://artoo@hoth.lab.example.com", "--autostart=false" }, null, .{ .code = 1, .stderr = "a host called hoth exists\n" });
     g.h.hooks.runner = fake.runner();
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rename naboo hoth -y --confirm naboo"));

@@ -1035,6 +1035,7 @@ const RmOp = struct {
             if (r.skipped()) |why| {
                 try notes.append(a, try std.fmt.allocPrint(a, "Rex host {s} kept: {s}; 'artoo rex hosts sync' removes it later.", .{ r.label, why }));
             } else try changes.append(a, .{ .field = "Rex host", .from = if (r.listed) |h| try std.fmt.allocPrint(a, "{s} ({s})", .{ try k.clean(ctx, h.label), try k.clean(ctx, try std.mem.join(a, ", ", h.endpoints)) }) else try std.fmt.allocPrint(a, "{s} in {s} (no such host now)", .{ r.label, rex_hosts.record_path }), .to = null });
+            if (r.listed) |h| if (h.in_app and r.rex() != null) try notes.append(a, try rex_hosts.appNote(a, try k.clean(ctx, h.label), "remove it"));
         }
         if (op.client_note) |n| try notes.append(a, n);
         if (op.client) |r| if (r.fixed_ip) |ip|
@@ -2134,6 +2135,23 @@ test "vm rm: removes the guest's recorded Rex host after the destroy" {
         return error.TestUnexpectedResult;
     };
     try testing.expectEqualStrings("{\n  \"labels\": [\n    \"naboo\"\n  ]\n}\n", try g.tmp.dir.readFileAlloc(testing.io, ".artoo/rex-hosts.json", ar, .limited(1 << 16)));
+}
+
+test "vm rm: a Rex host saved in Rex for Mac is removed, and the plan says to remove it there too" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var g: testkit.Gateway = undefined;
+    try rmWithRex(&g, arena.allocator());
+    defer g.deinit();
+    const ar = g.h.arena.allocator();
+    const exe = try @import("rex_hosts.zig").fakeRex(&g);
+    var fake: FakeRunner = .{ .arena = ar };
+    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try @import("rex_hosts.zig").listJson(ar, &.{.{ .label = "web-01", .endpoints = &.{"ssh://artoo@web-01.lab.example.com"}, .in_app = true }}) });
+    try fake.expect(&.{ exe, "hosts", "remove", "web-01", "--autostart=false" }, null, .{});
+    g.h.hooks.runner = fake.runner();
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
+    try fake.done();
+    try testing.expect(std.mem.find(u8, g.h.stdout(), "Rex host web-01 was saved in Rex for Mac, which keeps its own copy and puts it back: remove it there too") != null);
 }
 
 test "vm rm: a failed Rex host removal fails only its step (exit 8); no running Rex skips it" {

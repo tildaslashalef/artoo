@@ -337,7 +337,9 @@ artoo vm new hoth --rex                      # a new guest with Rex (or rex.defa
   but Rex for Mac shows only hosts saved in the app: to open a guest
   there, `rex hosts remove hoth`, then Settings → Remote Hosts → Add
   Remote Host… with the same `ssh://` address and name; the next sync
-  adopts it, and `vm rm` still removes it.
+  adopts it. Rex for Mac puts such a host back after `vm rm` or `vm
+  rename` changes it from the CLI: their plans say so; remove or rename
+  it in the app too.
 - `rex -S hoth server status` only reports; any other command over
   `ssh://` (`rex -S hoth ls`) starts the guest user's server.
 - `vm reboot --pending` skips a guest where an agent is working or
