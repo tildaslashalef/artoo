@@ -259,6 +259,66 @@ fn lessIgnoreCase(_: void, x: []const u8, y: []const u8) bool {
     return std.ascii.lessThanIgnoreCase(x, y);
 }
 
+// ---------------------------------------------------------------- vm rm, vm rename
+
+/// The Rex host of a guest that `vm rm` or `vm rename` changes: only a
+/// host artoo recorded (SPEC §20.8).
+pub const Recorded = struct {
+    /// The guest's label as recorded.
+    label: []const u8,
+    /// The CLI and the hosts, or why the step is skipped.
+    conn: Connection,
+    /// The host as listed now (null: not listed, or no Rex).
+    listed: ?Host = null,
+    record: []const []const u8,
+
+    pub fn rex(r: Recorded) ?Rex {
+        return switch (r.conn) {
+            .ok => |c| c.rex,
+            .unavailable => null,
+        };
+    }
+
+    pub fn skipped(r: Recorded) ?[]const u8 {
+        return switch (r.conn) {
+            .ok => null,
+            .unavailable => |why| why,
+        };
+    }
+};
+
+/// The recorded Rex host `label`, or null when artoo did not record it.
+/// An unreadable record or no Rex makes the step `.unavailable`, never
+/// an error of the command it belongs to.
+pub fn recordedHost(ctx: *Context, label: []const u8) !?Recorded {
+    const record = loadRecord(ctx) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            defer ctx.diag = null;
+            return .{ .label = label, .record = &.{}, .conn = .{ .unavailable = ctx.diag orelse @errorName(err) } };
+        },
+    };
+    const mine = for (record) |l| {
+        if (std.ascii.eqlIgnoreCase(l, label)) break l;
+    } else return null;
+    const conn = connect(ctx) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => blk: {
+            defer ctx.diag = null;
+            break :blk Connection{ .unavailable = ctx.diag orelse @errorName(err) };
+        },
+    };
+    return .{
+        .label = mine,
+        .conn = conn,
+        .listed = switch (conn) {
+            .ok => |c| find(c.hosts, mine),
+            .unavailable => null,
+        },
+        .record = record,
+    };
+}
+
 // ---------------------------------------------------------------- the plan
 
 /// A guest that wants a host.
