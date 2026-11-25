@@ -18,6 +18,7 @@ const classic = @import("../unifi/classic.zig");
 const k = @import("node.zig");
 const known_hosts = @import("../guest/known_hosts.zig");
 const ssh_config = @import("../guest/ssh_config.zig");
+const rex_hosts = @import("../rex/hosts.zig");
 const vm_ssh = @import("vm_ssh.zig");
 const svc = @import("svc.zig");
 
@@ -859,6 +860,8 @@ const RmOp = struct {
     tsc: ?tsapi.Client = null,
     ts_dev: ?tn.Device = null,
     ts_note: ?[]const u8 = null,
+    /// Its Rex host on this machine, when artoo recorded it (SPEC §20.8).
+    rex: ?rex_hosts.Recorded = null,
     ledger: exec.Ledger = .{},
 
     /// Its device on the tailnet: removed after the destroy, when it is a
@@ -923,6 +926,7 @@ const RmOp = struct {
         }
         if (v.name.len > 0) try op.readWatch(ctx);
         if (v.name.len > 0) try op.readTailnet(ctx);
+        if (v.name.len > 0) op.rex = try rex_hosts.recordedHost(ctx, v.name);
     }
 
     /// Its metrics on the watchdog: forgotten after the destroy, so alerts
@@ -1020,6 +1024,11 @@ const RmOp = struct {
         if (op.watch_vm) |w| try changes.append(a, .{ .field = "metrics", .from = try std.fmt.allocPrint(a, "{d} series with host={s} on {s}", .{ op.watch_series, op.target, w.name }), .to = null });
         if (op.ts_dev) |d| try changes.append(a, .{ .field = "tailnet device", .from = try std.fmt.allocPrint(a, "{s} ({s})", .{ try k.clean(ctx, d.name), try k.clean(ctx, d.id) }), .to = null });
         var notes: std.ArrayList([]const u8) = .empty;
+        if (op.rex) |r| {
+            if (r.skipped()) |why| {
+                try notes.append(a, try std.fmt.allocPrint(a, "Rex host {s} kept: {s}; 'artoo rex hosts sync' removes it later.", .{ r.label, why }));
+            } else try changes.append(a, .{ .field = "Rex host", .from = if (r.listed) |h| try std.fmt.allocPrint(a, "{s} ({s})", .{ try k.clean(ctx, h.label), try k.clean(ctx, try std.mem.join(a, ", ", h.endpoints)) }) else try std.fmt.allocPrint(a, "{s} in {s} (no such host now)", .{ r.label, rex_hosts.record_path }), .to = null });
+        }
         if (op.client_note) |n| try notes.append(a, n);
         if (op.client) |r| if (r.fixed_ip) |ip|
             try notes.append(a, try std.fmt.allocPrint(a, "UniFi keeps {s} as a connected client for several minutes after the VM stops; until it drops, {s} cannot be reserved for a new VM.", .{ r.mac, ip }));
@@ -1055,6 +1064,7 @@ const RmOp = struct {
         const key_step = if (op.secret) try l.add(a, "delete Keychain password") else null;
         const host_step = if (op.host_key) try l.add(a, "forget SSH host key") else null;
         const ssh_step = if (op.ssh_block) try l.add(a, "remove from ssh config") else null;
+        const rex_step = if (op.rex != null) try l.add(a, rex_step_name) else null;
         const watch_step = if (op.watch_vm != null) try l.add(a, "forget in watch") else null;
         const ts_step = if (op.ts_dev != null) try l.add(a, "remove from the tailnet") else null;
         errdefer {
@@ -1109,6 +1119,8 @@ const RmOp = struct {
             };
             l.set(i, .done, "");
         }
+        // A failure fails only this step; 'rex hosts sync' repairs it.
+        if (rex_step) |i| try op.removeRexHost(ctx, i);
         if (watch_step) |i| {
             l.set(i, .unknown, "");
             const n = watch.forgetHost(c, op.watch_vm.?, v.name) catch |err| switch (err) {
@@ -1139,6 +1151,37 @@ const RmOp = struct {
         }
     }
 
+    const rex_step_name = "remove Rex host";
+
+    /// `rex hosts remove LABEL`, then the label dropped from the record;
+    /// skipped without Rex. Never stops the run (`verify` reports it).
+    fn removeRexHost(op: *RmOp, ctx: *Context, i: usize) !void {
+        const a = ctx.arena;
+        const l = &op.ledger;
+        const r = op.rex.?;
+        const x = r.rex() orelse return l.set(i, .skipped, r.skipped().?);
+        if (r.listed != null) {
+            l.set(i, .unknown, "");
+            x.remove(r.label) catch |err| switch (err) {
+                error.OutOfMemory, error.Canceled => |e| return e,
+                else => {
+                    l.set(i, .failed, ctx.diag orelse @errorName(err));
+                    ctx.diag = null;
+                    return;
+                },
+            };
+        }
+        rex_hosts.saveRecord(ctx, try rex_hosts.without(a, r.record, r.label)) catch |err| switch (err) {
+            error.OutOfMemory, error.Canceled => |e| return e,
+            else => {
+                l.set(i, .failed, ctx.diag orelse @errorName(err));
+                ctx.diag = null;
+                return;
+            },
+        };
+        l.set(i, .done, if (r.listed != null) r.label else "not listed; dropped from the record");
+    }
+
     pub fn verify(op: *RmOp, ctx: *Context) !bool {
         var gone = (try vms.find(try vms.list(op.c), ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d}", .{op.vm.?.vmid}))) == .missing;
         if (op.client) |r| {
@@ -1151,6 +1194,8 @@ const RmOp = struct {
         }
         try ctx.out.writeAll("\n");
         try op.ledger.render(ctx.out, &ctx.ui);
+        for (op.ledger.steps.items) |s| if (s.state == .failed and std.mem.eql(u8, s.name, rex_step_name))
+            return ctx.fail(error.Partial, "VM destroyed, but its Rex host {s} stays: {s}; run 'artoo rex hosts sync' to remove it", .{ op.rex.?.label, s.detail });
         return gone;
     }
 
@@ -1172,6 +1217,8 @@ pub const rm = struct {
         \\    VM's address; --keep-dns leaves DNS alone)
         \\  - remove its stored password guest/NAME, its pinned host key and
         \\    its block in ~/.artoo/ssh_config
+        \\  - remove its Rex host on this machine, when 'artoo rex hosts sync'
+        \\    added it (skipped with a note without a running Rex)
         \\  - delete its metrics on the watchdog, so alerts about it resolve
         \\  - remove its device from the tailnet (lab devices only)
         \\
@@ -1670,6 +1717,7 @@ test "staticAddress" {
 
 const testkit = @import("../testkit.zig");
 const Exit = testkit.Exit;
+const FakeRunner = @import("../secrets/common.zig").FakeRunner;
 const vm_cmd = @import("vm.zig");
 const root = cli.group("artoo", "t", &.{vm_cmd.group});
 
@@ -2006,6 +2054,96 @@ test "vm rm: with the Tailscale credential its lab device leaves the tailnet aft
         std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
         return error.TestUnexpectedResult;
     };
+}
+
+/// `vm rm web-01 -y` (running, no client record, DNS record or metrics)
+/// with web-01 recorded as artoo's Rex host and `fake` as the local rex.
+fn rmWithRex(g: *testkit.Gateway, a: std.mem.Allocator) !void {
+    const out_of = struct {
+        fn f(ar: std.mem.Allocator, out: []const u8) ![]const u8 {
+            return std.json.Stringify.valueAlloc(ar, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = out, .@"err-data" = "" } }, .{});
+        }
+    }.f;
+    // The script outlives this frame: it lives in `a`.
+    try g.init(try a.dupe(testkit.Gateway.FakeServer.Behavior, &.{
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = vm_cmd.config_body } },
+        .{ .respond = .{ .body = vm_cmd.resources_body } },
+        .{ .respond = .{ .body = "{\"meta\":{\"rc\":\"ok\"},\"data\":[]}" } },
+        .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"S1\",\"internalReference\":\"default\",\"name\":\"Default\"}]}" } },
+        .{ .respond = .{ .body = "{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}" } },
+        .{ .respond = .{ .body = "{\"data\":[{\"vmid\":202,\"name\":\"scarif\",\"status\":\"running\",\"tags\":\"artoo;role-watch\"}]}" } },
+        .{ .respond = .{ .body = "{\"data\":{\"pid\":42}}" } },
+        .{ .respond = .{ .body = try out_of(a, "{\"status\":\"success\",\"data\":[]}") } },
+        .{ .respond = .{ .body = upid_body } },
+        .{ .respond = .{ .body = task_ok } },
+        .{ .respond = .{ .body = upid_body } },
+        .{ .respond = .{ .body = task_ok } },
+        .{ .respond = .{ .body = "{\"data\":[]}" } },
+    }));
+    try g.tmp.dir.createDirPath(testing.io, ".artoo");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/rex-hosts.json", .data = "{\"labels\":[\"naboo\",\"web-01\"]}\n" });
+}
+
+test "vm rm: removes the guest's recorded Rex host after the destroy" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var g: testkit.Gateway = undefined;
+    try rmWithRex(&g, arena.allocator());
+    defer g.deinit();
+    const ar = g.h.arena.allocator();
+    const exe = try @import("rex_hosts.zig").fakeRex(&g);
+    var fake: FakeRunner = .{ .arena = ar };
+    try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try @import("rex_hosts.zig").listJson(ar, &.{.{ .label = "web-01", .endpoints = &.{"ssh://artoo@web-01.lab.example.com"} }}) });
+    try fake.expect(&.{ exe, "hosts", "remove", "web-01", "--autostart=false" }, null, .{});
+    g.h.hooks.runner = fake.runner();
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
+    try fake.done();
+    const out = g.h.stdout();
+    for ([_][]const u8{
+        "Rex host  web-01 (ssh://artoo@web-01.lab.example.com) → (removed)\n",
+        "✓ remove Rex host       done  web-01",
+    }) |line| if (std.mem.find(u8, out, line) == null) {
+        std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
+        return error.TestUnexpectedResult;
+    };
+    try testing.expectEqualStrings("{\n  \"labels\": [\n    \"naboo\"\n  ]\n}\n", try g.tmp.dir.readFileAlloc(testing.io, ".artoo/rex-hosts.json", ar, .limited(1 << 16)));
+}
+
+test "vm rm: a failed Rex host removal fails only its step (exit 8); no running Rex skips it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    {
+        var g: testkit.Gateway = undefined;
+        try rmWithRex(&g, arena.allocator());
+        defer g.deinit();
+        const ar = g.h.arena.allocator();
+        const exe = try @import("rex_hosts.zig").fakeRex(&g);
+        var fake: FakeRunner = .{ .arena = ar };
+        try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .stdout = try @import("rex_hosts.zig").listJson(ar, &.{.{ .label = "web-01", .endpoints = &.{"ssh://artoo@web-01.lab.example.com"} }}) });
+        try fake.expect(&.{ exe, "hosts", "remove", "web-01", "--autostart=false" }, null, .{ .code = 1, .stderr = "home unreachable\n" });
+        g.h.hooks.runner = fake.runner();
+        try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
+        try fake.done();
+        try testing.expect(std.mem.find(u8, g.h.stdout(), "✗ remove Rex host       failed  'rex hosts remove' failed (exit 1): home unreachable") != null);
+        try testing.expect(std.mem.find(u8, g.h.stderr(), "VM destroyed, but its Rex host web-01 stays: 'rex hosts remove' failed (exit 1): home unreachable; run 'artoo rex hosts sync' to remove it") != null);
+        try testing.expect(std.mem.find(u8, try g.tmp.dir.readFileAlloc(testing.io, ".artoo/rex-hosts.json", ar, .limited(1 << 16)), "web-01") != null);
+    }
+    {
+        var g: testkit.Gateway = undefined;
+        try rmWithRex(&g, arena.allocator());
+        defer g.deinit();
+        const ar = g.h.arena.allocator();
+        const exe = try @import("rex_hosts.zig").fakeRex(&g);
+        var fake: FakeRunner = .{ .arena = ar };
+        try fake.expect(&.{ exe, "hosts", "list", "--json", "--autostart=false" }, null, .{ .code = 1, .stderr = "no server\n" });
+        g.h.hooks.runner = fake.runner();
+        try testing.expectEqual(Exit.ok, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
+        try fake.done();
+        const out = g.h.stdout();
+        try testing.expect(std.mem.find(u8, out, "Rex host web-01 kept: no running Rex on this machine ('rex hosts list' failed (exit 1): no server); 'artoo rex hosts sync' removes it later.") != null);
+        try testing.expect(std.mem.find(u8, out, "remove Rex host       skipped  no running Rex on this machine") != null);
+    }
 }
 
 test "vm rm: a refused device removal (501) is a failed step, a 5xx an unknown one" {
