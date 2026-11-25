@@ -148,7 +148,9 @@ pub const Ledger = struct {
     /// definitive answer (a refusal, a failed command) and is failed,
     /// unless `err` itself says the outcome is unknown.
     pub fn settle(l: *Ledger, err: anyerror) void {
-        if (err == error.OutcomeUnknown or err == error.Network or err == error.Timeout) return;
+        // A wait that ran out (the command may still be running in the
+        // guest) is as unknown as a lost answer (dispatch maps it so too).
+        if (err == error.OutcomeUnknown or err == error.Network or err == error.Timeout or err == error.WaitTimeout) return;
         for (l.steps.items, 0..) |st, i| if (st.state == .unknown) l.set(i, .failed, st.detail);
     }
 
@@ -712,4 +714,17 @@ test "ledger settle: a definitive error fails the open step; an unknown outcome 
     l.set(j, .unknown, "");
     l.settle(error.OutcomeUnknown);
     try std.testing.expectEqual(Ledger.State.unknown, l.steps.items[j].state);
+}
+
+test "settle: a refusal fails the running step, a wait that ran out leaves it unknown" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var l: Ledger = .{};
+    const i = try l.add(a, "install rex");
+    l.set(i, .unknown, "");
+    l.settle(error.WaitTimeout);
+    try std.testing.expectEqual(Ledger.State.unknown, l.steps.items[i].state);
+    l.settle(error.Refused);
+    try std.testing.expectEqual(Ledger.State.failed, l.steps.items[i].state);
 }

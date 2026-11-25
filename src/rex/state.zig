@@ -116,24 +116,39 @@ pub const State = struct {
 /// server's object.
 const user_agents =
     \\tab=$(printf '\t')
+    \\sock="$XDG_RUNTIME_DIR/rex/server.sock"
     \\srv=$(rex server status --json 2>/dev/null) || srv=
+    \\g='{"agents":[],"errors":[]}'
     \\if [ -n "$srv" ]; then
     \\  s=$(printf '%s' "$srv" | jq -c '{running: true, version: (.rex_version // ""), sessions: (.session_count // 0)}') || s='{"running":true}'
+    \\elif [ -S "$sock" ]; then
+    \\  # A socket that does not answer: not "not running" — unknown.
+    \\  s='{"running":true}'
+    \\  g='{"agents":[],"errors":["rex server status"]}'
     \\else
     \\  s='{"running":false}'
     \\fi
-    \\g='{"agents":[],"errors":[]}'
     \\if [ -n "$srv" ]; then
     \\  g=$( {
-    \\    l=$(rex ls --json 2>/dev/null) || { echo '{"err":"rex ls"}'; l='{}'; }
-    \\    printf '%s' "$l" | jq -r '.sessions[]? | [.session_id, (.label // "")] | @tsv' | while IFS="$tab" read -r sid lab; do
-    \\      b=$(rex block ls -s "$sid" --json 2>/dev/null) || { echo '{"err":"rex block ls"}'; continue; }
-    \\      printf '%s' "$b" | jq -r '.blocks[]? | select((.flavor // "com.superlogical.terminal") | startswith("com.superlogical.terminal")) | .block_id' | while read -r bid; do
+    \\    # Each jq's own status counts: a shape it cannot read is an error
+    \\    # record, never "no sessions" (SPEC §20.8).
+    \\    # jq -e: 4 is "no output" (nothing listed), anything else not 0 an error.
+    \\    l=$(rex ls --json 2>/dev/null) || l=
+    \\    ids=$(printf '%s' "$l" | jq -er '(.sessions // error("no sessions")) | .[] | [.session_id, (.label // "")] | @tsv' 2>/dev/null); rc=$?
+    \\    if [ -z "$l" ] || { [ $rc -ne 0 ] && [ $rc -ne 4 ]; }; then echo '{"err":"rex ls"}'; ids=; fi
+    \\    printf '%s\n' "$ids" | while IFS="$tab" read -r sid lab; do
+    \\      [ -n "$sid" ] || continue
+    \\      b=$(rex block ls -s "$sid" --json 2>/dev/null) || b=
+    \\      bids=$(printf '%s' "$b" | jq -er '(.blocks // error("no blocks")) | .[] | select((.flavor // "com.superlogical.terminal") | startswith("com.superlogical.terminal")) | .block_id' 2>/dev/null); rc=$?
+    \\      if [ -z "$b" ] || { [ $rc -ne 0 ] && [ $rc -ne 4 ]; }; then echo '{"err":"rex block ls"}'; continue; fi
+    \\      printf '%s\n' "$bids" | while read -r bid; do
+    \\        [ -n "$bid" ] || continue
     \\        r=$(rex block call -b "$bid" program_status 2>/dev/null) || { echo '{"err":"program_status"}'; continue; }
-    \\        printf '%s' "$r" | jq -c --arg s "$lab" --arg b "$bid" '.records[]? | {session: $s, block: $b, app: (.effective_app // .app // ""), state: (.state // ""), title: (.title // ""), updated_at: (.updated_at // "")}' || echo '{"err":"program_status"}'
+    \\        printf '%s' "$r" | jq -ec --arg s "$lab" --arg b "$bid" '(.records // error("no records")) | .[] | {session: $s, block: $b, app: (.effective_app // .app // ""), state: (.state // ""), title: (.title // ""), updated_at: (.updated_at // "")}' 2>/dev/null; rc=$?
+    \\        if [ $rc -ne 0 ] && [ $rc -ne 4 ]; then echo '{"err":"program_status"}'; fi
     \\      done
     \\    done
-    \\  } | jq -sc '{agents: [.[] | select(has("err") | not)], errors: [.[] | select(has("err")) | .err]}')
+    \\  } | jq -sc '{agents: [.[] | select(has("err") | not)], errors: [.[] | select(has("err")) | .err]}') || g='{"agents":[],"errors":["agents"]}'
     \\fi
     \\
 ;
