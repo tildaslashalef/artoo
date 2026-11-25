@@ -14,4 +14,6 @@ test {
     _ = @import("rex_hosts.zig");
     _ = @import("../rex/guest.zig");
     _ = @import("../rex/profile.zig");
+    _ = @import("../rex/setup.zig");
+    _ = @import("../rex/agy.zig");
 }
