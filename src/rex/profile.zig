@@ -819,7 +819,7 @@ fn describe(a: Allocator, p: *Plan, g: Guest) !void {
     var changes: std.ArrayList(ui.blocks.Change) = .empty;
     var notes: std.ArrayList([]const u8) = .empty;
     var file_rows: usize = 0;
-    var perms_changed = false;
+    var perm_writes: usize = 0;
     var claude_after: ?[]const u8 = g.claude_settings;
     var fish_after: ?[]const u8 = g.fish;
     for (p.writes) |w| {
@@ -834,15 +834,22 @@ fn describe(a: Allocator, p: *Plan, g: Guest) !void {
                 const absent = if (merged) |m| g.mergedContent(m) == null else std.mem.eql(u8, g.hashes.get(w.target) orelse "-", "-");
                 try changes.append(a, .{ .field = if (merged != null) "merge" else "file", .from = if (absent) null else "differs", .to = try std.fmt.allocPrint(a, "{s} ({s})", .{ shown, w.why }) });
             },
-            .permissions => perms_changed = true,
+            .permissions => perm_writes += 1,
             .manifest => {},
         }
     }
     if (file_rows > max_file_rows) try changes.append(a, .{ .field = "file", .from = null, .to = try std.fmt.allocPrint(a, "… and {d} more profile files", .{file_rows - max_file_rows}) });
     const before = try permissionState(a, g.claude_settings, g.fish);
     const after = try permissionState(a, claude_after, fish_after);
-    if (perms_changed or !std.mem.eql(u8, before, after))
+    // The row only when what the agents may do changes; a file written
+    // with the same meaning (agy's fish file on a guest that never had
+    // one) is a file row of its own.
+    if (!std.mem.eql(u8, before, after)) {
         try changes.append(a, .{ .field = "permissions", .from = before, .to = try std.fmt.allocPrint(a, "{s}: {s}", .{ p.kind.word(), after }) });
+    } else if (perm_writes > 0) for (p.writes) |w| if (w.source == .permissions) {
+        const absent = if (mergeOf(w.target)) |m| g.mergedContent(m) == null else if (std.mem.eql(u8, w.target, permissions.fish_path)) g.fish == null else false;
+        try changes.append(a, .{ .field = "file", .from = if (absent) null else "differs", .to = try std.fmt.allocPrint(a, "{s} (permission kind {s}, unchanged: {s})", .{ try tilde(a, w.target), p.kind.word(), after }) });
+    };
     for (p.writes) |w| if (w.source == .manifest) try changes.append(a, .{ .field = "manifest", .from = if (g.manifest_raw == null) null else "differs", .to = try tilde(a, manifest_path) });
     if (p.left_alone.len > 0) {
         var s: std.ArrayList(u8) = .empty;
@@ -1410,6 +1417,19 @@ test "plan: a guest that matches is empty; without a profile only the kind is ap
     try testing.expectEqualStrings("permissions", k.changes[0].field);
     try testing.expectEqualStrings("Claude bypassPermissions; agy --dangerously-skip-permissions", k.changes[0].from.?);
     try testing.expectEqualStrings("trusted-reach: Claude default, bypass disabled; agy asks", k.changes[0].to.?);
+}
+
+test "plan: a permission file that keeps what the agents may do is a file row, not an unchanged permissions row" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // agy installed, no fish file yet; trusted-reach keeps agy asking.
+    const g: Guest = .{ .home = "/home/hoth", .agy = true };
+    const p = try plan(a, null, g, .trusted_reach, false);
+    var got: std.ArrayList(u8) = .empty;
+    for (p.changes) |c| try got.print(a, "{s}|{s}|{s}\n", .{ c.field, c.from orelse "-", c.to orelse "-" });
+    try testing.expect(std.mem.find(u8, got.items, "permissions|") == null);
+    try testing.expect(std.mem.find(u8, got.items, "file|-|~/.config/fish/conf.d/artoo-agents.fish (permission kind trusted-reach, unchanged: ") != null);
 }
 
 test "checksFrom: no profile; drift; unrestricted on a guest not sandboxed" {

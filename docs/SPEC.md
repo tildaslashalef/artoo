@@ -3243,7 +3243,10 @@ How freely the agents act depends on what the guest can reach:
 A fenced guest holding keys is `trusted-reach`, and the plan names the
 keys ("fenced, but holds ~/.ssh/id_ed25519"). The kind is decided on
 every `rex setup`, so fencing or unfencing a guest changes it on the
-next run. `rex status` and `vm verify` warn when an agent may run
+next run. The plan's `permissions` row appears only when what the agents
+may do changes (from → kind: to); a permission file written without
+changing it (the fish file on a guest that never had one) is a `file`
+row naming the kind and the state it keeps. `rex status` and `vm verify` warn when an agent may run
 unrestricted (`bypassPermissions` in Claude's settings, or the fish
 file's flag) on a guest that is not `sandboxed`.
 
