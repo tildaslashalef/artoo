@@ -23,6 +23,8 @@ pub const Config = struct {
     cloudflare: Cloudflare = .{},
     tailscale: Tailscale = .{},
     guests: Guests = .{},
+    rex: Rex = .{},
+    agents: Agents = .{},
 
     pub const Output = struct {
         format: cli.Output = .table,
@@ -99,9 +101,23 @@ pub const Config = struct {
         /// and `vm snap prune` selects it.
         snapshot_max_age_days: u32 = 14,
     };
+    /// SPEC §20.2: Rex on ordinary guests.
+    pub const Rex = struct {
+        /// The apt suite `rex setup` writes.
+        channel: RexChannel = .preview,
+        /// `vm new` sets Rex up unless `--no-rex`.
+        default: bool = false,
+    };
+    /// SPEC §20.5: the coding agents' profile copied by `rex setup`.
+    pub const Agents = struct {
+        /// A workstation directory; empty: no profile.
+        profile: []const u8 = "",
+    };
 };
 
-pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, client_id, tailnet, ts_tags, snapshot_keep, days, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list };
+pub const RexChannel = enum { preview, snapshot, stable };
+
+pub const Check = enum { none, https_url, path, ident, token_id, hostname, seconds, client_id, tailnet, ts_tags, snapshot_keep, days, ipv4_range, ipv4_cidr, username, label_list, fence_list, path_list, optional_path };
 
 pub const Key = struct {
     name: []const u8,
@@ -144,6 +160,9 @@ pub const keys = [_]Key{
     .{ .name = "guests.fence_allow_out", .help = "Fenced guests' outbound exceptions: 'VM PEER tcp|udp PORTS' entries separated by ';'", .check = .fence_list },
     .{ .name = "guests.snapshot_keep", .help = "artoo-owned snapshots a guest may hold (--snapshot cap, prune keeps)", .check = .snapshot_keep },
     .{ .name = "guests.snapshot_max_age_days", .help = "Days after which an artoo-owned snapshot is a warning and pruned", .check = .days },
+    .{ .name = "rex.channel", .help = "Rex apt suite 'rex setup' installs from" },
+    .{ .name = "rex.default", .help = "'vm new' sets up Rex on ordinary guests (true|false)" },
+    .{ .name = "agents.profile", .help = "Directory of agent rules, skills and settings 'rex setup' copies (empty: none)", .check = .optional_path },
 };
 
 comptime {
@@ -217,6 +236,7 @@ pub fn get(cfg: *const Config, arena: Allocator, name: []const u8) Allocator.Err
             return switch (@typeInfo(@TypeOf(v))) {
                 .int => try std.fmt.allocPrint(arena, "{d}", .{v}),
                 .@"enum" => @tagName(v),
+                .bool => if (v) "true" else "false",
                 else => v,
             };
         }
@@ -248,6 +268,19 @@ pub fn assign(cfg: *Config, arena: Allocator, name: []const u8, value: std.json.
                         @field(@field(cfg, sec), fld) = @intCast(n);
                         return .{ .integer = n };
                     }
+                    return null;
+                },
+                .bool => {
+                    const b: ?bool = switch (value) {
+                        .bool => |b| b,
+                        .string => |t| if (std.mem.eql(u8, t, "true")) true else if (std.mem.eql(u8, t, "false")) false else null,
+                        else => null,
+                    };
+                    if (b) |v| {
+                        @field(@field(cfg, sec), fld) = v;
+                        return .{ .bool = v };
+                    }
+                    msg.* = try std.fmt.allocPrint(arena, "{s}: expected true|false", .{name});
                     return null;
                 },
                 .@"enum" => {
@@ -305,6 +338,7 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
         .none, .seconds, .snapshot_keep, .days => true,
         .https_url => validHttpsUrl(s),
         .path => s.len > 0 and std.mem.findScalar(u8, s, 0) == null,
+        .optional_path => std.mem.findScalar(u8, s, 0) == null,
         .ident => s.len > 0 and allChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"),
         .token_id => validTokenId(s),
         .client_id => allChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"),
@@ -322,6 +356,7 @@ fn checkString(arena: Allocator, k: Key, s: []const u8, msg: *[]const u8) Alloca
     const want = switch (k.check) {
         .https_url => "an https:// URL with a host",
         .path => "a file path",
+        .optional_path => "a path (empty: none)",
         .ident => "letters, digits, '.', '_' or '-'",
         .token_id => "user@realm!tokenname",
         .client_id => "letters, digits, '_' or '-' (empty: not set up)",
@@ -657,6 +692,7 @@ pub fn defaultFile(arena: Allocator) Allocator.Error![]const u8 {
         const jv: std.json.Value = switch (@typeInfo(@TypeOf(v))) {
             .int => .{ .integer = v },
             .@"enum" => .{ .string = @tagName(v) },
+            .bool => .{ .bool = v },
             else => .{ .string = v },
         };
         _ = try edit(arena, &tree, k.name, jv);
@@ -794,4 +830,20 @@ test "fenceAllows: entries, peers, ports; malformed lists refused" {
     const net = parseIp4Net("192.168.0.0/16").?;
     try testing.expect(netContains(net, parseIp4Net("192.168.1.10").?.address));
     try testing.expect(!netContains(parseIp4Net("192.168.1.11").?, parseIp4Net("192.168.1.10").?.address));
+}
+
+test "rex.default: a bool from JSON or from 'config set' text" {
+    var a = std.heap.ArenaAllocator.init(testing.allocator);
+    defer a.deinit();
+    const ar = a.allocator();
+    var msg: []const u8 = "";
+    const l = try parse(ar, "{\"schema_version\":1,\"rex\":{\"default\":true,\"channel\":\"snapshot\"},\"agents\":{\"profile\":\"~/dotfiles\"}}", &msg);
+    try testing.expect(l.config.rex.default);
+    try testing.expectEqual(RexChannel.snapshot, l.config.rex.channel);
+    try testing.expectEqualStrings("true", (try get(&l.config, ar, "rex.default")).?);
+    var cfg: Config = .{};
+    try testing.expectEqual(std.json.Value{ .bool = false }, (try assign(&cfg, ar, "rex.default", .{ .string = "false" }, &msg)).?);
+    try testing.expect(try assign(&cfg, ar, "rex.default", .{ .string = "yes" }, &msg) == null);
+    try testing.expectEqualStrings("rex.default: expected true|false", msg);
+    try testing.expect(try assign(&cfg, ar, "agents.profile", .{ .string = "" }, &msg) != null);
 }

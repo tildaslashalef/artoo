@@ -322,7 +322,7 @@ fn adapt(ctx: *Context, b: Bundle, notes: *std.ArrayList([]const u8)) !Adapted {
     };
     var text = b.config;
     for (config.keys) |k| {
-        if (k.check != .path and k.check != .path_list) continue;
+        if (k.check != .path and k.check != .path_list and k.check != .optional_path) continue;
         if (!l.explicit(k.name)) continue;
         const before = (try config.get(&l.config, a, k.name)).?;
         const after = try rehomeList(a, before, b.home);
