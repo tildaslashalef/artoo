@@ -17,6 +17,7 @@ const k = @import("../commands/node.zig");
 const guest = @import("guest.zig");
 const agy = @import("agy.zig");
 const profile = @import("profile.zig");
+const permissions = @import("permissions.zig");
 
 const Context = app.Context;
 const Allocator = std.mem.Allocator;
@@ -531,6 +532,10 @@ pub fn judgeProfile(ctx: *Context, c: *pve.Client, g: *Guest) !void {
     const kind = profile.kindOf(fenced, pg.ssh_keys);
     const p = try profile.plan(a, g.agent_profile, pg, kind, g.force_profile);
     try g.notes.appendSlice(a, p.notes);
+    // Only a fenced guest needs the reason: it would be sandboxed but for
+    // its keys (SPEC §20.6).
+    if (fenced and kind == .trusted_reach)
+        try g.notes.append(a, try std.fmt.allocPrint(a, "Permissions: {s}", .{try permissions.reason(a, true, pg.ssh_keys)}));
     const what = if (g.agent_profile == null) "permissions" else "agent profile";
     if (p.empty()) {
         try g.current.append(a, .{ .kind = .profile, .text = try std.fmt.allocPrint(a, "{s} ({s})", .{ what, kind.word() }) });
@@ -538,7 +543,8 @@ pub fn judgeProfile(ctx: *Context, c: *pve.Client, g: *Guest) !void {
     }
     const item: Item = .{
         .kind = .profile,
-        .label = what,
+        // Not "permissions": that is the detail row below it.
+        .label = if (g.agent_profile == null) "permission files" else what,
         .from = null,
         .to = try std.fmt.allocPrint(a, "{f}, {s}", .{ ui.values.count(p.writes.len, "file"), kind.word() }),
         .profile_plan = p,

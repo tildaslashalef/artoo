@@ -808,8 +808,6 @@ fn describe(a: Allocator, p: *Plan, g: Guest) !void {
         }
         try notes.append(a, s.items);
     }
-    if (p.kind == .trusted_reach and g.ssh_keys.len > 0)
-        try notes.append(a, try std.fmt.allocPrint(a, "Permissions: {s}", .{try permissions.reason(a, true, g.ssh_keys)}));
     p.changes = changes.items;
     p.notes = notes.items;
 }
