@@ -310,6 +310,9 @@ const NewOp = struct {
     pub fn read(op: *NewOp, ctx: *Context) !void {
         const c = op.c;
         const cfg = try ctx.config();
+        // A profile Rex's step would refuse refuses now, before anything
+        // is created (SPEC §20.5).
+        if (op.rex) _ = try @import("../rex/profile.zig").loadConfigured(ctx);
         const a = ctx.arena;
         op.target = op.name;
         op.fqdn = try dns.fqdn(a, op.name, cfg.guests.domain);

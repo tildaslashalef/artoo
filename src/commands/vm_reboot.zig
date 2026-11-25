@@ -180,9 +180,9 @@ pub const RebootPendingOp = struct {
         if (forced.items.len > 0) {
             try impact.append(a, try std.fmt.allocPrint(a, "--force-agents: the reboot cuts off the agents at work on {s}; their sessions end", .{try std.mem.join(a, "; ", forced.items)}));
         } else if (op.force_agents) {
-            try notes.append(a, "--force-agents: no agent is busy on these guests now; one that becomes busy is rebooted anyway.");
+            try notes.append(a, "--force-agents: no agent is busy on these guests now, so only y/N is asked; one busy by its turn is skipped (run again to confirm it).");
         }
-        for (op.todo) |g| if (g.rex and !op.force_agents)
+        for (op.todo) |g| if (g.rex and !(op.force_agents and op.risk == .destructive))
             try notes.append(a, try std.fmt.allocPrint(a, "{s} runs Rex: its agents are read again right before its reboot; one busy by then skips it.", .{g.name}));
         return .{
             .action = try std.fmt.allocPrint(a, "Reboot {f} that want it", .{ui.values.count(op.todo.len, "guest")}),
@@ -205,11 +205,16 @@ pub const RebootPendingOp = struct {
         for (op.todo) |g| _ = try l.add(a, try std.fmt.allocPrint(a, "reboot {s}", .{g.name}));
         for (op.todo, first..) |g, i| {
             var sent = false;
-            if (g.rex and !op.force_agents) {
-                // Read again right before the write: an agent busy by now
-                // skips the guest (SPEC §20.8).
+            // Read again right before the write: an agent busy by now skips
+            // the guest (SPEC §20.8) — with --force-agents too, unless the
+            // typed confirmation covered busy guests (nothing was busy at
+            // the plan, so only y/N was asked).
+            if (g.rex and !(op.force_agents and op.risk == .destructive)) {
                 if (try busyAgents(ctx, op.c, g.vm.vmid, op.user)) |b| {
-                    l.set(i, .skipped, try std.fmt.allocPrint(a, "{s}; --force-agents to reboot anyway", .{b}));
+                    l.set(i, .skipped, if (op.force_agents)
+                        try std.fmt.allocPrint(a, "{s} since the confirmation; run again to confirm it", .{b})
+                    else
+                        try std.fmt.allocPrint(a, "{s}; --force-agents to reboot anyway", .{b}));
                     op.agent_skips += 1;
                     continue;
                 }
