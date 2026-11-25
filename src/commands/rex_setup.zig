@@ -13,6 +13,9 @@ const vms = @import("../pve/vm.zig");
 const k = @import("node.zig");
 const setup_mod = @import("../rex/setup.zig");
 const agy = @import("../rex/agy.zig");
+const profile = @import("../rex/profile.zig");
+const vm_new = @import("vm_new.zig");
+const rex_status = @import("rex_status.zig");
 
 const Context = app.Context;
 const Guest = setup_mod.Guest;
@@ -20,6 +23,8 @@ const Guest = setup_mod.Guest;
 pub const SetupOp = struct {
     c: *pve.Client,
     words: []const []const u8,
+    /// `--force-profile`: overwrite profile files changed on the guest.
+    force_profile: bool = false,
     risk: ui.blocks.Risk = .normal,
     api: ui.json.Target = .pve,
     target: []const u8 = "",
@@ -37,6 +42,8 @@ pub const SetupOp = struct {
         var guests: std.ArrayList(Guest) = .empty;
         var names: std.ArrayList([]const u8) = .empty;
         var fp: std.ArrayList(u8) = .empty;
+        // Loaded (and refused) once, before any guest is read.
+        const prof = try profile.loadConfigured(ctx);
         for (op.words) |w| {
             const v = switch (try vms.find(all, a, w)) {
                 .vm => |v| v,
@@ -47,10 +54,11 @@ pub const SetupOp = struct {
                 if (g.vm.vmid == v.vmid) break true;
             } else false;
             if (seen) continue;
-            const g = try setup_mod.readGuest(ctx, c, v);
+            const g = try setup_mod.readGuestWith(ctx, c, v, .{ .agent_profile = prof, .force_profile = op.force_profile });
             try guests.append(a, g);
             try names.append(a, try k.clean(ctx, v.name));
             try fp.print(a, "{d}:{s}:{s};", .{ v.vmid, v.tags, g.state.raw });
+            for (g.items.items) |it| for (it.changes) |ch| try fp.print(a, "{s}={s};", .{ ch.field, ch.to orelse "" });
         }
         op.guests = guests.items;
         op.target = try std.mem.join(a, ", ", names.items);
@@ -68,6 +76,7 @@ pub const SetupOp = struct {
             for (g.items.items) |it| {
                 if (it.kind == .package) install = true;
                 try changes.append(a, .{ .field = try std.fmt.allocPrint(a, "{s} {s}", .{ g.vm.name, it.label }), .from = it.from, .to = it.to });
+                for (it.changes) |ch| try changes.append(a, .{ .field = try std.fmt.allocPrint(a, "{s} {s}", .{ g.vm.name, ch.field }), .from = ch.from, .to = ch.to });
             }
             const cur = try setup_mod.currentText(a, g);
             const skipped = try setup_mod.skippedText(a, g);
@@ -126,12 +135,19 @@ pub const SetupOp = struct {
             const left = try setup_mod.leftover(ctx, op.c, g);
             if (left.len > 0) try op.left.append(a, try std.fmt.allocPrint(a, "{s} ({s})", .{ g.vm.name, left }));
         }
-        // SPEC §20.3: 'rex status' checks (§20.7, src/commands/rex_status.zig) run here for each guest, integrated later.
         if (op.left.items.len > 0) {
             try ctx.out.print("\nStill not right: {s}\n", .{try std.mem.join(a, "; ", op.left.items)});
             return false;
         }
-        return op.ledger.complete();
+        // SPEC §20.3: 'rex status's checks (§20.7) for each guest; a failed one is exit 8.
+        var failed: usize = 0;
+        for (op.guests) |*g| {
+            const rep = try rex_status.report(ctx, op.c, g.vm);
+            try ctx.out.print("\n{s} ({d})\n", .{ rep.vm, rep.vmid });
+            try vm_new.renderChecks(ctx, rep.checks);
+            failed += vm_new.failures(rep.checks);
+        }
+        return op.ledger.complete() and failed == 0;
     }
 
     pub fn done(op: *SetupOp) []const u8 {
@@ -159,21 +175,29 @@ pub const setup = struct {
         \\    detects (Claude Code, Codex, OpenCode, pi)
         \\  agy bridge, when agy is on the user's PATH: Rex's skill, and hooks
         \\    that give agy Rex's session context and its status per terminal
+        \\  agent profile (agents.profile) and the permission kind: a fenced
+        \\    guest without private SSH keys runs agents without prompts, every
+        \\    other guest keeps them with bypass mode disabled
         \\  tag rex
+        \\
+        \\A profile file changed on the guest is left alone and named;
+        \\--force-profile puts the profile's back. Afterwards the checks of
+        \\'artoo rex status' run for each guest.
         \\
         \\Refused, before anything is sent, for a template, a guest without
         \\the artoo tag, the edge, router or watchdog, a stopped guest or one
         \\whose agent does not answer. No step starts a Rex server.
     ;
     pub const positionals = [_]cli.Positional{.{ .name = "VM", .help = "Guests to set up (VMID or name)", .complete = .vm, .variadic = true }};
-    pub const examples = [_][]const u8{ "artoo rex setup naboo -n", "artoo rex setup naboo hoth", "artoo rex setup naboo -y" };
+    pub const flags = [_]cli.Flag{.{ .long = "force-profile", .help = "Overwrite agent profile files changed on the guest" }};
+    pub const examples = [_][]const u8{ "artoo rex setup naboo -n", "artoo rex setup naboo hoth", "artoo rex setup naboo -y", "artoo rex setup naboo --force-profile" };
 
     pub fn run(ctx: *Context, args: cli.Args(@This())) !void {
         const words = args.rest("VM");
         if (words.len == 0) return ctx.fail(error.Usage, "name the guests to set up", .{});
         var c = try pve.Client.open(ctx);
         defer c.deinit();
-        var op: SetupOp = .{ .c = &c, .words = words };
+        var op: SetupOp = .{ .c = &c, .words = words, .force_profile = args.has("force-profile") };
         exec.run(ctx, &op, .{}) catch |err| switch (err) {
             // SPEC §20.3: a set-up guest is "nothing to change", exit 0.
             error.NoChange => {
@@ -205,6 +229,13 @@ const pid = "{\"data\":{\"pid\":42}}";
 const naboo_list = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"}]}";
 const naboo_rex_list = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"}]}";
 
+/// The agent-profile read of step 9 (SPEC §20.3): no Claude, no profile.
+fn profileRead(a: std.mem.Allocator, f: @import("../rex/profile.zig").ProbeFixture) ![2]R {
+    return .{ r("agent/exec HTTP", pid), r("exec-status", try agentOut(a, 0, try @import("../rex/profile.zig").probeOut(a, f), "")) };
+}
+
+const no_agents: @import("../rex/profile.zig").ProbeFixture = .{ .agents = "" };
+
 fn expectLines(out: []const u8, lines: []const []const u8) !void {
     for (lines) |line| if (std.mem.find(u8, out, line) == null) {
         std.debug.print("missing: {s}\n--- output:\n{s}\n", .{ line, out });
@@ -219,6 +250,7 @@ test "rex setup -n: the hand-installed guest's pin differs from upstream's; done
     defer arena.deinit();
     const a = arena.allocator();
     const F = setup_mod.Fixture;
+    const pr = try profileRead(a, no_agents);
     const probe = try (F{ .a = a, .pin_hash = try setup_mod.sha256Hex(a, "Package: rex\nPin: origin pkgs.superlogical.com\nPin-Priority: 1001\n\nPackage: rex\nPin: release o=Ubuntu\nPin-Priority: -1\n"), .linger = false }).out();
     var g: testkit.Gateway = undefined;
     try g.initRoutes(&.{
@@ -226,6 +258,8 @@ test "rex setup -n: the hand-installed guest's pin differs from upstream's; done
         r("agent/ping", ok_ping),
         r("agent/exec HTTP", pid),
         r("exec-status", try agentOut(a, 0, probe, "")),
+        pr[0],
+        pr[1],
     });
     defer g.deinit();
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "rex setup naboo -n"));
@@ -235,7 +269,7 @@ test "rex setup -n: the hand-installed guest's pin differs from upstream's; done
         "naboo apt pin  not upstream's → Rex 1001, every other origin -1 (/etc/apt/preferences.d/rex)",
         "naboo linger   off → on for artoo (sessions survive logout)",
         "naboo tag      artoo → artoo;rex",
-        "naboo: already right: apt key, apt source, rex 0.1.0~alpha.23, terminfo, agent skill (claude).",
+        "naboo: already right: apt key, apt source, rex 0.1.0~alpha.23, terminfo, agent skill (claude), permissions (trusted-reach).",
         "naboo: not set up: agy bridge (no agy on the PATH).",
         "Dry run: nothing was sent.",
     });
@@ -245,12 +279,15 @@ test "rex setup: a set-up guest is nothing to change, exit 0" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    const pr = try profileRead(a, no_agents);
     var g: testkit.Gateway = undefined;
     try g.initRoutes(&.{
         r("GET /api2/json/nodes/pve/qemu HTTP", naboo_rex_list),
         r("agent/ping", ok_ping),
         r("agent/exec HTTP", pid),
         r("exec-status", try agentOut(a, 0, try (setup_mod.Fixture{ .a = a }).out(), "")),
+        pr[0],
+        pr[1],
     });
     defer g.deinit();
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "rex setup naboo -y"));
@@ -296,12 +333,15 @@ test "rex setup: a fresh guest installs Rex, decides terminfo and the skill afte
     const installed = try (F{ .a = a, .linger = false, .skill = "{\"harnesses\":[{\"id\":\"claude\",\"detected\":false,\"items\":[]}]}" }).out();
     const after = try (F{ .a = a, .skill = "{\"harnesses\":[{\"id\":\"claude\",\"detected\":false,\"items\":[]}]}" }).out();
     const ok = try agentOut(a, 0, "", "");
+    const pr = try profileRead(a, no_agents);
     var g: testkit.Gateway = undefined;
     try g.initRoutes(&.{
         r("GET /api2/json/nodes/pve/qemu HTTP", naboo_list),
         r("agent/ping", ok_ping),
         r("agent/exec HTTP", pid),
         r("exec-status", try agentOut(a, 0, fresh, "")),
+        pr[0],
+        pr[1],
         // key, sources, pin, install
         r("agent/exec HTTP", pid),
         r("exec-status", ok),
@@ -324,6 +364,8 @@ test "rex setup: a fresh guest installs Rex, decides terminfo and the skill afte
         r("GET /api2/json/nodes/pve/qemu HTTP", naboo_rex_list),
         r("agent/exec HTTP", pid),
         r("exec-status", try agentOut(a, 0, after, "")),
+        pr[0],
+        pr[1],
     });
     defer g.deinit();
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "rex setup naboo -y"));
@@ -355,12 +397,15 @@ test "rex setup: a failed install stops the run and shows the ledger" {
     defer arena.deinit();
     const a = arena.allocator();
     const probe = try (setup_mod.Fixture{ .a = a, .pkg = "", .terminfo = null, .skill = null }).out();
+    const pr = try profileRead(a, no_agents);
     var g: testkit.Gateway = undefined;
     try g.initRoutes(&.{
         r("GET /api2/json/nodes/pve/qemu HTTP", naboo_list),
         r("agent/ping", ok_ping),
         r("agent/exec HTTP", pid),
         r("exec-status", try agentOut(a, 0, probe, "")),
+        pr[0],
+        pr[1],
         r("agent/exec HTTP", pid),
         r("exec-status", try agentOut(a, 100, "", "E: Unable to locate package rex")),
     });
@@ -379,14 +424,26 @@ test "rex setup: the agy bridge is written as the user, other hooks kept" {
     const before = try (F{ .a = a, .agy = "/home/artoo/.local/bin/agy", .hooks = hooks }).out();
     const after = try (F{ .a = a, .agy = "/home/artoo/.local/bin/agy", .agy_files = true, .hooks = (try agy.mergeHooks(a, hooks)).? }).out();
     const ok = try agentOut(a, 0, "", "");
+    const pr_before = try profileRead(a, .{ .agents = "agy " });
+    const pr_after = try profileRead(a, .{ .agents = "agy ", .fish = @import("../rex/permissions.zig").fishFile(.trusted_reach) });
     var g: testkit.Gateway = undefined;
     try g.initRoutes(&.{
         r("GET /api2/json/nodes/pve/qemu HTTP", naboo_rex_list),
         r("agent/ping", ok_ping),
         r("agent/exec HTTP", pid),
         r("exec-status", try agentOut(a, 0, before, "")),
+        pr_before[0],
+        pr_before[1],
+        // agy skill, hook, hooks
         r("agent/exec HTTP", pid),
         r("exec-status", ok),
+        r("agent/exec HTTP", pid),
+        r("exec-status", ok),
+        r("agent/exec HTTP", pid),
+        r("exec-status", ok),
+        // permissions: read again, the user's directories, the fish file
+        pr_before[0],
+        pr_before[1],
         r("agent/exec HTTP", pid),
         r("exec-status", ok),
         r("agent/exec HTTP", pid),
@@ -394,13 +451,16 @@ test "rex setup: the agy bridge is written as the user, other hooks kept" {
         r("GET /api2/json/nodes/pve/qemu HTTP", naboo_rex_list),
         r("agent/exec HTTP", pid),
         r("exec-status", try agentOut(a, 0, after, "")),
+        pr_after[0],
+        pr_after[1],
     });
     defer g.deinit();
     try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "rex setup naboo -y"));
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     try expectLines(g.h.stdout(), &.{
-        "naboo agy hooks  other hooks kept → key artoo-rex in ~/.gemini/config/hooks.json (SessionStart, PreInvocation, Stop)",
-        "naboo agy hook   done  ~/.config/artoo/agy-rex-hook",
+        "naboo agy hooks    other hooks kept → key artoo-rex in ~/.gemini/config/hooks.json (SessionStart, PreInvocation, Stop)",
+        "naboo agy hook     done  ~/.config/artoo/agy-rex-hook",
+        "naboo permissions  done  1 file written, trusted-reach",
     });
     var user_writes: usize = 0;
     for (g.srv.received) |req| if (req) |q| {

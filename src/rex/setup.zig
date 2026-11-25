@@ -16,6 +16,7 @@ const template = @import("../commands/template.zig");
 const k = @import("../commands/node.zig");
 const guest = @import("guest.zig");
 const agy = @import("agy.zig");
+const profile = @import("profile.zig");
 
 const Context = app.Context;
 const Allocator = std.mem.Allocator;
@@ -263,7 +264,8 @@ pub const Kind = enum {
     agy_skill,
     agy_hook,
     agy_hooks,
-    // SPEC §20.3 step 9: profile + permissions (src/rex/profile.zig), integrated later.
+    /// Step 9: the agent profile and the permission kind (SPEC §20.5, §20.6).
+    profile,
     tag,
 };
 
@@ -282,6 +284,10 @@ pub const Item = struct {
     agents: []const []const u8 = &.{},
     /// Set by `apply`: not needed once Rex is installed (why).
     skip: ?[]const u8 = null,
+    /// `.profile`: the plan confirmed (`profile.apply` plans again from a
+    /// fresh read) and its per-file rows.
+    profile_plan: ?profile.Plan = null,
+    changes: []const ui.blocks.Change = &.{},
 };
 
 /// A step that needs nothing: already right, or not wanted (and why).
@@ -301,6 +307,10 @@ pub const Guest = struct {
     notes: std.ArrayList([]const u8) = .empty,
     /// Why the guest cannot be set up (the run refuses).
     refused: ?[]const u8 = null,
+    /// Step 9's inputs: the loaded `agents.profile` (null: none) and
+    /// `--force-profile`.
+    agent_profile: ?profile.Profile = null,
+    force_profile: bool = false,
 
     pub fn has(g: *const Guest, kind: Kind) ?Item {
         for (g.items.items) |it| if (it.kind == kind) return it;
@@ -415,7 +425,7 @@ pub fn judge(a: Allocator, g: *Guest) !void {
     // 8. agy bridge, when agy is on the user's PATH and Rex has no agy harness.
     try judgeBridge(a, g);
 
-    // SPEC §20.3 step 9: profile + permissions (src/rex/profile.zig), integrated later.
+    // 9. profile and permissions: `judgeProfile` (it reads the guest).
 
     // 10. tag, last.
     if (guest.tagged(g.vm)) {
@@ -494,15 +504,51 @@ fn doneText(a: Allocator, list: []const Done) ![]const u8 {
 /// `v` read for Rex: refused (error.Refused, nothing sent) when it may not
 /// have Rex (SPEC §20.3), else probed and judged.
 pub fn readGuest(ctx: *Context, c: *pve.Client, v: vms.Vm) !Guest {
+    return readGuestWith(ctx, c, v, .{ .agent_profile = try profile.loadConfigured(ctx) });
+}
+
+pub const Opts = struct { agent_profile: ?profile.Profile = null, force_profile: bool = false };
+
+pub fn readGuestWith(ctx: *Context, c: *pve.Client, v: vms.Vm, opts: Opts) !Guest {
     const cfg = try ctx.config();
     if (guest.refusal(v)) |why| return ctx.fail(error.Refused, "{s} is {s}; Rex is for ordinary artoo guests — nothing was sent", .{ try k.clean(ctx, v.name), why });
     if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; start it first — nothing was sent", .{ v.name, v.status });
     if (!try agent.ping(c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer — nothing was sent", .{v.name});
-    var g: Guest = .{ .vm = v, .user = cfg.guests.user, .channel = @tagName(cfg.rex.channel) };
+    var g: Guest = .{ .vm = v, .user = cfg.guests.user, .channel = @tagName(cfg.rex.channel), .agent_profile = opts.agent_profile, .force_profile = opts.force_profile };
     g.state = try probe(c, v.vmid, g.user);
     try judge(ctx.arena, &g);
     if (g.refused) |why| return ctx.fail(error.Refused, "{s}: {s} — nothing was sent", .{ v.name, why });
+    try judgeProfile(ctx, c, &g);
     return g;
+}
+
+/// Step 9 (SPEC §20.3): read the guest's agent files, plan the profile and
+/// the permission kind, and slot the step in before the tag.
+pub fn judgeProfile(ctx: *Context, c: *pve.Client, g: *Guest) !void {
+    const a = ctx.arena;
+    const pg = try profile.read(ctx, c, g.vm.vmid, g.user, g.agent_profile);
+    const fenced = template.taggedWith(g.vm.tags, @import("../commands/vm_fence.zig").tag);
+    const kind = profile.kindOf(fenced, pg.ssh_keys);
+    const p = try profile.plan(a, g.agent_profile, pg, kind, g.force_profile);
+    try g.notes.appendSlice(a, p.notes);
+    const what = if (g.agent_profile == null) "permissions" else "agent profile";
+    if (p.empty()) {
+        try g.current.append(a, .{ .kind = .profile, .text = try std.fmt.allocPrint(a, "{s} ({s})", .{ what, kind.word() }) });
+        return;
+    }
+    const item: Item = .{
+        .kind = .profile,
+        .label = what,
+        .from = null,
+        .to = try std.fmt.allocPrint(a, "{f}, {s}", .{ ui.values.count(p.writes.len, "file"), kind.word() }),
+        .profile_plan = p,
+        .changes = p.changes,
+    };
+    // Before the tag, which stays last.
+    const at = for (g.items.items, 0..) |it, i| {
+        if (it.kind == .tag) break i;
+    } else g.items.items.len;
+    try g.items.insert(a, at, item);
 }
 
 /// Re-read `g` (state and tags) and judge it again.
@@ -512,6 +558,7 @@ pub fn reread(ctx: *Context, c: *pve.Client, g: *Guest) !void {
     };
     g.state = try probe(c, g.vm.vmid, g.user);
     try judge(ctx.arena, g);
+    if (g.refused == null) try judgeProfile(ctx, c, g);
 }
 
 /// What is still not right after a run ("apt pin, tag"); empty when
@@ -588,6 +635,8 @@ pub fn apply(ctx: *Context, c: *pve.Client, g: *Guest, report: Report) !void {
         }
         report.end(i, .done, try std.fmt.allocPrint(a, "rex {s}", .{try clean(a, fresh.state.pkg_version)}));
         for (g.items.items[i + 1 ..]) |*later| {
+            // Step 9 was planned from its own read; `profile.apply` reads again.
+            if (later.kind == .profile) continue;
             if (fresh.has(later.kind)) |now| {
                 const label = later.label;
                 later.* = now;
@@ -650,6 +699,10 @@ fn applyItem(ctx: *Context, c: *pve.Client, g: *Guest, it: Item) ![]const u8 {
         .agy_hooks => {
             try writeUserFile(c, id, g.user, agy.hooks_path, "0644", it.content);
             return "key " ++ agy.hooks_key;
+        },
+        .profile => {
+            const done = try profile.apply(ctx, c, id, g.user, it.profile_plan.?);
+            return std.fmt.allocPrint(a, "{f} written, {s}", .{ ui.values.count(done.writes.len, "file"), done.kind.word() });
         },
         .tag => {
             const cfg = try vms.config(c, id);
@@ -905,6 +958,7 @@ test "setUpNew: vm new's one step runs rex setup's steps and checks they converg
     defer arena.deinit();
     const a = arena.allocator();
     const probe_out = try std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = try (Fixture{ .a = a }).out() } }, .{});
+    const profile_out = try std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = try profile.probeOut(a, .{ .agents = "" }) } }, .{});
     const R = testkit.Gateway.FakeServer.Route;
     const r = struct {
         fn f(match: []const u8, body: []const u8) R {
@@ -916,11 +970,15 @@ test "setUpNew: vm new's one step runs rex setup's steps and checks they converg
         r("agent/ping", "{\"data\":{\"result\":{}}}"),
         r("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
         r("exec-status", probe_out),
+        r("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        r("exec-status", profile_out),
         r("GET /api2/json/nodes/pve/qemu/201/config", "{\"data\":{\"tags\":\"artoo\",\"digest\":\"d1\"}}"),
         r("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
         r("GET /api2/json/nodes/pve/qemu HTTP", "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"}]}"),
         r("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
         r("exec-status", probe_out),
+        r("agent/exec HTTP", "{\"data\":{\"pid\":44}}"),
+        r("exec-status", profile_out),
     });
     defer g.deinit();
     const root = cli.group("artoo", "t", &.{cli.leaf(NewProbe)});
