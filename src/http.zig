@@ -467,7 +467,10 @@ pub const FakeServer = struct {
             }
             if (std.mem.eql(u8, line, "\r\n")) break;
         }
-        try head.appendSlice(arena, try r.take(len));
+        // A body may be larger than the reader's buffer (a long guest script).
+        const body = try arena.alloc(u8, len);
+        try r.readSliceAll(body);
+        try head.appendSlice(arena, body);
         return head.items;
     }
 };

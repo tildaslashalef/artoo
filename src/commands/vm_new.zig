@@ -913,6 +913,8 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
         ch.name = g.name;
         try out.append(a, ch);
     }
+    // A guest tagged rex: `rex status`'s checks, the agent rows excepted (SPEC §9.4, §20.7).
+    if (@import("../rex/guest.zig").tagged(v)) try out.appendSlice(a, try @import("../rex/state.zig").verifyChecks(ctx, c, v.vmid, v.name, agent_ok));
     try out.append(a, try alloyCheck(ctx, c, v, agent_ok, watched));
     try out.append(a, try @import("vm_fence.zig").check(ctx, c, v));
     const sv = try @import("snapguard.zig").verifyCheck(ctx, c, try k.clean(ctx, v.name), v.vmid);
