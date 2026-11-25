@@ -1,111 +1,137 @@
 # ARTOO (R2D2)
 
-**My opinionated CLI for my own home lab** — one Proxmox VE host, one
-UniFi gateway, a Cloudflare zone and Tailscale — published because the
-approach may be useful to others. It is not a general-purpose tool and
-does not try to be: it encodes my stack, my defaults and my taste. If
-your lab looks similar, use it as is; if not, **fork it and adapt it** —
-the design is documented in detail precisely so that this is practical.
+**My opinionated CLI for my own home lab**: one Proxmox VE host, one UniFi
+gateway, a Cloudflare zone and a tailnet. It encodes my stack, my defaults
+and my taste, and it is published because the approach may be useful to
+others. If your lab looks like mine, use it as is; if not, **fork it and
+adapt it**: the design is documented in detail so that this is practical.
 
 Like R2-D2, the small droid that fixes things while bigger systems argue.
 
 ```console
 artoo status                               # the whole lab on one screen
-artoo vm new naboo --role web              # a ready guest: static address, names, SSH
+artoo vm new naboo --role web              # a ready guest: address, names, SSH
 artoo svc add grafana naboo:3000           # https://grafana.apps.lab.example.com
 artoo cf tunnel route add grafana grafana  # https://grafana.example.com
 ```
 
-## What it does
+## Every write is a plan first
 
-- **Guests in one command.** `vm new` clones an Ubuntu template, sets a
-  static address from a pool, reserves it on the gateway, creates the
-  guest's DNS name, waits for cloud-init, pins the SSH host key and runs
-  readiness checks. `vm ssh`, `vm cp`, snapshots, power, resize, `vm rm`.
-- **Names and HTTPS.** An edge VM runs Caddy with a Let's Encrypt
-  wildcard for `*.apps.<your domain>`; `svc add` gives any guest port a
-  LAN name with a real certificate.
-- **Public only on purpose.** A Cloudflare Tunnel publishes chosen
-  services (`cf tunnel route add`); nothing else is reachable from the
-  internet.
-- **Remote access** through a Tailscale subnet router guest.
-- **A watchdog** guest with VictoriaMetrics, Loki, Grafana and ntfy:
-  metrics and logs from every guest and the host, alerts to your phone.
-- **The UniFi gateway** through its Integration API (`gw …`), with
-  every endpoint checked against the official OpenAPI export.
+artoo reads the current state, validates, shows a redacted plan, asks,
+sends once, and verifies the result. This is `vm new` with `-n`, which
+stops after the plan:
 
-## How it behaves
+```console
+$ artoo vm new hoth --no-watch -n
+Plan · Create guest hoth (208)
+  Target    Proxmox (node pve)
+  Change    VM             (none) → 208 hoth, full clone of ubuntu-2604 (9000)
+            size           (none) → 2 vCPU, 2.0 GiB RAM, 20 GiB disk (small)
+            address        (none) → 192.168.1.208/24 via 192.168.1.1 (static)
+            user           (none) → artoo: your SSH key; sudo password generated, kept in the Keychain
+            tags           (none) → artoo;no-watch
+            client record  (none) → hoth, Fixed IP 192.168.1.208 on UniFi (the VM's MAC)
+            DNS record     (none) → hoth.lab.example.com → 192.168.1.208 on UniFi
+            host key       (none) → ~/.artoo/known_hosts entry hoth (read through the guest agent)
+            ssh config     (none) → Host hoth in ~/.artoo/ssh_config
+  Impact    A new VM on Proxmox; its client record and an A record on UniFi
+  Recovery  artoo vm rm hoth
+  Note      --no-watch: not enrolled with the watchdog (tag no-watch): no metrics, journal or alerts; 'watch enroll --all' skips it.
+            Cloud-init installs packages on first boot; the workflow waits for it (several minutes), then reboots the guest once if the updates ask for it.
+            Steps run in order and stop at the first failure; nothing is undone automatically. Re-running continues.
 
-- **Every write is a plan first.** It reads, validates, shows a redacted
-  plan, asks, sends once and verifies the result. `-n` previews only;
-  `-y` skips only the prompt. Deletions require typing the target's name.
-  Writes are never retried; an ambiguous timeout is reported as unknown.
-- **Never public.** The Proxmox host and the gateway can never be given
-  a public name, route or tunnel — by name or address, derived from your
-  config, with no override.
+Dry run: nothing was sent.
+```
+
+- `-n` previews any write; `-y` skips only the prompt, never the checks.
+  Deleting, rolling back or force-stopping asks you to type the target's
+  name.
+- Writes are never retried. A timeout whose outcome is unclear is
+  reported as unknown, with the command that checks it.
+- **Never public.** The Proxmox host and the gateway can never get a
+  public name, route or tunnel, by name or by address. artoo works this
+  out from your config and has no override.
 - **Secrets** live in the macOS Keychain, the Linux Secret Service or a
-  0600 file; they are never printed, logged or accepted as arguments.
-  TLS is always verified; there is no insecure mode.
-- **Scriptable and agent-friendly.** Stable exit codes, `-o json` with a
-  versioned envelope, help generated from the command table, shell
-  completion. [docs/GUIDE.md](docs/GUIDE.md) is written so an AI agent
-  can operate a lab safely with it.
-- Native Zig 0.17, standard library only, one static binary for macOS and
-  Linux (arm64, x86-64).
+  0600 file. They are never printed, logged or accepted as arguments,
+  and TLS is always verified.
+
+## What it does, by task
+
+| Task | Commands |
+| --- | --- |
+| **Create a guest** in one command: clone the Ubuntu template, a static address from the pool, the reservation and DNS name on the gateway, cloud-init, the pinned SSH host key, readiness checks | `vm new`, `vm verify` |
+| **Work on guests**: SSH, checksum-verified copies, plain `ssh`/`scp`/`rsync` through a generated config, sudo passwords on several machines | `vm ssh`, `vm cp`, `vm ssh-config`, `vm password` |
+| **Change and keep them**: power, CPU and memory, disk growth, snapshots before changes, a rename everywhere the name lives, removal with every record | `vm set`, `vm disk grow`, `vm snap`, `vm rename`, `vm rm` |
+| **Keep them patched**: pending updates on one guest or all, reboots only where a guest asks for one | `vm upgrade --all`, `vm reboot --pending` |
+| **Give a service a name** with a real certificate: an edge VM runs Caddy with a Let's Encrypt wildcard for `*.apps.<domain>` | `edge setup`, `svc add` |
+| **Publish on purpose**: a Cloudflare Tunnel exposes chosen services; nothing else is reachable from the internet | `cf tunnel route add`, `cf dns` |
+| **Isolate a guest**: a firewall at its Proxmox NIC, so a compromised guest cannot reach the rest of the LAN | `vm fence` |
+| **Reach the lab from away**: a Tailscale subnet router guest, the tailnet's devices, routes, split DNS and policy | `router setup`, `ts …` |
+| **Watch the lab**: a watchdog guest with VictoriaMetrics, Loki, Grafana and ntfy; metrics and logs from every guest and the host, alerts on your phone | `watch setup`, `watch enroll`, `status` |
+| **Drive the gateway** through UniFi's Integration API, every endpoint checked against the official OpenAPI export | `gw …`, `dns …` |
+
+It is scriptable and agent-friendly: stable exit codes, `-o json` with a
+versioned envelope, help generated from the command table, and shell
+completion for fish, bash and zsh. [docs/GUIDE.md](docs/GUIDE.md) is
+written so an AI agent can operate a lab safely with it. artoo is native
+Zig 0.17 using only the standard library, and ships as one static binary
+for macOS and Linux (arm64, x86-64) that updates itself from verified
+releases (`artoo update`).
 
 ## Is this for you?
 
-artoo assumes this stack. Each piece is load-bearing:
+artoo assumes this stack, and each piece is load-bearing:
 
 | You need | Used for |
 | --- | --- |
-| **Proxmox VE 9** — one node | guests, templates, storage; an API token for artoo and root SSH for one step |
-| **A UniFi gateway** with UniFi Network 10.6+ (Integration API) | DHCP reservations and DNS records for every guest — **`vm new` requires it** |
+| **Proxmox VE 9**, one node | guests, templates, storage; an API token for artoo and root SSH for one step |
+| **A UniFi gateway** with UniFi Network 10.6+ (Integration API) | DHCP reservations and DNS records for every guest; **`vm new` requires it** |
 | **Ubuntu 26.04** cloud image (pinned in artoo) | every guest and template |
-| **mkcert** (or your own CA) | trusted HTTPS to the Proxmox and UniFi web APIs |
-| **A Cloudflare zone** — optional | DNS-01 for the edge's wildcard certificate, the tunnel, public records |
-| **Tailscale** — optional | the subnet router for remote access |
-| **macOS or Linux** workstation | where artoo, its secrets and your SSH key live |
+| **mkcert** (or your own CA) | trusted HTTPS to the Proxmox and UniFi APIs |
+| **A Cloudflare zone** (optional) | DNS-01 for the edge's wildcard certificate, the tunnel, public records |
+| **Tailscale** (optional) | the subnet router for remote access |
+| **A macOS or Linux** workstation | where artoo, its secrets and your SSH key live |
 
-No LXC containers, no clusters, no other gateways or DNS providers. If you
-use something else — OPNsense, Pi-hole, a different hypervisor — artoo is
-best read as a reference design to fork.
+There is no support for LXC containers, clusters, or other gateways or DNS
+providers. If you run something else (OPNsense, Pi-hole, another
+hypervisor), read artoo as a reference design to fork.
 
 ## Personal preferences baked in
 
 Some choices are simply mine. Change them in a fork:
 
-- **The guest home configuration is my own.** Every guest's user (named
-  by `guests.user`) gets my shell environment: fish as login shell,
-  starship, tmux, Vim, a Gruvbox theme, a few helper functions and the
-  Ghostty terminfo — see [src/guest/payload/](src/guest/payload/). Edit
-  those files, `make install`, then `artoo template build ubuntu-2604`.
+- **The guest home configuration is my own.** The guest user (named by
+  `guests.user`) gets fish as its login shell, starship, tmux, Vim, a
+  Gruvbox theme, a few helper functions and the Ghostty terminfo: see
+  [src/guest/payload/](src/guest/payload/). Edit those files,
+  `make install`, then `artoo template build ubuntu-2604`.
 - The guest baseline: key-only SSH, no root login, sudo with a generated
   password, daily security updates and never an automatic reboot.
-- Curated Star Wars and Middle-earth guest names, purpose in a
-  `role-…` tag.
-- The watchdog stack and its pinned versions, the dashboard and the
-  alert rules.
+- Curated Star Wars and Middle-earth guest names, with each guest's
+  purpose in a `role-…` tag.
+- The watchdog stack and its pinned versions, the dashboard and the alert
+  rules.
 
 ## Getting started
 
 [docs/QUICKSTART.md](docs/QUICKSTART.md) goes from nothing to a first
-guest: prerequisites on Proxmox and UniFi, configuration, credentials,
-the template and `vm new`.
+guest: the prerequisites on Proxmox and UniFi, configuration,
+credentials, the template and `vm new`.
 
 ## Build
 
 ```console
 make            # debug build
-make test       # tests, zig fmt --check, Linux cross-builds (what CI runs)
+make test       # tests, zig fmt --check, Linux cross-builds, leak check (what CI runs)
 make install    # ReleaseSafe → ~/.local/bin/artoo, plus fish completion
+make hooks      # the commit-msg hook contributors use
 ```
 
-Requires Zig 0.17.0. Or download a release: each
+It needs Zig 0.17. Or download a release: each
 [GitHub release](https://github.com/tildaslashalef/artoo/releases) carries
 `artoo-<version>-<target>.tar.gz` for macOS and Linux (arm64, x86-64) and
 `SHA256SUMS` (`shasum -a 256 -c SHA256SUMS`). The macOS binaries are not
-signed: after download, `xattr -d com.apple.quarantine artoo`.
+signed: after downloading, run `xattr -d com.apple.quarantine artoo`.
 
 ## Documents
 
@@ -113,9 +139,10 @@ signed: after download, `xattr -d com.apple.quarantine artoo`.
 | --- | --- |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | from zero to a first guest |
 | [docs/GUIDE.md](docs/GUIDE.md) | operating a lab with artoo, by task |
+| [docs/SPEC.md](docs/SPEC.md) | what artoo does: commands, output, safety, every subsystem |
+| [docs/API.md](docs/API.md) | the UniFi, Proxmox, GitHub and Tailscale API facts artoo relies on |
 | [docs/RELEASING.md](docs/RELEASING.md) | version rules and the release procedure |
-| [docs/SPEC.md](docs/SPEC.md) | the design: commands, output, safety, every subsystem |
-| [AGENTS.md](AGENTS.md) | rules for agents and contributors; branches and releases |
+| [AGENTS.md](AGENTS.md) | rules for agents and contributors: branches, commits, releases |
 
 ## Contributing
 
