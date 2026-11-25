@@ -3183,9 +3183,14 @@ never root: the home's links are the user's to set, and root following
 one would reach outside it. Files keep their executable bit (0755, else
 0644), owned by the guest user.
 
-- **Merged JSON**: the profile's top-level keys win; `permissions` is
-  merged key by key; `hooks` per event, an entry kept once (by command),
-  so Rex's own hooks and the guest's other settings survive. A merged
+- **Merged JSON**: objects merge key by key at every depth, the
+  profile's value winning on a leaf; arrays are joined, the profile's
+  entries first and then the guest's extra ones, each value kept once;
+  the top-level `hooks` merge per event, an entry kept once (by
+  command), the profile's last; a key only the guest has is kept. So an
+  agent's own state on the guest (an effort level, an "always allow"
+  answer) and Rex's own hooks survive; the permission kind is applied on
+  top (§18.6). A guest file that already holds the merge is current. A merged
   file is never "changed on the guest"; one that is not a JSON object on
   the guest is left alone and named (plan, `rex status`).
 - **Copied files**: the manifest `~/.config/artoo/agent-profile.json`

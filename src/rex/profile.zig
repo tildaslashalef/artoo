@@ -448,32 +448,81 @@ fn parseManifest(a: Allocator, raw: []const u8) !std.StringArrayHashMapUnmanaged
 
 // ---------------------------------------------------------------- merge
 
-/// Merge `profile` into `base`: the profile's top-level keys
-/// win; `permissions` merges key by key; `hooks` per event, the guest's
-/// entries kept unless the profile has one with the same command(s).
+/// Merge `profile` into `base`, keeping what only the guest has: objects
+/// merge key by key, the profile's value winning on a leaf; arrays are
+/// joined (`joinArrays`); the top-level `hooks` merge per event
+/// (`mergeHooks`), so Rex's own hooks survive.
 pub fn mergeObjects(a: Allocator, base: std.json.ObjectMap, profile: std.json.ObjectMap) !std.json.ObjectMap {
     var out = try copyObject(a, base);
     var it = profile.iterator();
     while (it.next()) |kv| {
         const k = kv.key_ptr.*;
         const pv = kv.value_ptr.*;
-        const bv = base.get(k);
-        if (bv != null and bv.? == .object and pv == .object) {
-            if (std.mem.eql(u8, k, "permissions")) {
-                var p = try copyObject(a, bv.?.object);
-                var pit = pv.object.iterator();
-                while (pit.next()) |e| try p.put(a, e.key_ptr.*, e.value_ptr.*);
-                try out.put(a, k, .{ .object = p });
-                continue;
-            }
-            if (std.mem.eql(u8, k, "hooks")) {
-                try out.put(a, k, .{ .object = try mergeHooks(a, bv.?.object, pv.object) });
-                continue;
-            }
+        const bv = base.get(k) orelse {
+            try out.put(a, k, pv);
+            continue;
+        };
+        if (std.mem.eql(u8, k, "hooks") and bv == .object and pv == .object) {
+            try out.put(a, k, .{ .object = try mergeHooks(a, bv.object, pv.object) });
+            continue;
         }
-        try out.put(a, k, pv);
+        try out.put(a, k, try mergeValues(a, bv, pv));
     }
     return out;
+}
+
+/// Below the top level: objects recursive, arrays joined, else the
+/// profile's value.
+fn mergeValues(a: Allocator, base: Value, profile: Value) !Value {
+    if (base == .object and profile == .object) {
+        var out = try copyObject(a, base.object);
+        var it = profile.object.iterator();
+        while (it.next()) |kv| {
+            const merged = if (base.object.get(kv.key_ptr.*)) |bv| try mergeValues(a, bv, kv.value_ptr.*) else kv.value_ptr.*;
+            try out.put(a, kv.key_ptr.*, merged);
+        }
+        return .{ .object = out };
+    }
+    if (base == .array and profile == .array) return .{ .array = try joinArrays(a, base.array, profile.array) };
+    return profile;
+}
+
+/// The profile's entries first, then the guest's extra ones (an entry
+/// added on the guest, such as an "always allow" answer, survives); each
+/// value kept once.
+fn joinArrays(a: Allocator, base: std.json.Array, profile: std.json.Array) !std.json.Array {
+    var out = std.json.Array.init(a);
+    for ([_][]const Value{ profile.items, base.items }) |items| for (items) |v| {
+        const seen = for (out.items) |o| {
+            if (jsonEqual(o, v)) break true;
+        } else false;
+        if (!seen) try out.append(v);
+    };
+    return out;
+}
+
+/// Equal JSON values: objects regardless of key order; numbers as written.
+fn jsonEqual(x: Value, y: Value) bool {
+    if (std.meta.activeTag(x) != std.meta.activeTag(y)) return false;
+    return switch (x) {
+        .null => true,
+        .bool => |b| b == y.bool,
+        .integer => |i| i == y.integer,
+        .float => |f| f == y.float,
+        .number_string => |n| std.mem.eql(u8, n, y.number_string),
+        .string => |t| std.mem.eql(u8, t, y.string),
+        .array => |arr| arr.items.len == y.array.items.len and for (arr.items, y.array.items) |e, f| {
+            if (!jsonEqual(e, f)) break false;
+        } else true,
+        .object => |o| o.count() == y.object.count() and blk: {
+            var it = o.iterator();
+            while (it.next()) |kv| {
+                const other = y.object.get(kv.key_ptr.*) orelse break :blk false;
+                if (!jsonEqual(kv.value_ptr.*, other)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
 }
 
 fn mergeHooks(a: Allocator, base: std.json.ObjectMap, profile: std.json.ObjectMap) !std.json.ObjectMap {
@@ -1123,7 +1172,7 @@ test "load: a symbolic link, a file over 1 MiB, too many files and too many byte
     }
 }
 
-test "mergeObjects: profile keys win, permissions key by key, hooks per event deduplicated by command" {
+test "mergeObjects: profile leaves win, arrays joined, hooks per event deduplicated by command" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1141,11 +1190,39 @@ test "mergeObjects: profile keys win, permissions key by key, hooks per event de
     const p = try std.json.parseFromSliceLeaky(Value, a, prof, .{});
     const m = try mergeObjects(a, g.object, p.object);
     try testing.expectEqualStrings(
-        \\{"model":"opus","theme":"dark","permissions":{"allow":["Bash(git status)"],"deny":["Read(.env)"]},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"rex __internal session-start","timeout":5}]},{"hooks":[{"type":"command","command":"mine.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"old.sh"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"guard.sh"}]}]}}
+        \\{"model":"opus","theme":"dark","permissions":{"allow":["Bash(git status)","Bash(ls)"],"deny":["Read(.env)"]},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"rex __internal session-start","timeout":5}]},{"hooks":[{"type":"command","command":"mine.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"old.sh"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"guard.sh"}]}]}}
     , try std.json.Stringify.valueAlloc(a, Value{ .object = m }, .{}));
     // Merging again changes nothing.
     const again = try mergeObjects(a, m, p.object);
     try testing.expectEqualStrings(try std.json.Stringify.valueAlloc(a, Value{ .object = m }, .{}), try std.json.Stringify.valueAlloc(a, Value{ .object = again }, .{}));
+}
+
+test "mergeObjects: the guest's own effort, allow answers and nested keys survive" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const guest =
+        \\{"modelSettings":{"opus":{"effortLevel":"high","x":1}},
+        \\ "permissions":{"allow":["Bash(make test)","Bash(git status)"],"defaultMode":"default"},
+        \\ "env":{"A":"1"},"statusLine":{"type":"command","command":"old"},
+        \\ "list":[{"b":2,"a":1}]}
+    ;
+    const prof =
+        \\{"modelSettings":{"opus":{"x":2},"sonnet":{"effortLevel":"low"}},
+        \\ "permissions":{"allow":["Bash(git status)","Bash(zig build)"]},
+        \\ "env":{"B":"2"},"statusLine":{"command":"new"},
+        \\ "list":[{"a":1,"b":2}]}
+    ;
+    const g = try std.json.parseFromSliceLeaky(Value, a, guest, .{});
+    const p = try std.json.parseFromSliceLeaky(Value, a, prof, .{});
+    const m = try mergeObjects(a, g.object, p.object);
+    try testing.expectEqualStrings(
+        \\{"modelSettings":{"opus":{"effortLevel":"high","x":2},"sonnet":{"effortLevel":"low"}},"permissions":{"allow":["Bash(git status)","Bash(zig build)","Bash(make test)"],"defaultMode":"default"},"env":{"A":"1","B":"2"},"statusLine":{"type":"command","command":"new"},"list":[{"a":1,"b":2}]}
+    , try std.json.Stringify.valueAlloc(a, Value{ .object = m }, .{}));
+    // A guest file that already holds the merge is current, so `rex status`
+    // reads "current" and the plan writes nothing.
+    const once = try mergeFile(a, guest, prof, null);
+    try testing.expect(try mergeFile(a, once.write, prof, null) == .current);
 }
 
 test "mergeFile: agy hooks keep the bridge's key; numbers are kept as written" {
