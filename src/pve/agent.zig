@@ -69,6 +69,8 @@ pub fn execWatched(c: *pve.Client, vmid: u32, argv: []const []const u8, input: ?
 /// write; its errors keep their meaning.
 pub fn start(c: *pve.Client, vmid: u32, argv: []const []const u8, input: ?[]const u8) !i64 {
     const ctx = c.ctx;
+    for (argv) |arg| try onlyAscii(c, vmid, arg);
+    if (input) |i| try onlyAscii(c, vmid, i);
     var params: std.ArrayList(pve.Param) = .empty;
     for (argv) |a| try params.append(ctx.arena, .{ .name = "command", .value = a });
     if (input) |i| try params.append(ctx.arena, .{ .name = "input-data", .value = i });
@@ -128,11 +130,22 @@ pub fn shWatched(c: *pve.Client, vmid: u32, script: []const u8, timeout_ms: u64,
 /// A (small) file from the guest, decoded.
 pub fn readFile(c: *pve.Client, vmid: u32, path: []const u8) ![]const u8 {
     const ctx = c.ctx;
+    try onlyAscii(c, vmid, path);
     var q: std.ArrayList(u8) = .empty;
     try q.print(ctx.arena, "/qemu/{d}/agent/file-read?", .{vmid});
     try q.appendSlice(ctx.arena, try pve.form(ctx.arena, &.{ .{ .name = "file", .value = path }, .{ .name = "decode", .value = "1" } }));
     const data = try c.get(try c.nodePath("{s}", .{q.items}));
     return pve.str(data, "content") orelse ctx.fail(error.Protocol, "the guest agent of VM {d} returned no content for {s}", .{ vmid, path });
+}
+
+/// Refuse, before sending, a guest agent request with a non-ASCII byte.
+/// Proxmox writes the request to the agent as characters, not bytes, so
+/// each such character leaves it short; the agent then waits for the rest
+/// and answers nothing more until the VM restarts (seen on pve-manager
+/// 9.2.27 with an em dash in a script).
+pub fn onlyAscii(c: *pve.Client, vmid: u32, value: []const u8) !void {
+    for (value) |b| if (b >= 0x80)
+        return c.ctx.fail(error.Refused, "a request to the guest agent of VM {d} holds a non-ASCII character, which would leave the agent stuck until the VM restarts; nothing was sent", .{vmid});
 }
 
 fn truthy(v: Value) bool {
@@ -184,4 +197,26 @@ test "execWatched: the stage file's last line becomes the step's detail" {
     try std.testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "probe"));
     try std.testing.expectEqualStrings("building Caddy v2.11.7|built\n", g.h.stdout());
     try std.testing.expectEqualStrings("GET /api2/json/nodes/pve/qemu/200/agent/file-read?file=%2Frun%2Fx.stage&decode=1 HTTP/1.1", g.request(2));
+}
+
+const ascii_probe = struct {
+    pub const name = "probe";
+    pub const summary = "non-ASCII probe";
+    pub fn run(ctx: *@import("../app.zig").Context, _: @import("../cli.zig").Args(@This())) !void {
+        var c = try pve.Client.open(ctx);
+        defer c.deinit();
+        _ = try sh(&c, 200, "# not running \u{2014} unknown\nexit 0", 60_000);
+    }
+};
+
+test "start: a non-ASCII byte is refused before anything reaches the agent" {
+    const testkit = @import("../testkit.zig");
+    const cli = @import("../cli.zig");
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{});
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{cli.leaf(ascii_probe)});
+    try std.testing.expectEqual(testkit.Exit.refused, g.h.run(&root, "probe"));
+    try std.testing.expect(std.mem.find(u8, g.h.stderr(), "non-ASCII") != null);
+    try std.testing.expect(g.srv.received[0] == null);
 }

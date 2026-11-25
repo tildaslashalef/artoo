@@ -1575,3 +1575,10 @@ test "read and apply through the agent: one probe each, every file written as th
 test {
     _ = permissions;
 }
+
+test "the profile scripts are ASCII (the guest agent wedges on anything else)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ try probeScript(arena.allocator(), "user"), user_write }) |s|
+        for (s) |b| try testing.expect(b < 0x80);
+}
