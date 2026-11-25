@@ -405,8 +405,13 @@ pub fn judge(a: Allocator, g: *Guest) !void {
     } else if (st.harnesses) |hs| {
         var ids: std.ArrayList([]const u8) = .empty;
         var stale: std.ArrayList([]const u8) = .empty;
+        // The profile creates ~/.claude when the guest has none yet, and
+        // Rex detects Claude by it: name Claude now, or its skill and hook
+        // wait for the next run.
+        const claude_soon = profile.writesClaude(g.agent_profile);
         for (hs) |h| {
-            if (!h.detected or !validAgent(h.id)) continue;
+            const detected = h.detected or (claude_soon and std.mem.eql(u8, h.id, "claude"));
+            if (!detected or !validAgent(h.id)) continue;
             try ids.append(a, h.id);
             if (h.stale or !h.session_naming) try stale.append(a, h.id);
             for (h.foreign) |p| try g.notes.append(a, try std.fmt.allocPrint(a, "{s}: {s}'s {s} was not installed by Rex; left alone (rex skill setup --force replaces it).", .{ g.vm.name, h.id, try clean(a, p) }));
@@ -908,6 +913,20 @@ test "judge: Rex installed by hand with Ubuntu's pin, Perl's rex, linger off, sk
     const none = try judged(a, .{ .a = a, .skill = "{\"harnesses\":[{\"id\":\"claude\",\"detected\":false,\"items\":[]}]}" }, "artoo;rex");
     try testing.expectEqualStrings("", try kinds(a, &none));
     try testing.expectEqualStrings("agent skill (no agent detected), agy bridge (no agy on the PATH)", try skippedText(a, &none));
+}
+
+test "judge: a profile that writes ~/.claude names Claude before Rex can detect it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f: Fixture = .{ .a = a, .skill = "{\"harnesses\":[{\"id\":\"claude\",\"detected\":false,\"items\":[{\"kind\":\"skill\",\"state\":\"missing\"},{\"kind\":\"hook\",\"state\":\"missing\"}]},{\"id\":\"pi\",\"detected\":false,\"items\":[{\"kind\":\"skill\",\"state\":\"missing\"}]}]}" };
+    const entries = [_]profile.Entry{.{ .source = "rules/AGENTS.md", .target = ".claude/CLAUDE.md", .content = "x" }};
+    var g: Guest = .{ .vm = test_vm, .user = "artoo", .channel = "preview", .state = try parseState(a, try f.out()), .agent_profile = .{ .dir = "/p", .entries = &entries, .files = 1, .bytes = 1 } };
+    try judge(a, &g);
+    try testing.expectEqualStrings("rex skill setup --session-naming --agent claude", g.has(.skill).?.to);
+    // Without a profile, nothing is detected and nothing is named.
+    const none = try judged(a, f, "artoo;rex");
+    try testing.expect(none.has(.skill) == null);
 }
 
 test "judge: the agy bridge when agy is on the PATH; steps aside for Rex's own harness; a broken hooks.json refuses" {

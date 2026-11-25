@@ -3114,7 +3114,10 @@ right: a rerun on a set-up guest changes nothing and says so (exit 0,
 7. **agent skill**: as the guest user, `rex skill setup --session-naming
    --agent A` for each harness `rex skill status` detects (Claude Code,
    Codex, OpenCode, pi) with an item outdated or missing or session
-   naming off; skipped with a note when none is detected. Items Rex
+   naming off; skipped with a note when none is detected. Claude counts
+   as detected when the agent profile writes under `~/.claude`: Rex
+   detects Claude by that directory, which step 9 creates on a fresh
+   guest, after this step has run. Items Rex
    reports `foreign` or `unreadable` are left alone and named in the
    plan; a `foreign` item is replaced only by `rex skill setup --force`
    on the guest, never by artoo.

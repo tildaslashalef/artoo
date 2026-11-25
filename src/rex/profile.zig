@@ -82,6 +82,13 @@ pub const Profile = struct {
 // ---------------------------------------------------------------- load
 
 /// `agents.profile` from the config, loaded; null when it is empty.
+/// The profile writes under `~/.claude` (Rex then detects Claude there).
+pub fn writesClaude(p: ?Profile) bool {
+    const prof = p orelse return false;
+    for (prof.entries) |e| if (std.mem.startsWith(u8, e.target, ".claude/")) return true;
+    return false;
+}
+
 pub fn loadConfigured(ctx: *Context) !?Profile {
     const cfg = try ctx.config();
     if (cfg.agents.profile.len == 0) return null;
