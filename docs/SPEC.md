@@ -3315,6 +3315,10 @@ per guest tagged `rex`, labelled with the guest's name, endpoint
   ([API.md](API.md) §5). Without it, or without a running Rex on the
   workstation, the command refuses (exit 5); it never starts Rex. `vm
   rm` and `vm rename` skip their Rex step with a note then.
+- A plan that adds hosts notes that Rex for Mac lists only the hosts
+  saved in the app ([API.md](API.md) §5), with the way to open them
+  there: `rex hosts remove LABEL`, then Add Remote Host… in the app with
+  the same address, which the next sync adopts.
 - Nothing to change (foreign hosts aside, which it names) is a no-op
   (exit 5).
 

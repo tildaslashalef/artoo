@@ -396,6 +396,13 @@ from Superlogical's documentation and the packages themselves (SPEC §18).
   `ssh://[USER@]HOST[:PORT][/SOCKET]` and needs `rex` on the remote PATH.
   Rex for Mac carries the CLI at `/Applications/Rex.app/Contents/Helpers/Rex
   Server.rex/Contents/MacOS/rex`.
+  Rex for Mac (app 0.1.0-snapshot.2145, server 0.1.0-preview.24, seen
+  2026-11-26) lists only the hosts saved in the app: a host added with
+  `rex hosts add` (its record carries `added_from`) is listed by the CLI
+  and reachable with `rex -S LABEL`, but the app never shows it, with or
+  without `--icon`, even after a restart. The app's Add Remote Host…
+  saves `{label, endpoints, icon}` without `added_from`, and the CLI lists
+  that one too.
 - **Antigravity (`agy`) hooks:** `hooks.json` in the customization root
   (`~/.gemini/config/`), top-level keys naming hooks (`enabled`
   optional). The events `SessionStart`, `PreInvocation`,
