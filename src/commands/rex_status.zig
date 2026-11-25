@@ -46,6 +46,7 @@ pub fn report(ctx: *Context, c: *pve.Client, v: vms.Vm) !Report {
     };
     var rows: std.ArrayList(Check) = .empty;
     try rows.appendSlice(ctx.arena, try state.checks(ctx, st, v.name));
+    if (st.isRex()) try rows.appendSlice(ctx.arena, try state.extraChecks(ctx, c, v, (try ctx.config()).guests.user));
     try rows.appendSlice(ctx.arena, try state.agentChecks(ctx, st));
     r.checks = rows.items;
     r.agents = try st.agents(ctx.arena);
@@ -167,6 +168,14 @@ fn expectAll(out: []const u8, wants: []const []const u8) !void {
 }
 
 const pid = "{\"data\":{\"pid\":42}}";
+
+/// The two reads behind the agy bridge, profile and permissions rows of a
+/// guest with Rex: no agy, no profile, no agents.
+fn extras(a: std.mem.Allocator) ![4]B {
+    const setup = @import("../rex/setup.zig");
+    const profile = @import("../rex/profile.zig");
+    return .{ ans(pid), ans(try execStatus(a, 0, try (setup.Fixture{ .a = a }).out())), ans(pid), ans(try execStatus(a, 0, try profile.probeOut(a, .{ .agents = "", .hashes = &.{}, .keys = "" }))) };
+}
 const ping = "{\"data\":{\"result\":{}}}";
 const list = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"},{\"vmid\":207,\"name\":\"hoth\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":208,\"name\":\"endor\",\"status\":\"stopped\",\"tags\":\"artoo;rex\"}]}";
 
@@ -181,17 +190,21 @@ test "rex status VM: a set-up guest with an agent working is ok" {
     const user = "{\"server\":{\"running\":true,\"version\":\"0.1.0-snapshot.23\",\"sessions\":1},\"terminfo\":\"Ready: xterm-rex resolves.\",\"skills\":[{\"id\":\"claude\",\"detected\":true,\"items\":[{\"kind\":\"skill\",\"state\":\"current\"}]}],\"agents\":[{\"session\":\"naboo-api\",\"block\":\"block:1\",\"app\":\"claude-code\",\"state\":\"working\",\"title\":\"\",\"updated_at\":\"2026-11-25T01:52:40+01:00\"},{\"session\":\"naboo-api\",\"block\":\"block:1\",\"app\":\"claude-code\",\"state\":\"working\",\"title\":\"fix the tests\",\"updated_at\":\"2026-11-25T01:52:41+01:00\"},{\"session\":\"naboo-web\",\"block\":\"block:2\",\"app\":\"agy\",\"state\":\"blocked\",\"title\":\"\",\"updated_at\":\"\"}],\"errors\":[]}";
     const probe = try execStatus(a, 0, try state.sample(a, .{ .user = user }));
     var g: testkit.Gateway = undefined;
-    try g.init(&.{ ans(list), ans(ping), ans(pid), ans(probe), ans(list), ans(ping), ans(pid), ans(probe) });
+    const x = try extras(a);
+    try g.init(&.{ ans(list), ans(ping), ans(pid), ans(probe), x[0], x[1], x[2], x[3], ans(list), ans(ping), ans(pid), ans(probe), x[0], x[1], x[2], x[3] });
     defer g.deinit();
     const r = root();
     try testing.expectEqual(Exit.ok, g.h.run(&r, "rex status naboo"));
     try expectAll(g.h.stdout(), &.{
-        "package       ✓ ok       0.1.0~alpha.23 from pkgs.superlogical.com\n",
+        "package       ✓ ok           0.1.0~alpha.23 from pkgs.superlogical.com\n",
         "Rex 1001, others −1",
         "0.1.0-snapshot.23, 1 session",
         "skill claude",
         "claude-code working in naboo-api: fix the tests",
         "agy blocked in naboo-web (waiting for the operator)",
+        "agy bridge    – not checked  no agy on the user's PATH\n",
+        "profile       – not checked  no profile set (agents.profile)\n",
+        "permissions   ✓ ok           trusted-reach (not fenced)\n",
     });
     try testing.expect(std.mem.find(u8, g.request(2), "/qemu/205/agent/exec") != null);
     try testing.expectEqual(Exit.ok, g.h.run(&r, "rex status naboo -o json"));
@@ -214,7 +227,8 @@ test "rex status: every guest tagged rex; Ubuntu's rex fails (exit 8); a stale s
     }));
     const perl = try execStatus(a, 0, try state.sample(a, .{ .version = "1.16.0-1", .maintainer = "Ubuntu Developers <devel@example.com>", .origin = "other", .rex_priority = null, .other_priority = 500, .pin_file = "missing", .user = null, .rex_version = "" }));
     var g: testkit.Gateway = undefined;
-    try g.init(&.{ ans(two), ans(ping), ans(pid), ans(stale), ans(ping), ans(pid), ans(perl) });
+    const x = try extras(a);
+    try g.init(&.{ ans(two), ans(ping), ans(pid), ans(stale), x[0], x[1], x[2], x[3], ans(ping), ans(pid), ans(perl) });
     defer g.deinit();
     const r = root();
     try testing.expectEqual(Exit.partial, g.h.run(&r, "rex status"));
@@ -243,13 +257,14 @@ test "rex status VM: a guest not tagged rex is refused with the setup hint; a se
     const a = arena.allocator();
     const off = try execStatus(a, 0, try state.sample(a, .{ .user = "{\"server\":{\"running\":false},\"terminfo\":\"Ready\",\"skills\":[],\"agents\":[],\"errors\":[]}" }));
     var g: testkit.Gateway = undefined;
-    try g.init(&.{ ans(list), ans(list), ans(ping), ans(pid), ans(off) });
+    const x = try extras(a);
+    try g.init(&.{ ans(list), ans(list), ans(ping), ans(pid), ans(off), x[0], x[1], x[2], x[3] });
     defer g.deinit();
     const r = root();
     try testing.expectEqual(Exit.refused, g.h.run(&r, "rex status hoth"));
     try testing.expectEqualStrings("artoo: hoth is not tagged rex: Rex is not set up there ('artoo rex setup hoth')\n", g.h.stderr());
     try testing.expectEqual(Exit.ok, g.h.run(&r, "rex status naboo"));
-    try expectAll(g.h.stdout(), &.{ "server    ▲ warning      not running (it starts with the first session)\n", "no agent harness detected" });
+    try expectAll(g.h.stdout(), &.{ "server       ▲ warning      not running (it starts with the first session)\n", "no agent harness detected" });
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
 

@@ -13,6 +13,8 @@ const agent = @import("../pve/agent.zig");
 const k = @import("../commands/node.zig");
 const vm_new = @import("../commands/vm_new.zig");
 const guest = @import("guest.zig");
+const vms = @import("../pve/vm.zig");
+const template = @import("../commands/template.zig");
 
 const Context = app.Context;
 const Check = vm_new.Check;
@@ -347,11 +349,35 @@ pub fn checks(ctx: *Context, st: State, vm: []const u8) ![]const Check {
 
     try skillChecks(ctx, &out, u.skills, setup);
 
-    // INTEGRATION POINT (rex status / vm verify): the agy bridge row
-    // (SPEC §20.4) and the profile and permissions rows (§20.5, §20.6)
-    // come from their own slices; append them here, after the skill rows,
-    // extending `State` (and the probe script) with the fields they need.
+    return out.items;
+}
 
+/// The agy bridge row (SPEC §20.4) and the profile and permissions rows
+/// (§20.5, §20.6), each from its own read of the guest: shown after
+/// `checks` by `rex status` and `vm verify`.
+pub fn extraChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, user: []const u8) ![]const Check {
+    const a = ctx.arena;
+    var out: std.ArrayList(Check) = .empty;
+    try out.append(a, try @import("agy.zig").check(ctx, c, v, user));
+    const profile = @import("profile.zig");
+    const prof = profile.loadConfigured(ctx) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            defer ctx.diag = null;
+            try out.append(a, .{ .name = "profile", .status = .failed, .detail = try k.clean(ctx, ctx.diag orelse @errorName(err)) });
+            return out.items;
+        },
+    };
+    const fenced = template.taggedWith(v.tags, @import("../commands/vm_fence.zig").tag);
+    const rows = profile.checks(ctx, c, v.vmid, user, prof, fenced) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            defer ctx.diag = null;
+            try out.append(a, .{ .name = "profile", .status = .failed, .detail = try k.clean(ctx, ctx.diag orelse @errorName(err)) });
+            return out.items;
+        },
+    };
+    try out.appendSlice(a, rows);
     return out.items;
 }
 
@@ -413,7 +439,9 @@ pub fn agentChecks(ctx: *Context, st: State) ![]const Check {
 
 /// `vm verify`'s rows for a guest tagged `rex` (SPEC §9.4: the agent
 /// rows excepted): not checked without an answering agent.
-pub fn verifyChecks(ctx: *Context, c: *pve.Client, vmid: u32, vm: []const u8, agent_ok: bool) ![]const Check {
+pub fn verifyChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, agent_ok: bool) ![]const Check {
+    const vmid = v.vmid;
+    const vm = v.name;
     if (!agent_ok) return notChecked(ctx, "no guest agent");
     const user = (try ctx.config()).guests.user;
     const st = probe(ctx, c, vmid, user) catch |err| switch (err) {
@@ -425,7 +453,10 @@ pub fn verifyChecks(ctx: *Context, c: *pve.Client, vmid: u32, vm: []const u8, ag
             return one;
         },
     };
-    return checks(ctx, st, vm);
+    var rows: std.ArrayList(Check) = .empty;
+    try rows.appendSlice(ctx.arena, try checks(ctx, st, vm));
+    if (st.isRex()) try rows.appendSlice(ctx.arena, try extraChecks(ctx, c, v, user));
+    return rows.items;
 }
 
 fn firstLine(s: []const u8) []const u8 {
