@@ -452,11 +452,9 @@ test "rex setup: the agy bridge is written as the user, other hooks kept" {
         r("exec-status", ok),
         r("agent/exec HTTP", pid),
         r("exec-status", ok),
-        // permissions: read again, the user's directories, the fish file
+        // permissions: read again, the fish file (as the user)
         pr_before[0],
         pr_before[1],
-        r("agent/exec HTTP", pid),
-        r("exec-status", ok),
         r("agent/exec HTTP", pid),
         r("exec-status", ok),
         r("GET /api2/json/nodes/pve/qemu HTTP", naboo_rex_list),
@@ -478,5 +476,5 @@ test "rex setup: the agy bridge is written as the user, other hooks kept" {
         if (std.mem.find(u8, q, "runuser") != null and std.mem.find(u8, q, "input-data=") != null) user_writes += 1;
         try testing.expect(std.mem.find(u8, q, "runuser%20-l") == null);
     };
-    try testing.expectEqual(@as(usize, 3), user_writes);
+    try testing.expectEqual(@as(usize, 4), user_writes);
 }
