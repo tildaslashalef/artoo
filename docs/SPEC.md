@@ -1632,8 +1632,9 @@ Placing files as root stays with the role setup commands (§9.7, §9.9).
     tag; after the change, when the file has the guest's block) update
     the guest's own block, reading no other guest. Without the file none
     of them makes one. A failed update is exit 8 naming `vm ssh-config`,
-    which repairs it: `vm new` records it and goes on, `vm rm` stops
-    there (its later steps do not run).
+    which repairs it: `vm new` records it and goes on; `vm rm` goes on
+    with its other independent steps and names it among the leftovers
+    (§9.3).
   - **Output:** the path, the number of guests, `written` or `unchanged`,
     and the notes. `-n` prints the file to stdout and writes nothing (it
     pins no key either). `-o json` (target `local`) is
@@ -3282,7 +3283,7 @@ subagents) fold into one row with the most pressing state (blocked,
 error, working, done, idle). A named VM not tagged `rex` is refused
 (exit 5, naming `rex setup`). Several guests: one block per guest, then
 a summary line. `-o json`: the envelope (§4.2) with `collected_at`,
-`failed` (the guests with a failed check) and a list of `{vm, vmid,
+`failed` (the number of guests with a failed check) and a list of `{vm, vmid,
 checks: [{check, status, detail}], agents: [{session, block, app, state,
 title, updated_at}]}`. Any failure → exit 8.
 
@@ -3299,7 +3300,11 @@ title, updated_at}]}`. Any failure → exit 8.
   asked), a guest busy by its turn is still skipped. A server socket
   that does not answer, or an answer `jq` cannot read, counts as
   unreadable, never as "no agents". Whether each guest is busy is part
-  of the plan's fingerprint.
+  of the plan's fingerprint. When every guest is skipped by its turn, no
+  guest is rebooted and the run ends with exit 5 ("no guest was
+  rebooted: when its turn came, an agent was busy on …").
+  `--force-agents` and `--confirm` go with `--pending` only; with a
+  named VM they are a usage error (exit 2).
 - **`vm upgrade`** names, in its plan, the agents working on each `rex`
   guest (or that they could not be read), and goes ahead: it reboots nothing and restarts no user
   session (§18.1).
@@ -3311,7 +3316,9 @@ title, updated_at}]}`. Any failure → exit 8.
 The workstation's Rex hosts (`rex hosts`, on its home server): one host
 per guest tagged `rex`, labelled with the guest's name, endpoint
 `ssh://<guests.user>@<fqdn>`. artoo records the labels it manages in
-`~/.artoo/rex-hosts.json`.
+`~/.artoo/rex-hosts.json` (`{"labels": [...]}`, written atomically).
+Its steps run in order and stop at the first failure (exit 8); running
+it again continues.
 
 - A missing host is added; a recorded host whose endpoint differs is
   edited; a recorded host whose guest is gone or no longer tagged `rex`
