@@ -107,6 +107,10 @@ const SyncOp = struct {
             if (notes.items.len > 0) return ctx.fail(error.NoChange, "nothing to change: the Rex hosts are in step with the guests tagged rex, except — {s}", .{try std.mem.join(a, " ", notes.items)});
             return null;
         }
+        var added: std.ArrayList([]const u8) = .empty;
+        for (op.actions) |x| if (x.kind == .add) try added.append(a, try k.clean(ctx, x.label));
+        if (added.items.len > 0)
+            try notes.append(a, try std.fmt.allocPrint(a, "Rex for Mac lists only the hosts saved in the app, not those added here: to open {s} in the app, 'rex hosts remove' it, then Add Remote Host... there with the same address; the next sync adopts it.", .{try std.mem.join(a, ", ", added.items)}));
         try notes.append(a, try std.fmt.allocPrint(a, "artoo records the labels it manages in {s}; it edits and removes only those.", .{hosts.record_path}));
         if (sends) try notes.append(a, "Steps run in order and stop at the first failure; a re-run continues.");
         return .{
@@ -313,6 +317,7 @@ test "rex hosts sync: adds, edits, removes the recorded, adopts, leaves a foreig
         "naboo     ssh://artoo@naboo.lab.example.com → recorded as artoo's (nothing sent)\n",
         "tatooine  ssh://artoo@tatooine.lab.example.com → (removed)\n",
         "endor     recorded, no longer a Rex host → dropped from the record\n",
+        "Rex for Mac lists only the hosts saved in the app, not those added here: to open hoth in the app,",
         "Dry run: nothing was sent.\n",
     });
     try testing.expectEqual(Exit.ok, g.h.run(&root, "rex hosts sync -y"));

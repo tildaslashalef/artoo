@@ -333,6 +333,13 @@ artoo vm new hoth --rex                      # a new guest with Rex (or rex.defa
   the guest first (above) to get `sandboxed`.
 - A profile file edited on the guest is left alone and reported by
   `rex status`; `rex setup VM --force-profile` puts the profile's back.
+- `rex hosts sync` gives the CLI a host per guest (`rex -S hoth ls`),
+  but Rex for Mac shows only hosts saved in the app: to open a guest
+  there, `rex hosts remove hoth`, then Settings → Remote Hosts → Add
+  Remote Host… with the same `ssh://` address and name; the next sync
+  adopts it, and `vm rm` still removes it.
+- `rex -S hoth server status` only reports; any other command over
+  `ssh://` (`rex -S hoth ls`) starts the guest user's server.
 - `vm reboot --pending` skips a guest where an agent is working or
   waiting for you; `--force-agents` (typed confirmation) reboots it
   anyway. Rex updates come with `vm upgrade`; the running server keeps
