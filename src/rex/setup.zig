@@ -883,3 +883,48 @@ test "judge: a missing user or architecture refuses" {
     try judge(a, &g);
     try testing.expect(g.refused != null);
 }
+
+const NewProbe = struct {
+    pub const name = "probe";
+    pub const summary = "setUpNew probe";
+    pub fn run(ctx: *Context, _: @import("../cli.zig").Args(@This())) !void {
+        var c = try pve.Client.open(ctx);
+        defer c.deinit();
+        var l: exec.Ledger = .{};
+        const i = try l.add(ctx.arena, "set up Rex");
+        var v = test_vm;
+        v.tags = "artoo";
+        try ctx.out.print("{s}\n", .{try setUpNew(ctx, &c, v, l.noter(i))});
+    }
+};
+
+test "setUpNew: vm new's one step runs rex setup's steps and checks they converged" {
+    const testkit = @import("../testkit.zig");
+    const cli = @import("../cli.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const probe_out = try std.json.Stringify.valueAlloc(a, .{ .data = .{ .exited = 1, .exitcode = 0, .@"out-data" = try (Fixture{ .a = a }).out() } }, .{});
+    const R = testkit.Gateway.FakeServer.Route;
+    const r = struct {
+        fn f(match: []const u8, body: []const u8) R {
+            return .{ .match = match, .behavior = .{ .respond = .{ .body = body } } };
+        }
+    }.f;
+    var g: testkit.Gateway = undefined;
+    try g.initRoutes(&.{
+        r("agent/ping", "{\"data\":{\"result\":{}}}"),
+        r("agent/exec HTTP", "{\"data\":{\"pid\":42}}"),
+        r("exec-status", probe_out),
+        r("GET /api2/json/nodes/pve/qemu/201/config", "{\"data\":{\"tags\":\"artoo\",\"digest\":\"d1\"}}"),
+        r("PUT /api2/json/nodes/pve/qemu/201/config", "{\"data\":null}"),
+        r("GET /api2/json/nodes/pve/qemu HTTP", "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"}]}"),
+        r("agent/exec HTTP", "{\"data\":{\"pid\":43}}"),
+        r("exec-status", probe_out),
+    });
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{cli.leaf(NewProbe)});
+    try testing.expectEqual(testkit.Exit.ok, g.h.run(&root, "probe"));
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
+    try testing.expectEqualStrings("rex 0.1.0~alpha.23, tag rex\n", g.h.stdout());
+}
