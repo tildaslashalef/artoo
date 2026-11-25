@@ -249,6 +249,11 @@ const Builder = struct {
                 const v = std.json.parseFromSliceLeaky(Value, a, content, .{ .parse_numbers = false }) catch
                     return b.refuse(path, "not valid JSON", .{});
                 if (v != .object) return b.refuse(path, "not a JSON object", .{});
+                // Claude's `env` reaches every session: a secret-looking
+                // name there is refused (named, never its value).
+                if (v.object.get("env")) |env| if (env == .object) for (env.object.keys()) |var_name| {
+                    if (secretLooking(var_name)) return b.refuse(path, "its env names {s}, which looks like a secret", .{try ui.text.sanitize(a, var_name, .line)});
+                };
                 var e2 = base;
                 e2.merge = mg;
                 e2.exec = false;
@@ -257,7 +262,11 @@ const Builder = struct {
         }
     }
 
+    /// Two profile files that land on one guest path refuse the profile
+    /// (the run would never settle: each write undoes the other).
     fn put(b: *Builder, base: Entry, target: []const u8, agy_only: bool) !void {
+        for (b.entries.items) |other| if (std.mem.eql(u8, other.target, target))
+            return b.ctx.fail(error.Refused, "agents.profile: {s} and {s} both become ~/{s}; keep one", .{ try ui.text.sanitize(b.ctx.arena, other.source, .line), try ui.text.sanitize(b.ctx.arena, base.source, .line), target });
         var e = base;
         e.target = target;
         e.agy_only = agy_only;
@@ -265,11 +274,20 @@ const Builder = struct {
     }
 };
 
+/// An environment variable name that looks like it holds a secret.
+fn secretLooking(name: []const u8) bool {
+    for ([_][]const u8{ "KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL" }) |w|
+        if (std.ascii.findIgnoreCase(name, w) != null) return true;
+    return false;
+}
+
 /// Why a file name is refused (SPEC §20.5), or null.
 pub fn refusedName(name: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, name, ".credentials.json")) return "an agent credential file";
-    if (std.mem.eql(u8, name, ".env") or std.mem.startsWith(u8, name, ".env.")) return "an environment file";
-    if (std.mem.endsWith(u8, name, ".pem") or std.mem.endsWith(u8, name, ".key")) return "a key file";
+    for ([_][]const u8{ ".credentials.json", "credentials", "credentials.json", "oauth_creds.json", ".netrc" }) |n|
+        if (std.mem.eql(u8, name, n)) return "an agent credential file";
+    if (std.mem.eql(u8, name, ".env") or std.mem.eql(u8, name, ".envrc") or std.mem.startsWith(u8, name, ".env.")) return "an environment file";
+    for ([_][]const u8{ ".pem", ".key", ".p12", ".pfx" }) |ext|
+        if (std.mem.endsWith(u8, name, ext)) return "a key file";
     if (std.mem.startsWith(u8, name, "id_") and !std.mem.endsWith(u8, name, ".pub")) return "an SSH key file";
     return null;
 }
@@ -307,19 +325,19 @@ pub const Guest = struct {
     }
 };
 
-/// The probe: run as root with `sh -c SCRIPT sh PATH…` (home-relative
-/// paths to hash); prints one JSON object. File contents and names are
-/// base64 so the JSON stays valid whatever they hold.
+/// The probe: `sh -c SCRIPT sh PATH…` (home-relative paths to hash);
+/// prints one JSON object. Everything runs as the guest user (`asUser`):
+/// the home is the user's to arrange, so root never follows its links —
+/// a link to a root-only file reads nothing more than the user could.
+/// File contents and names are base64 so the JSON stays valid.
 pub fn probeScript(a: Allocator, user: []const u8) ![]const u8 {
-    const which = try guest_mod.asUser(a, user, "for x in claude agy; do command -v \"$x\" >/dev/null 2>&1 && echo \"$x\"; done; true");
-    return std.fmt.allocPrint(a,
+    const inner = try std.fmt.allocPrint(a,
         \\set -u
-        \\u={s}
-        \\h=$(getent passwd "$u" | cut -d: -f6)
-        \\[ -n "$h" ] || {{ echo "no user $u on the guest" >&2; exit 3; }}
+        \\h=$HOME
+        \\[ -n "$h" ] || {{ echo "no home for the guest user" >&2; exit 3; }}
         \\b() {{ if [ -f "$1" ]; then printf '"'; base64 -w0 < "$1" | tr -d '\n'; printf '"'; else printf null; fi; }}
         \\hs() {{ if [ -f "$1" ]; then sha256sum < "$1" | cut -d' ' -f1 | tr -d '\n'; elif [ -e "$1" ] || [ -L "$1" ]; then printf '%s' '?'; else printf '%s' -; fi; }}
-        \\found=$({s} 2>/dev/null | tr '\n' ' ')
+        \\found=$(for x in claude agy; do command -v "$x" >/dev/null 2>&1 && echo "$x"; done | tr '\n' ' ')
         \\printf '{{"home":"%s","agents":"%s","hashes":[' "$(printf %s "$h" | base64 -w0)" "$found"
         \\sep=
         \\for p in "$@"; do printf '%s"%s"' "$sep" "$(hs "$h/$p")"; sep=,; done
@@ -336,7 +354,8 @@ pub fn probeScript(a: Allocator, user: []const u8) ![]const u8 {
         \\done
         \\printf ',"ssh_keys":"%s"}}\n' "$(printf %s "$keys" | base64 -w0)"
         \\
-    , .{ user, which, manifest_path, Merge.claude_settings.target(), Merge.agy_settings.target(), Merge.agy_hooks.target(), permissions.fish_path });
+    , .{ manifest_path, Merge.claude_settings.target(), Merge.agy_settings.target(), Merge.agy_hooks.target(), permissions.fish_path });
+    return std.fmt.allocPrint(a, "{s} sh \"$@\"", .{try guest_mod.asUser(a, user, inner)});
 }
 
 /// Every home-relative path the probe hashes for `profile`.
@@ -648,6 +667,13 @@ pub fn plan(a: Allocator, profile: ?Profile, g: Guest, kind: Kind, force: bool) 
             try manifest.put(a, key, want);
             continue;
         }
+        // A directory (or other non-file) in the file's place stays, even
+        // with --force-profile.
+        if (std.mem.eql(u8, have, "?")) {
+            try left.append(a, .{ .path = key, .why = "not a regular file on the guest" });
+            if (recorded) |h| try manifest.put(a, key, h);
+            continue;
+        }
         const why: []const u8 = if (std.mem.eql(u8, have, "-"))
             "new"
         else if (recorded != null and std.mem.eql(u8, have, recorded.?))
@@ -806,37 +832,49 @@ pub fn apply(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8, p: Plan
     return fresh;
 }
 
-/// Write `p` as planned: the directories as the guest user (so a new
-/// `~/.claude` is the user's), then each file owned by `user:user`, the
-/// manifest last.
+/// Write `p` as planned, the manifest last. Every file is written as the
+/// guest user (`asUser`), never as root: the home's directories are the
+/// user's, and root following a link there would write outside it.
 pub fn write(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8, p: Plan) !void {
-    if (p.writes.len == 0) return;
-    const a = ctx.arena;
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "sh", "-c", mkdir_script, "sh", user });
-    var seen: std.StringHashMapUnmanaged(void) = .empty;
-    for (p.writes) |w| {
-        const d = std.fs.path.dirnamePosix(w.target) orelse continue;
-        if ((try seen.getOrPut(a, d)).found_existing) continue;
-        try argv.append(a, d);
-    }
-    if (argv.items.len > 5) {
-        const r = try agent.exec(c, vmid, argv.items, null, 60_000);
-        if (!r.ok()) return ctx.fail(error.Partial, "creating the agent profile's directories failed: {s}", .{try ui.text.sanitize(a, edge.firstLine(r.err), .line)});
-    }
-    const owner = try std.fmt.allocPrint(a, "{s}:{s}", .{ user, user });
-    for (p.writes) |w| try edge.writeFile(c, vmid, .{ .path = w.path, .mode = w.mode, .owner = owner, .content = w.content });
+    for (p.writes) |w| try writeAsUser(ctx, c, vmid, user, w.target, w.mode, w.content);
 }
 
-/// `$1` user, then home-relative directories, created as the user.
-const mkdir_script =
+/// As the user: `$1` home-relative path, `$2` mode, `$3` phase (`only`,
+/// or `first`, `next`…, `finish` for a file in parts); base64 on stdin is
+/// appended to `$1.artoo-part` (0600) and moved into place at the end. A
+/// directory in the file's place is refused.
+const user_write =
     \\set -eu
-    \\u=$1; shift
-    \\h=$(getent passwd "$u" | cut -d: -f6)
-    \\[ -n "$h" ] || { echo "no user $u on the guest" >&2; exit 3; }
-    \\for d in "$@"; do runuser -u "$u" -- mkdir -p -- "$h/$d"; done
+    \\p="$HOME/$1"; t="$p.artoo-part"
+    \\case "$3" in first|only) mkdir -p "$(dirname "$p")"; rm -f "$t"; (umask 077; : > "$t");; esac
+    \\case "$3" in first|next|only) base64 -d >> "$t";; esac
+    \\case "$3" in finish|only)
+    \\  if [ -d "$p" ] && [ ! -L "$p" ]; then rm -f "$t"; echo "~/$1 is a directory" >&2; exit 4; fi
+    \\  chmod "$2" "$t"; mv -f "$t" "$p";;
+    \\esac
     \\
 ;
+
+fn writeAsUser(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8, rel: []const u8, mode: []const u8, content: []const u8) !void {
+    const a = ctx.arena;
+    const script = try std.fmt.allocPrint(a, "{s} sh \"$@\"", .{try guest_mod.asUser(a, user, user_write)});
+    const enc = std.base64.standard.Encoder;
+    var at: usize = 0;
+    while (true) {
+        const end = @min(at + edge_files.part_bytes, content.len);
+        const only = at == 0 and end == content.len;
+        const phase: []const u8 = if (only) "only" else if (at == 0) "first" else "next";
+        const part = content[at..end];
+        const buf = try a.alloc(u8, enc.calcSize(part.len));
+        const r = try agent.exec(c, vmid, &.{ "sh", "-c", script, "sh", rel, mode, phase }, enc.encode(buf, part), 60_000);
+        if (!r.ok()) return ctx.fail(error.Partial, "writing ~/{s} failed: {s}", .{ rel, try ui.text.sanitize(a, edge.firstLine(r.err), .line) });
+        if (only) return;
+        at = end;
+        if (at >= content.len) break;
+    }
+    const r = try agent.exec(c, vmid, &.{ "sh", "-c", script, "sh", rel, mode, "finish" }, null, 60_000);
+    if (!r.ok()) return ctx.fail(error.Partial, "writing ~/{s} failed: {s}", .{ rel, try ui.text.sanitize(a, edge.firstLine(r.err), .line) });
+}
 
 // ---------------------------------------------------------------- checks
 
@@ -987,12 +1025,19 @@ test "load: every refusal names the file, never its content" {
         .{ .path = "rules/AGENTS.md", .data = "-----BEGIN RSA PRIVATE KEY-----\n" ++ secret, .want = "rules/AGENTS.md is refused (it contains a private key)" },
         .{ .path = "claude/settings.json", .data = "{\"x\": \"" ++ secret, .want = "claude/settings.json is refused (not valid JSON)" },
         .{ .path = "agy/hooks.json", .data = "[\"" ++ secret ++ "\"]", .want = "agy/hooks.json is refused (not a JSON object)" },
+        .{ .path = "claude/.netrc", .data = secret, .want = "claude/.netrc is refused (an agent credential file)" },
+        .{ .path = "agy/oauth_creds.json", .data = secret, .want = "agy/oauth_creds.json is refused (an agent credential file)" },
+        .{ .path = "skills/demo/.envrc", .data = secret, .want = "skills/demo/.envrc is refused (an environment file)" },
+        .{ .path = "claude/client.p12", .data = secret, .want = "claude/client.p12 is refused (a key file)" },
+        .{ .path = "claude/settings.json", .data = "{\"env\":{\"ANTHROPIC_API_KEY\":\"" ++ secret ++ "\"}}", .want = "claude/settings.json is refused (its env names ANTHROPIC_API_KEY, which looks like a secret)" },
+        .{ .path = "claude/CLAUDE.md", .data = "rules\n", .want = "both become ~/.claude/CLAUDE.md; keep one" },
     };
     for (cases) |cs| {
         var t = testing.tmpDir(.{});
         defer t.cleanup();
         try mkfile(t.dir, "skills/demo/SKILL.md", "ok\n");
         try mkfile(t.dir, "claude/ssh/id_ed25519.pub", "ssh-ed25519 AAAA public\n");
+        if (std.mem.eql(u8, cs.path, "claude/CLAUDE.md")) try mkfile(t.dir, "rules/AGENTS.md", "rules\n");
         try mkfile(t.dir, cs.path, cs.data);
         var ctx = testCtx(a, &env);
         try testing.expectError(error.Refused, load(&ctx, try tmpPath(a, &t)));
@@ -1364,11 +1409,11 @@ pub fn probeOut(a: Allocator, f: ProbeFixture) ![]const u8 {
     return s.items;
 }
 
-test "probeScript: runs the PATH lookup as the user and reads only the named files" {
+test "probeScript: runs as the user and reads only the named files" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const s = try probeScript(arena.allocator(), "naboo");
-    for ([_][]const u8{ "u=naboo\n", "runuser -u \"$u\"", "command -v", ".config/artoo/agent-profile.json", ".claude/settings.json", ".gemini/antigravity-cli/settings.json", ".gemini/config/hooks.json", ".config/fish/conf.d/artoo-agents.fish", "PRIVATE KEY", "basename" }) |want|
+    for ([_][]const u8{ "u=naboo;", "runuser -u \"$u\"", "command -v", ".config/artoo/agent-profile.json", ".claude/settings.json", ".gemini/antigravity-cli/settings.json", ".gemini/config/hooks.json", ".config/fish/conf.d/artoo-agents.fish", "PRIVATE KEY", "basename" }) |want|
         try testing.expect(std.mem.find(u8, s, want) != null);
     for ([_][]const u8{ ".credentials.json", ".claude.json" }) |never| try testing.expect(std.mem.find(u8, s, never) == null);
 }
@@ -1397,7 +1442,7 @@ const apply_probe = struct {
     }
 };
 
-test "read and apply through the agent: one probe each, directories as the user, files owned by the user, manifest last" {
+test "read and apply through the agent: one probe each, every file written as the user, manifest last" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1416,9 +1461,7 @@ test "read and apply through the agent: one probe each, directories as the user,
         .{ .respond = .{ .body = try st(a, first) } },
         .{ .respond = .{ .body = pid } },
         .{ .respond = .{ .body = try st(a, second) } },
-        // mkdir, then four files.
-        .{ .respond = .{ .body = pid } },
-        .{ .respond = .{ .body = try st(a, "") } },
+        // Four files.
         .{ .respond = .{ .body = pid } },
         .{ .respond = .{ .body = try st(a, "") } },
         .{ .respond = .{ .body = pid } },
@@ -1439,14 +1482,19 @@ test "read and apply through the agent: one probe each, directories as the user,
         \\
     , g.h.stdout());
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
-    // The probe passes the paths to hash; the mkdir runs as the user; the
-    // files are owned by the user; the settings keep Rex's hook.
+    // The probe passes the paths to hash and runs as the user; every file
+    // is written as the user (root never follows the home's links); the
+    // settings keep Rex's hook; the manifest is last.
     try testing.expect(std.mem.find(u8, g.body(0), "skills%2Fdemo%2Frun.sh") != null);
-    try testing.expect(std.mem.find(u8, g.body(4), "runuser") != null);
-    try testing.expect(std.mem.find(u8, g.body(4), "command=.claude%2Fskills%2Fdemo") != null);
-    try testing.expect(std.mem.find(u8, g.body(6), "naboo%3Anaboo") != null);
-    try testing.expect(std.mem.find(u8, g.body(10), "settings.json") != null);
-    try testing.expect(std.mem.find(u8, g.body(12), "agent-profile.json") != null);
+    try testing.expect(std.mem.find(u8, g.body(0), "runuser") != null);
+    for ([_]usize{ 4, 6, 8, 10 }) |i| {
+        try testing.expect(std.mem.find(u8, g.body(i), "runuser") != null);
+        try testing.expect(std.mem.find(u8, g.body(i), "chown") == null);
+    }
+    try testing.expect(std.mem.find(u8, g.body(4), "command=.claude%2FCLAUDE.md") != null);
+    try testing.expect(std.mem.find(u8, g.body(6), "command=.claude%2Fskills%2Fdemo%2Frun.sh&command=0755") != null);
+    try testing.expect(std.mem.find(u8, g.body(8), "settings.json") != null);
+    try testing.expect(std.mem.find(u8, g.body(10), "agent-profile.json") != null);
 }
 
 test {
