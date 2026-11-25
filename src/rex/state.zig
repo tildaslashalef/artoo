@@ -384,8 +384,8 @@ pub fn extraChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, user: []const u8) !
             return out.items;
         },
     };
-    const fenced = template.taggedWith(v.tags, @import("../commands/vm_fence.zig").tag);
-    const rows = profile.checks(ctx, c, v.vmid, user, prof, fenced) catch |err| switch (err) {
+    const fence = try @import("setup.zig").fenceOf(ctx, c, v);
+    const rows = profile.checks(ctx, c, v.vmid, user, prof, fence) catch |err| switch (err) {
         error.OutOfMemory, error.Canceled => |e| return e,
         else => {
             defer ctx.diag = null;

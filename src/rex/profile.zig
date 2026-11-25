@@ -944,13 +944,13 @@ fn writeAsUser(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8, rel: 
 
 /// `rex status`'s rows "profile" and "permissions", from one
 /// read of the guest.
-pub fn checks(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8, profile: ?Profile, fenced: bool) ![]Check {
-    return checksFrom(ctx.arena, profile, try read(ctx, c, vmid, user, profile), fenced);
+pub fn checks(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8, profile: ?Profile, fence: permissions.Fence) ![]Check {
+    return checksFrom(ctx.arena, profile, try read(ctx, c, vmid, user, profile), fence);
 }
 
 /// The rows for a guest already read.
-pub fn checksFrom(a: Allocator, profile: ?Profile, g: Guest, fenced: bool) ![]Check {
-    const kind = kindOf(fenced, g.ssh_keys);
+pub fn checksFrom(a: Allocator, profile: ?Profile, g: Guest, fence: permissions.Fence) ![]Check {
+    const kind = kindOf(fence, g.ssh_keys);
     var out: std.ArrayList(Check) = .empty;
     if (profile) |pr| {
         const p = try plan(a, pr, g, kind, false);
@@ -979,7 +979,7 @@ pub fn checksFrom(a: Allocator, profile: ?Profile, g: Guest, fenced: bool) ![]Ch
         }
     } else try out.append(a, .{ .name = "profile", .status = .not_checked, .detail = "no profile set (agents.profile)" });
 
-    const why = try permissions.reason(a, fenced, g.ssh_keys);
+    const why = try permissions.reason(a, fence, g.ssh_keys);
     const claude_free = if (g.claude_settings) |s| blk: {
         const v = std.json.parseFromSliceLeaky(Value, a, s, .{}) catch break :blk false;
         break :blk permissions.claudeUnrestricted(v);
@@ -1402,7 +1402,7 @@ test "plan: a guest that matches is empty; without a profile only the kind is ap
     try testing.expect(again.empty());
     try testing.expectEqual(@as(usize, 5), again.current);
     try testing.expectEqual(@as(usize, 0), again.changes.len);
-    const rows = try checksFrom(a, prof, after, true);
+    const rows = try checksFrom(a, prof, after, .holds);
     try testing.expectEqualStrings("5 files current", rows[0].detail);
     try testing.expectEqual(ui.style.Status.ok, rows[0].status);
     try testing.expectEqual(ui.style.Status.ok, rows[1].status);
@@ -1443,14 +1443,14 @@ test "checksFrom: no profile; drift; unrestricted on a guest not sandboxed" {
     const prof = try testProfile(a);
     var g = try testGuest(a);
     g.ssh_keys = &.{"id_ed25519"};
-    const rows = try checksFrom(a, prof, g, true);
+    const rows = try checksFrom(a, prof, g, .holds);
     try testing.expectEqual(ui.style.Status.warning, rows[0].status);
     try testing.expectEqualStrings("1 of 5 files current; changed on the guest: ~/.claude/agents/a.md; behind the profile: ~/.claude/CLAUDE.md, ~/.claude/settings.json, ~/.claude/skills/demo/run.sh ('artoo rex setup')", rows[0].detail);
     try testing.expectEqual(ui.style.Status.ok, rows[1].status);
     try testing.expectEqualStrings("trusted-reach (fenced, but holds ~/.ssh/id_ed25519)", rows[1].detail);
 
     g.claude_settings = "{\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}";
-    const bad = try checksFrom(a, null, g, true);
+    const bad = try checksFrom(a, null, g, .holds);
     try testing.expectEqual(ui.style.Status.not_checked, bad[0].status);
     try testing.expectEqualStrings("no profile set (agents.profile)", bad[0].detail);
     try testing.expectEqual(ui.style.Status.warning, bad[1].status);
@@ -1458,11 +1458,15 @@ test "checksFrom: no profile; drift; unrestricted on a guest not sandboxed" {
 
     // Sandboxed: bypass is the point, not a warning.
     g.ssh_keys = &.{};
-    try testing.expectEqual(ui.style.Status.ok, (try checksFrom(a, null, g, true))[1].status);
+    try testing.expectEqual(ui.style.Status.ok, (try checksFrom(a, null, g, .holds))[1].status);
     // Not fenced, agy's flag.
     g.claude_settings = null;
     g.fish = permissions.fishFile(.sandboxed);
-    const agy = try checksFrom(a, null, g, false);
+    // A broken fence: the bypass is a warning, as on an unfenced guest.
+    g.claude_settings = "{\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}";
+    try testing.expectEqual(ui.style.Status.warning, (try checksFrom(a, null, g, .{ .broken = "drift" }))[1].status);
+    g.claude_settings = null;
+    const agy = try checksFrom(a, null, g, .none);
     try testing.expectEqualStrings("trusted-reach (not fenced), but agy runs with --dangerously-skip-permissions ('artoo rex setup' restricts it)", agy[1].detail);
 }
 
@@ -1542,7 +1546,7 @@ const apply_probe = struct {
         });
         const prof: Profile = .{ .dir = "/p", .entries = list.items, .files = 2, .bytes = 0 };
         const g = try read(ctx, &c, 200, "naboo", prof);
-        const p = try plan(a, prof, g, kindOf(false, g.ssh_keys), false);
+        const p = try plan(a, prof, g, kindOf(.none, g.ssh_keys), false);
         const done = try apply(ctx, &c, 200, "naboo", p);
         for (done.writes) |w| try ctx.out.print("{s} {s}{s}\n", .{ w.mode, w.path, if (std.mem.find(u8, w.content, "rex hook") != null) " (keeps rex hook)" else "" });
     }

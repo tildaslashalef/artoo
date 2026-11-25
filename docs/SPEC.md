@@ -3243,11 +3243,15 @@ How freely the agents act depends on what the guest can reach:
 
 | Kind | When | Claude | agy |
 | --- | --- | --- | --- |
-| `sandboxed` | the guest is fenced (tag `fenced`, §9.11) **and** the guest user holds no private key in `~/.ssh` (a file whose first line names `PRIVATE KEY`) | `permissions.defaultMode` `bypassPermissions`; `disableBypassPermissionsMode` removed | `~/.config/fish/conf.d/artoo-agents.fish` defines `agy` as `agy --dangerously-skip-permissions` |
+| `sandboxed` | the guest is fenced (tag `fenced`, §9.11) and the fence holds (`vm verify`'s `fence` check is ok: the rules as derived, the datacenter firewall on), **and** the guest user holds no private key in `~/.ssh` (a file whose first line names `PRIVATE KEY`) | `permissions.defaultMode` `bypassPermissions`; `disableBypassPermissionsMode` removed | `~/.config/fish/conf.d/artoo-agents.fish` defines `agy` as `agy --dangerously-skip-permissions` |
 | `trusted-reach` | every other guest | the profile's `defaultMode` kept unless it is `bypassPermissions` (then `default`); `permissions.disableBypassPermissionsMode: "disable"` | the fish file defines nothing |
 
 A fenced guest holding keys is `trusted-reach`, and the plan names the
-keys ("fenced, but holds ~/.ssh/id_ed25519"). The kind is decided on
+keys ("fenced, but holds ~/.ssh/id_ed25519"). So is a guest tagged
+`fenced` whose fence does not hold (drift, the datacenter firewall off,
+or a fence that cannot be read): the plan and `rex status` say why
+("tagged fenced, but the fence does not hold: …"), and `vm fence VM`
+repairs it. The kind is decided on
 every `rex setup`, so fencing or unfencing a guest changes it on the
 next run. The plan's `permissions` row appears only when what the agents
 may do changes (from → kind: to); a permission file written without
