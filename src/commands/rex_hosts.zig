@@ -101,6 +101,8 @@ const SyncOp = struct {
                 .forget => try changes.append(a, .{ .field = label, .from = "recorded, no longer a Rex host", .to = "dropped from the record" }),
                 .foreign => try notes.append(a, try foreignNote(ctx, x)),
             }
+            if (x.kind == .remove or x.kind == .edit) if (hosts.find(op.listed, x.label)) |h| if (h.in_app)
+                try notes.append(a, try hosts.appNote(a, label, if (x.kind == .remove) "remove it" else try std.fmt.allocPrint(a, "change its address to {s}", .{x.want})));
             if (x.kind == .add or x.kind == .edit or x.kind == .remove) sends = true;
         }
         if (changes.items.len == 0) {
@@ -267,14 +269,16 @@ pub fn fakeRex(g: *testkit.Gateway) ![]const u8 {
 
 /// `rex hosts list --json` with these `label=endpoint,endpoint` hosts.
 pub fn listJson(a: std.mem.Allocator, items: []const hosts.Host) ![]const u8 {
-    const H = struct { host: struct { endpoints: []const []const u8, icon: []const u8 = "globe", id: []const u8 = "h", label: []const u8, updated_at: []const u8 = "2026-11-25T10:00:00Z" }, from: []const u8 = "pve", held: bool = false };
+    // A host added with the CLI carries `added_from`; one saved in the app
+    // has none.
+    const H = struct { host: struct { endpoints: []const []const u8, icon: []const u8 = "globe", id: []const u8 = "h", label: []const u8, added_from: ?[]const u8, updated_at: []const u8 = "2026-11-25T10:00:00Z" }, from: []const u8 = "pve", held: bool = false };
     const list = try a.alloc(H, items.len);
-    for (items, list) |x, *h| h.* = .{ .host = .{ .endpoints = x.endpoints, .label = x.label } };
+    for (items, list) |x, *h| h.* = .{ .host = .{ .endpoints = x.endpoints, .label = x.label, .added_from = if (x.in_app) null else "workstation" } };
     return std.json.Stringify.valueAlloc(a, .{
         .home = .{ .label = "pve", .endpoint = "unix:///run/rex.sock", .this_machine = true, .reached = true },
         .hosts = list,
         .warnings = &[_][]const u8{},
-    }, .{});
+    }, .{ .emit_null_optional_fields = false });
 }
 
 const vm_list = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"},{\"vmid\":206,\"name\":\"hoth\",\"status\":\"stopped\",\"tags\":\"artoo;rex\"},{\"vmid\":207,\"name\":\"tatooine\",\"status\":\"running\",\"tags\":\"artoo\"},{\"vmid\":9000,\"name\":\"tpl\",\"status\":\"stopped\",\"tags\":\"artoo;rex\",\"template\":1}]}";

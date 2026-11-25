@@ -402,7 +402,10 @@ from Superlogical's documentation and the packages themselves (SPEC §18).
   and reachable with `rex -S LABEL`, but the app never shows it, with or
   without `--icon`, even after a restart. The app's Add Remote Host…
   saves `{label, endpoints, icon}` without `added_from`, and the CLI lists
-  that one too.
+  that one too. The app keeps its own copy of such a host: `rex hosts
+  remove LABEL` succeeds, then the app writes the host back within
+  seconds (same `id`, new `updated_at`); it goes for good only when
+  removed in the app.
 - **Antigravity (`agy`) hooks:** `hooks.json` in the customization root
   (`~/.gemini/config/`), top-level keys naming hooks (`enabled`
   optional). The events `SessionStart`, `PreInvocation`,

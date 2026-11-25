@@ -31,7 +31,16 @@ const no_autostart = "--autostart=false";
 pub const Host = struct {
     label: []const u8,
     endpoints: []const []const u8,
+    /// Saved by Rex for Mac (its record has no `added_from`). The app keeps
+    /// its own copy and puts the host back after a CLI removal or edit.
+    in_app: bool = false,
 };
+
+/// The plan note for a host saved in Rex for Mac that artoo removes or
+/// changes (`what`: "remove it", "rename it to hoth").
+pub fn appNote(a: Allocator, label: []const u8, what: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "Rex host {s} was saved in Rex for Mac, which keeps its own copy and puts it back: {s} there too (Settings > Remote Hosts).", .{ label, what });
+}
 
 /// `ssh://<user>@<fqdn>`.
 pub fn endpoint(a: Allocator, user: []const u8, fqdn: []const u8) ![]const u8 {
@@ -157,12 +166,12 @@ pub fn connect(ctx: *Context) !Connection {
 pub fn parseList(a: Allocator, text: []const u8) ![]const Host {
     const Listed = struct {
         hosts: []const struct {
-            host: struct { label: []const u8, endpoints: []const []const u8 = &.{} },
+            host: struct { label: []const u8, endpoints: []const []const u8 = &.{}, added_from: ?[]const u8 = null },
         } = &.{},
     };
     const parsed = try std.json.parseFromSliceLeaky(Listed, a, text, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
     const out = try a.alloc(Host, parsed.hosts.len);
-    for (parsed.hosts, out) |h, *o| o.* = .{ .label = h.host.label, .endpoints = h.host.endpoints };
+    for (parsed.hosts, out) |h, *o| o.* = .{ .label = h.host.label, .endpoints = h.host.endpoints, .in_app = h.host.added_from == null };
     return out;
 }
 
@@ -400,7 +409,7 @@ const sample =
     \\{"home":{"label":"pve","endpoint":"unix:///run/rex.sock","this_machine":true,"reached":true},
     \\ "hosts":[
     \\  {"host":{"endpoints":["http://naboo.example.com:7297"],"icon":"globe","id":"h1","label":"naboo","updated_at":"2026-11-25T10:00:00Z"},"from":"pve","held":false},
-    \\  {"host":{"endpoints":["ssh://artoo@hoth.lab.example.com"],"id":"h2","label":"Hoth","updated_at":"2026-11-25T10:00:00Z"},"from":"pve","held":true}
+    \\  {"host":{"endpoints":["ssh://artoo@hoth.lab.example.com"],"id":"h2","label":"Hoth","added_from":"workstation","updated_at":"2026-11-25T10:00:00Z"},"from":"pve","held":true}
     \\ ],"warnings":[]}
 ;
 
@@ -413,6 +422,9 @@ test "parseList reads labels and endpoints, ignores the rest" {
     try testing.expectEqualStrings("http://naboo.example.com:7297", hs[0].endpoints[0]);
     try testing.expect(find(hs, "hoth") != null);
     try testing.expect(onlyAt(find(hs, "HOTH").?, "ssh://artoo@hoth.lab.example.com"));
+    // Saved in the app (no added_from) or added with the CLI.
+    try testing.expect(hs[0].in_app);
+    try testing.expect(!find(hs, "hoth").?.in_app);
     try testing.expectEqual(@as(usize, 0), (try parseList(arena.allocator(), "{\"hosts\":[]}")).len);
     try testing.expectError(error.UnexpectedEndOfInput, parseList(arena.allocator(), "{\"hosts\":["));
 }
