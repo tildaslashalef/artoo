@@ -215,10 +215,13 @@ pub fn parse(a: std.mem.Allocator, out: []const u8) !State {
 /// be read is an error (the caller skips the guest).
 pub fn agents(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8) ![]const Agent {
     const r = try agent.sh(c, vmid, try guest.asUser(ctx.arena, user, user_light), 60_000);
-    if (!r.ok()) return ctx.fail(error.TaskFailed, "the agents' status could not be read (exit {?d}: {s})", .{ r.code, try k.clean(ctx, firstLine(r.err)) });
+    if (!r.ok()) {
+        const why = try k.clean(ctx, firstLine(r.err));
+        return ctx.fail(error.TaskFailed, "the read exited {?d}{s}{s}", .{ r.code, if (why.len > 0) ": " else "", why });
+    }
     const u = std.json.parseFromSliceLeaky(User, ctx.arena, std.mem.trim(u8, r.out, " \t\r\n"), .{ .ignore_unknown_fields = true }) catch
-        return ctx.fail(error.Protocol, "the agents' status could not be read: {s}", .{try k.clean(ctx, firstLine(if (r.out.len > 0) r.out else r.err))});
-    if (u.errors.len > 0) return ctx.fail(error.TaskFailed, "the agents' status could not be read ({s} failed)", .{try k.clean(ctx, try std.mem.join(ctx.arena, ", ", u.errors))});
+        return ctx.fail(error.Protocol, "the read printed no status: {s}", .{try k.clean(ctx, firstLine(if (r.out.len > 0) r.out else r.err))});
+    if (u.errors.len > 0) return ctx.fail(error.TaskFailed, "{s} failed", .{try k.clean(ctx, try std.mem.join(ctx.arena, ", ", u.errors))});
     return perTerminal(ctx.arena, u.agents);
 }
 
