@@ -2,12 +2,12 @@
 
 The vendor API behaviour artoo depends on: the UniFi Network Integration
 API (and the classic API it also uses), the Proxmox VE API, GitHub
-releases and the Tailscale API. Each fact comes from the vendor's
-official documents or from live reads (read-only, or approved runs), and
-names the vendor version it was checked against where one is known.
-Section references (`SPEC §9.5`) point into [SPEC.md](SPEC.md). A lab's
-own state belongs in the operator's lab record; operating procedures in
-[GUIDE.md](GUIDE.md).
+releases, the Tailscale API, and Rex's packages and CLI. Each fact comes
+from the vendor's official documents or from live reads (read-only, or
+approved runs), and names the vendor version it was checked against
+where one is known. Section references (`SPEC §9.5`) point into
+[SPEC.md](SPEC.md). A lab's own state belongs in the operator's lab
+record; operating procedures in [GUIDE.md](GUIDE.md).
 
 ## 1. UniFi Network Integration API
 
@@ -324,3 +324,79 @@ unverified live.
   warnings}]}`; `POST …/acl/preview?type=user|ipport&previewFor=…`.
 - **Errors and lists:** HTTP status plus `{"message": …}`; some endpoints
   document `429`. The API "does not currently support pagination".
+
+## 5. Rex
+
+Checked against Rex Server & CLI preview.23 and Rex for Mac preview.34,
+from Superlogical's documentation and the packages themselves (SPEC §18).
+
+- **apt:** `https://pkgs.superlogical.com/rex/apt`, suites `stable`,
+  `preview`, `snapshot`, component `main`. Keyring
+  `https://pkgs.superlogical.com/rex/keys/rex-archive-keyring.gpg`
+  (binary, 2854 bytes, SHA-256
+  `07a92e758ac2fc189efa17c24bf3df70d75e4216f6c262283a5c812377deb83e`; the
+  armored `rex.asc` dearmors to the same bytes); primary key
+  `E28636AC71905C6DDE40C1EDFAA6B80F641307A7` ("Superlogical Package
+  Signing", expires 2036), signing subkey
+  `E032B88AE0C279B9EA9BDF27C00363666EE29BCE` (expires 2028-09: artoo's
+  embedded keyring, `src/guest/rex-archive-keyring.gpg`, must be
+  refreshed before then).
+- **Upstream's installer** writes `/etc/apt/sources.list.d/rex.sources`
+  (`Types: deb`, `URIs`, `Suites: CHANNEL`, `Components: main`,
+  `Architectures: ARCH`, `Signed-By:
+  /etc/apt/keyrings/rex-archive-keyring.gpg`) and
+  `/etc/apt/preferences.d/rex` (`Package: rex` / `Pin: origin
+  pkgs.superlogical.com` / `Pin-Priority: 1001`, then `Package: rex` /
+  `Pin: release *` / `Pin-Priority: -1`; the package's maintainer script
+  adds the second record to a file that lacks it), then runs `apt-get
+  install -y --allow-downgrades -o Dpkg::Options::=--force-confdef -o
+  Dpkg::Options::=--force-confold rex`. Rex's packages name Superlogical
+  as Maintainer; Ubuntu's `rex` (Perl) does not.
+- **Versions:** a snapshot deb is `0.1.0~alpha.N`; the same build's `rex
+  version` prints `0.1.0-snapshot.N`.
+- **Package files:** `/usr/bin/rex`, the system units `rex.service`,
+  `rex.socket` and `rex-login-server` (none enabled by the package), the
+  `xterm-rex` terminfo, `/etc/ssh/ssh_config.d/50-rex.conf`.
+- **Personal server:** socket `$XDG_RUNTIME_DIR/rex/server.sock`. Any
+  `rex` command starts a missing one unless `REX_AUTOSTART=0` (or
+  `--autostart=false`); an autostarted server stops about 10 s after its
+  last session and client go. Without linger, logging out ends it. `rex
+  server status --json` names the running `rex_version`.
+- **Program status:** programs report it with OSC 7501 (`ESC ] 7501 ;
+  state=working:app=NAME:msg=BASE64 ESC \`). `rex block call -b BLOCK
+  program_status` answers `{records: [{state
+  (idle|working|done|blocked|error), app, effective_app, msg, title,
+  updated_at, owner{pid,name}}]}` (a subagent's record also has `id`).
+  `rex ls --json` lists `sessions [{session_id, label}]`; `rex block ls
+  -s SESSION --json` lists that session's `blocks [{block_id, label,
+  flavor}]` (one session per call). Claude Code reports
+  `app=claude-code` itself.
+- **Skill:** `rex skill status --json` → `{scope, harnesses: [{id,
+  detected, session_naming, items: [{kind (skill|hook), path, state
+  (current|outdated|missing|foreign|unreadable|unsupported)}]}]}`; `rex
+  skill setup [--agent ID]… [--session-naming] [--json]`; harness ids
+  `claude`, `codex`, `opencode`, `pi`.
+- **Terminfo:** `rex terminfo status --json` → `{term, reason, entry,
+  system_guard_state, conclusion ("Ready: …" when ready), fix}`; `rex
+  terminfo setup --system`.
+- **Hosts:** `rex hosts list --json` → `{home: {label, endpoint,
+  this_machine, reached}, hosts: [{host: {id, label, endpoints[], icon,
+  updated_at}, from, held}], warnings}`; `rex hosts add LABEL ENDPOINT…
+  [--icon]`, `edit LABEL [--label NEW] [--endpoint E]…`, `remove LABEL`;
+  labels compare without case. An SSH endpoint is
+  `ssh://[USER@]HOST[:PORT][/SOCKET]` and needs `rex` on the remote PATH.
+  Rex for Mac carries the CLI at `/Applications/Rex.app/Contents/Helpers/Rex
+  Server.rex/Contents/MacOS/rex`.
+- **Antigravity (`agy`) hooks:** `hooks.json` in the customization root
+  (`~/.gemini/config/`), top-level keys naming hooks (`enabled`
+  optional). The events `SessionStart`, `PreInvocation`,
+  `PostInvocation` and `Stop` take `[{type: "command", command,
+  timeout}]`, the tool events `[{matcher, hooks}]`. A command runs with
+  `sh -c` in that directory, reads JSON on stdin and prints JSON
+  (`SessionStart`: `{"injectSteps": [{"systemMessage": {"systemMessage":
+  TEXT}}]}`; `Stop`'s input has `terminationReason`).
+- **Claude Code settings:** `permissions.defaultMode` (`default`,
+  `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`); `auto`
+  and `bypassPermissions` take effect from user settings, not a
+  project's; `permissions.disableBypassPermissionsMode: "disable"` works
+  from any scope.

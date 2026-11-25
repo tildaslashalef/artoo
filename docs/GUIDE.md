@@ -313,6 +313,31 @@ artoo config set guests.fence_allow_out 'naboo hoth tcp 5432'   # a kept outboun
 - `svc add|set|rm` keep a fenced guest's inbound rules in step within
   the same plan; `vm verify`, `vm show` and `status` report drift.
 
+### Rex and coding agents on a guest (SPEC §18)
+
+```console
+artoo config set agents.profile ~/dotfiles   # optional: rules, skills and settings for the agents
+artoo rex setup naboo -n                     # the plan: package, pins, linger, skill, profile, permissions
+artoo rex setup naboo                        # a live change: an approved plan first
+artoo rex status                             # every guest tagged rex, with the agents working there
+artoo rex hosts sync -n                      # the workstation's Rex hosts for those guests
+artoo vm new hoth --rex                      # a new guest with Rex (or rex.default true)
+```
+
+- Ordinary guests only; the edge, the router and the watchdog are
+  refused. Install and sign in to the agents yourself (`claude`,
+  `agy`); artoo never copies an agent's login.
+- The permission kind follows the fence: a fenced guest without private
+  SSH keys runs agents without prompts (`sandboxed`); every other guest
+  keeps prompts and has bypass mode disabled (`trusted-reach`). Fence
+  the guest first (above) to get `sandboxed`.
+- A profile file edited on the guest is left alone and reported by
+  `rex status`; `rex setup VM --force-profile` puts the profile's back.
+- `vm reboot --pending` skips a guest where an agent is working or
+  waiting for you; `--force-agents` (typed confirmation) reboots it
+  anyway. Rex updates come with `vm upgrade`; the running server keeps
+  its sessions and takes the new version once it stops.
+
 ### Images and templates (SPEC §9.2)
 
 ```console

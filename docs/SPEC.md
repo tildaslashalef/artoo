@@ -15,6 +15,7 @@ it describes; it holds no plans.
 - **Cloudflare** — the public DNS zone `example.com` and Cloudflare Tunnel,
   only for services explicitly made public (§9.6, §14).
 - **Tailscale** — the lab's side of a tailnet (§17).
+- **Rex** — the terminal on guests that run coding agents (§18).
 
 From the workstation, artoo inspects and operates these systems, creates
 a ready Ubuntu guest in one command — guest user and shell environment
@@ -112,7 +113,8 @@ artoo vm ls [-a|--all] [-s|--status STATE] [--name GLOB]
 artoo vm show VM | config VM          pending values marked (§9.13)
 artoo vm urls VM                      service URLs and public hosts that reach the VM
 artoo vm start|shutdown|reboot VM
-artoo vm reboot --pending             reboot the guests that want it after updates, one by one (§9.12)
+artoo vm reboot --pending [--force-agents [--confirm every-guest]]
+                                      reboot the guests that want it after updates, one by one (§9.12, §18.8)
 artoo vm stop VM                      forced stop (destructive confirmation)
 artoo vm set VM KEY=VALUE… [--reboot] allowlisted config keys, digest-guarded (§9.13); name= only on foreign VMs
 artoo vm rename OLD NEW               rename an artoo guest everywhere its name lives (§9.18; typed confirmation)
@@ -123,7 +125,7 @@ artoo vm snap ls VM | add VM NAME [-d TEXT] [--ram] | rm VM NAME | rollback VM N
 artoo vm snap prune VM|--all [--keep N] [--older-than DAYS]
                                       delete artoo-owned snapshots beyond the cap or age (§9.16)
 artoo vm new [NAME] [-s SIZE] [--cores N] [--memory SIZE] [--disk GIB] [--ip ADDR] [--id VMID]
-                    [--template T] [--role ROLE] [--ssh-jump] [--no-dns] [--no-watch]   (§9.3)
+                    [--template T] [--role ROLE] [--ssh-jump] [--no-dns] [--no-watch] [--rex|--no-rex]   (§9.3)
 artoo vm verify VM|--all [--full] [--no-dns]   read-only readiness checks (§9.4)
 artoo vm upgrade VM [--snapshot]      install the guest's pending package updates (§9.12, §9.16)
 artoo vm upgrade --all                every ordinary guest in one plan; not edge, router, watchdog (§9.12)
@@ -162,6 +164,9 @@ artoo router setup [--stdin] [--snapshot] | status
                                       the Tailscale subnet router (§9.8)
 artoo watch setup [--snapshot] | status | enroll VM…|--all | secret grafana|phone [--stdin] | forget HOST
                                       the watchdog VM `scarif` (§9.9)
+artoo rex setup VM… [--force-profile] Rex, its agent skill, the agent profile and permissions on guests (§18.3)
+artoo rex status [VM…]                Rex and the agents on guests tagged rex (§18.7)
+artoo rex hosts sync                  the workstation's Rex hosts for guests tagged rex (§18.9)
 ```
 
 ### 3.4 Confirmation
@@ -409,6 +414,9 @@ with its default:
 | `guests.fence_allow_out` | empty | fenced guests' outbound exceptions, `VM PEER PROTO PORTS` entries separated by `;` (§9.11) |
 | `guests.snapshot_keep` | `2` | 1–10: artoo-owned snapshots (`artoo-…`) a guest may hold; `--snapshot` refuses at the cap, `vm snap prune` keeps this many (§9.16) |
 | `guests.snapshot_max_age_days` | `14` | 1–365: an older artoo-owned snapshot is a warning in `status`, `vm verify` and `vm snap ls`, and `vm snap prune` selects it (§9.16) |
+| `rex.channel` | `preview` | Rex's apt suite: `preview`, `snapshot` or `stable` (§18.2) |
+| `rex.default` | `false` | `vm new` sets up Rex on ordinary guests (§18.2) |
+| `agents.profile` | empty | the agent profile's directory on the workstation; empty: none (§18.5) |
 
 - `guests.user` is the account `vm new` creates on every guest: SSH key
   login, `sudo` with a generated password kept in the secret store as
@@ -790,9 +798,14 @@ no server IDs are stored in the repository.
    | update ssh config | when `~/.artoo/ssh_config` exists: the guest's block (§9.10) |
    | add DNS record | `<name>.<guests.domain>` → address on UniFi (§10.3), unless `--no-dns` or the record already points there |
    | enroll in watch | when a watchdog exists and the guest is not tagged `no-watch` or the watchdog itself (§9.9) |
+   | set up Rex | with `--rex`, or `rex.default` true and no `--no-rex`: `rex setup`'s steps (§18.3) in one step; its checks join step 5's |
 
    The address is reserved after the clone (the MAC exists only then)
-   and always before the first start.
+   and always before the first start. `--rex` with `--role` or with
+   `--no-rex` is a usage error (exit 2); with `rex.default` true a
+   `--role` guest gets no Rex (§18.1). With Rex, the agent profile is
+   loaded and checked in step 2, so a refused profile (§18.5) refuses
+   before anything is created.
 5. **Verify** with `vm verify`'s checks (§9.4) and print the ledger,
    the checks and the result: name, VMID, address, FQDN, the SSH command,
    and the pinned host key as one known_hosts line
@@ -825,6 +838,7 @@ when there is something to remove, stopping at the first failure:
 | delete Keychain password | the stored `guest/<name>` |
 | forget SSH host key | its entry in `~/.artoo/known_hosts` |
 | remove from ssh config | its block in `~/.artoo/ssh_config` |
+| remove Rex host | its Rex host on the workstation, when `~/.artoo/rex-hosts.json` records it (§18.9); skipped with a note without a running Rex; its failure fails only this step |
 | forget in watch | its metrics on a running watchdog, so alerts about it resolve (§9.9) |
 | remove from the tailnet | its device, when it is a lab device (§17) |
 
@@ -860,6 +874,7 @@ the last column says otherwise. Any failure → exit 8.
 | pending updates | §9.12's simulation on the current package lists, nothing refreshed or installed; other updates counted in the detail, phased ones not. Fails on packages an interrupted dpkg left unfinished, naming them and `sudo dpkg --configure -a` (they stop apt's daily refresh and unattended upgrades) | warning: security updates waiting, naming them and `vm upgrade VM` (the unattended run installs them within a day, so one that stays is the updater falling behind); lists older than 2 days (apt's daily refresh is not getting through), naming `sudo systemctl start apt-daily.service` on the guest |
 | reboot pending | none | warning, with the packages that want it |
 | config pending | no Proxmox keys waiting for a restart (§9.13) | warning |
+| Rex | on a guest tagged `rex`: `rex status`'s checks (§18.7), the agent rows excepted | not checked without an answering agent |
 | Alloy | enrolled and running (§9.9) | not checked without a `role-watch` VM, on the watchdog itself, or on a guest tagged `no-watch` |
 | fence | §9.11, on a guest tagged `fenced` | warning: the datacenter firewall is off; not checked on a guest that is not fenced |
 | snapshots | the VM's snapshots can be read; the detail counts them (and artoo's) | warning: an artoo-owned snapshot older than `guests.snapshot_max_age_days`, naming `vm snap prune VM` (§9.16) |
@@ -1853,7 +1868,8 @@ ordinary guest with `--all`.
   restarted (needrestart, `NEEDRESTART_MODE=a`); configuration files keep
   local changes (`--force-confdef --force-confold`); never a reboot.
   Notes: the lists' age, the deferred and kept-back counts, pinned
-  packages (Alloy, the watchdog's stack, §9.9) staying at their pins.
+  packages (Alloy, the watchdog's stack, §9.9) staying at their pins,
+  and the agents at work on a guest tagged `rex` (§18.8).
   Recovery: the rollback to the `--snapshot` (§9.16) taken first, else
   none (apt has no undo). The fingerprint is the planned set and the
   lists' stamp.
@@ -1930,7 +1946,7 @@ whose `/run/reboot-required` exists (the check `vm verify` reads, §9.4).
   and `role-watch` guests that want it, with their packages, left to `vm
   reboot VM` as for `vm upgrade --all`; the guest artoo runs on (its host
   name is the VM name). Nobody to reboot is a no-op (exit 5) naming all
-  of these.
+  of these. Guests tagged `rex` have their agents read first (§18.8).
 - **Plan:** one change row per guest, `running → rebooted (packages)`.
   Impact: one guest after another; each must be running again, its agent
   answering and its request gone before the next starts; the first that
@@ -2206,8 +2222,8 @@ export --guest-passwords` gives every machine the same ones (§6.1).
 
 A guest's name is carried by its hostname, UniFi client record, DNS
 record, pinned host key and `ssh_config`, the stored `guest/<name>`
-password, service upstreams, fence exceptions, tailnet name and the
-watchdog's series. Changing Proxmox's `name` alone leaves it half
+password, service upstreams, fence exceptions, tailnet name, the
+watchdog's series and the workstation's Rex host (§18.9). Changing Proxmox's `name` alone leaves it half
 renamed, so `vm set name=` refuses on artoo guests (tag `artoo`) and
 points to `vm rename`; foreign VMs keep it. `vm rename` is for guests
 whose disk holds state; cheap ones may be rebuilt (`vm rm`, `vm new`).
@@ -2250,6 +2266,7 @@ under either name, so a stopped run continues.
   | Services | each `svc` with upstream OLD moved to `NEW:PORT` as `svc set` does, fence steps included (§9.6, §9.11) |
   | SSH | the pinned key's `HostKeyAlias`, then `~/.artoo/ssh_config`: NEW's block written as `vm ssh-config` writes it (static address, else the agent's IPv4), then OLD's removed — never OLD's alone (§9.10) |
   | Secret store | `guest/NEW` written and read back, then `guest/OLD` removed |
+  | Rex host | when `~/.artoo/rex-hosts.json` records OLD: `rex hosts edit OLD --label NEW --endpoint ssh://USER@NEWFQDN`, then the record (§18.9); skipped with a note without a running Rex; its failure fails only this step (exit 8, `rex hosts sync` repairs it) |
   | Fence | entries naming OLD rewritten in `guests.fence_allow_out` (`~/.artoo/config.json`); the fences of the guest and of fenced guests whose exceptions name it re-derived, those that differ re-applied. The plan shows each one's rule diff as the renamed lab derives it, and the step applies only those rules (a fresh derivation that differs fails the step). Runs only alongside another step |
   | Tailnet | tag `tailnet` or `role-router`: `tailscale set --hostname=NEW` through the agent, read back from `tailscale status --json`; with a Tailscale credential, the device (by the node ID the guest reports) read every 2 s for up to about 30 s until the control plane shows NEW, renamed through the API only if it keeps the old hand-set name. Another device already named NEW refuses at read time (§17) |
   | Watchdog | below (§9.9) |
@@ -2539,6 +2556,7 @@ src/
   guest/                  crypt512, vendor data, images, names, apt, host keys, payload/
   edge/, watch/           files rendered for the edge VM (§9.7) and the watchdog (§9.9)
   update/                 self-update (§16)
+  rex/                    Rex on guests: setup, state, agy bridge, agent profile, permissions, hosts (§18)
   testkit.zig             test harness (§13)
   version_tag.zig         `--version` from Git tags (RELEASING.md §1)
 scripts/                  leak check, release archives, Grafana board generator, Proxmox host scripts, live/ (§13)
@@ -2719,6 +2737,7 @@ answered by `1.1.1.1` within seconds, removed and verified by 404.
 - UniFi Integration API: [API.md](API.md) §1. Cloudflare API: §14. Tailscale API:
   [API.md](API.md) §4; trust credentials and scopes:
   <https://tailscale.com/docs/reference/trust-credentials>.
+- Rex: [API.md](API.md) §5; <https://www.superlogical.com/rex>.
 - Zig 0.17.0 stdlib: `~/.local/opt/zig/stable/lib/std`.
 
 ## 16. Self-update (`artoo update`)
@@ -3015,3 +3034,272 @@ device, a route other than the LAN, a key value reaching output). Live
 runs, each under an approved plan: read-only first (`doctor --connect`,
 `ts devices ls`); then a disposable guest joined, renamed and removed;
 the router flow when a router is rebuilt.
+
+## 18. Rex on guests
+
+[Rex](https://www.superlogical.com/rex) is a terminal and multiplexer
+whose server runs on a guest and whose client runs on the workstation;
+sessions outlive the connection. artoo installs it on ordinary guests
+that run coding agents (Claude Code, Antigravity `agy`), sets the agents
+up the same way on each, and lets the lab's own operations (reboots,
+upgrades, removal, renames) know an agent is working there. Rex's
+packages, files and CLI: [API.md](API.md) §5.
+
+### 18.1 Scope
+
+- **Which guests.** Ordinary artoo guests: running, tagged `artoo`, not
+  a template, and not the edge, the router or the watchdog (roles
+  `edge`, `router`, `watch`, §9.7–§9.9). A guest with Rex carries the
+  Proxmox tag `rex`; `rex status` without a VM, `rex hosts sync` and
+  the reboot guard (§18.8) find guests by it.
+- **Access.** Rex for Mac reaches a guest at `ssh://<guests.user>@<fqdn>`
+  through the SSH config of `vm ssh-config` (§9.10). The guest runs no
+  Rex listener: sshd authenticates, Rex has no authentication of its own.
+- **What artoo installs.** Rex from Superlogical's apt repository,
+  signed by a pinned key; nothing is built on the guest. The agents
+  (Claude Code, `agy`) are the operator's to install and sign in to.
+  artoo never reads, writes or copies an agent's credentials
+  (`~/.claude/.credentials.json`, `~/.gemini/` OAuth state).
+- **Updates.** Rex updates arrive with `vm upgrade` (§9.12), not with
+  unattended upgrades, which install only Ubuntu's release and
+  `-security` pockets (§9.1): a preview's changes are the operator's to
+  take. A personal server keeps running, with its
+  sessions, after an upgrade and runs the new version once it stops
+  (`rex status` says when the two differ). `vm upgrade` never restarts
+  it: needrestart's default configuration leaves `user@N.service` alone
+  on the baseline's Ubuntu 26.04. A reboot ends every session.
+
+### 18.2 Configuration
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `rex.channel` | `preview` | apt suite: `preview`, `snapshot` or `stable`. `rex setup` writes it; a change takes effect on the next `rex setup`. |
+| `rex.default` | `false` | `true`: `vm new` sets up Rex on every ordinary guest it creates (`--no-rex` opts out); `false`: only with `--rex`. |
+| `agents.profile` | empty | the agent profile's directory on the workstation (§18.5); empty: no profile. |
+
+### 18.3 `rex setup VM…`
+
+Through the guest agent as root, one plan for every guest named (a
+change row per guest), confirmed once (risk normal). Each step reads the
+guest first and is reported, not redone, when its state is already
+right: a rerun on a set-up guest changes nothing and says so (exit 0,
+"nothing to change").
+
+1. **apt key**: `/etc/apt/keyrings/rex-archive-keyring.gpg`, the binary
+   keyring embedded in artoo ([API.md](API.md) §5), compared by SHA-256.
+2. **apt source**: `/etc/apt/sources.list.d/rex.sources` (deb822, suite
+   `rex.channel`, the guest's architecture).
+3. **apt pin**: `/etc/apt/preferences.d/rex`, exactly upstream's file
+   (Rex's origin at 1001, every other origin at −1). Ubuntu's archive
+   carries an unrelated `rex` (a Perl tool) that must never win.
+4. **package**: `apt-get update`, then upstream's install command, both
+   with `-o DPkg::Lock::Timeout=300` as `vm upgrade`, when `rex` is
+   missing or not Superlogical's (its Maintainer field, as upstream's
+   installer judges it). A guest already on Rex keeps its version
+   (updates are `vm upgrade`'s). The guest is read again after the
+   install; terminfo and the skill are decided then. `rex status` judges
+   the origins by `apt-cache policy rex`.
+5. **linger**: `loginctl enable-linger <guests.user>`, so sessions
+   survive the last logout. artoo uses `loginctl` rather than `rex
+   server install` (which also enables a user socket), so the server
+   still starts on first use and stops when idle.
+6. **terminfo**: `rex terminfo setup --system` when `rex terminfo
+   status` is not `Ready`.
+7. **agent skill**: as the guest user, `rex skill setup --session-naming
+   --agent A` for each harness `rex skill status` detects (Claude Code,
+   Codex, OpenCode, pi) with an item outdated or missing or session
+   naming off; skipped with a note when none is detected. Items Rex
+   reports `foreign` or `unreadable` are left alone and named in the
+   plan; a `foreign` item is replaced only by `rex skill setup --force`
+   on the guest, never by artoo.
+8. **agy bridge** (§18.4), when `agy` is on the guest user's PATH.
+9. **agent profile** (§18.5) when `agents.profile` is set, and the
+   **permission kind** (§18.6) always: for Claude where it is (on the
+   PATH, or `~/.claude/settings.json` exists), for agy where it is. The
+   guest is read again just before this step, so the merges keep what
+   steps 7 and 8 wrote.
+10. **tag** `rex`, added with the config digest.
+
+Commands as the guest user run through `runuser -u USER -- env HOME=…
+XDG_RUNTIME_DIR=/run/user/UID REX_AUTOSTART=0 PATH=…`, never a login
+shell (the user's shell is fish), so no step starts a Rex server. `rex
+terminfo setup --system` runs as root (`HOME=/root`); every other `rex`
+command as the guest user. Scripts on the guest use `jq` (in the
+baseline, §9.1).
+
+**Refusals** (exit 5, nothing sent): a template, a guest not tagged
+`artoo`, a role `edge`, `router` or `watch`, a stopped guest, a guest
+whose agent does not answer, an `agents.profile` that is not a directory
+or holds a refused file (§18.5). Every guest is read first; one refused
+guest refuses the whole run, naming it.
+
+After the steps, and on a run with nothing to change, `rex status`'s
+checks (§18.7) run for each guest; a failed check → exit 8.
+`--force-profile` overwrites profile files changed on the guest (§18.5).
+
+### 18.4 The agy bridge
+
+Rex has no harness for `agy`. artoo bridges it, and steps aside when
+`rex skill status` lists an `agy` harness (the bridge is then a no-op,
+reported):
+
+- **Skill**: `~/.gemini/config/skills/rex/SKILL.md`, a stub that runs
+  `rex __internal skill` for the guide, as Rex's own stub does.
+- **Hooks**: the key `artoo-rex` in `~/.gemini/config/hooks.json` (other
+  keys kept), whose commands run `~/.config/artoo/agy-rex-hook EVENT`:
+  - `SessionStart` injects the text of `rex __internal session-start
+    --agent claude` as a system message (its context is agent-neutral);
+  - `PreInvocation` reports `working` and `Stop` reports `done`
+    (`USER_CANCELED` → `idle`, `ERROR` → `error`), with OSC 7501
+    (`state=S:app=agy`, no `msg`) written to `/dev/tty`.
+
+  Timeouts: 10 s for `SessionStart`, 5 s for the others. Outside Rex
+  (`REX_BLOCK` unset) the hook prints `{}` and does nothing. It always
+  exits 0 and prints valid JSON, so a Rex fault never stops an agent.
+
+### 18.5 Agent profile (`agents.profile`)
+
+One directory on the workstation, the same for every guest; `rex setup`
+copies it, and copies it again after it changes.
+
+| Profile path | Guest path |
+| --- | --- |
+| `rules/AGENTS.md` | `~/.claude/CLAUDE.md`, and `~/.gemini/config/AGENTS.md` when `agy` is present |
+| `skills/NAME/**` | `~/.claude/skills/NAME/**`, and `~/.gemini/config/skills/NAME/**` when `agy` is present (`skills/rex` is skipped: `rex skill setup` owns it) |
+| `claude/settings.json` | merged into `~/.claude/settings.json` |
+| `claude/**` (other files; `README.md` skipped) | `~/.claude/**` |
+| `agy/settings.json` | merged into `~/.gemini/antigravity-cli/settings.json` |
+| `agy/hooks.json` | merged into `~/.gemini/config/hooks.json` |
+| `agy/**` (other files) | `~/.gemini/config/**` |
+
+Anything else in the directory (a `README.md`, `.git/`, `.DS_Store`) is
+ignored. Only the rows that say so depend on `agy` being present; the
+`claude/**` and other `agy/**` rows are written whatever is installed;
+the permission kind alone follows which agents are there (§18.3 step 9).
+Every guest-side read and write of the profile runs as the guest user,
+never root: the home's links are the user's to set, and root following
+one would reach outside it. Files keep their executable bit (0755, else
+0644), owned by the guest user.
+
+- **Merged JSON**: the profile's top-level keys win; `permissions` is
+  merged key by key; `hooks` per event, an entry kept once (by command),
+  so Rex's own hooks and the guest's other settings survive. A merged
+  file is never "changed on the guest"; one that is not a JSON object on
+  the guest is left alone and named (plan, `rex status`).
+- **Copied files**: the manifest `~/.config/artoo/agent-profile.json`
+  (`{"files": {PATH: SHA256}}`) on the guest records what artoo wrote. A
+  guest file equal to the profile is current; one absent, or equal to
+  the manifest's hash, is written; one changed on the guest since (or
+  never written by artoo) is left alone and named in the plan and in
+  `rex status` ("changed on the guest"), and `--force-profile`
+  overwrites it. A file dropped from the profile stays on the guest,
+  named in the plan. A directory where a profile file goes is left
+  alone and named, even with `--force-profile`.
+- **Refused** (the run refuses, naming the file, never its content):
+  `.credentials.json`, `credentials`, `credentials.json`,
+  `oauth_creds.json`, `.netrc`, `.env`, `.envrc`, `.env.*`, `*.pem`,
+  `*.key`, `*.p12`, `*.pfx`, `id_*` without `.pub`, a symbolic link, any
+  file containing `PRIVATE KEY`, a `claude/settings.json` whose `env`
+  names a variable that looks like a secret (`KEY`, `TOKEN`, `SECRET`,
+  `PASSWORD`, `CREDENTIAL`), two profile files that land on one guest
+  path, a file over 1 MiB, a profile over 4 MiB or 500 files.
+- MCP servers are not part of the profile: Claude keeps them in
+  `~/.claude.json`, its own state file.
+
+### 18.6 Permission kinds
+
+How freely the agents act depends on what the guest can reach:
+
+| Kind | When | Claude | agy |
+| --- | --- | --- | --- |
+| `sandboxed` | the guest is fenced (tag `fenced`, §9.11) **and** the guest user holds no private key in `~/.ssh` (a file whose first line names `PRIVATE KEY`) | `permissions.defaultMode` `bypassPermissions`; `disableBypassPermissionsMode` removed | `~/.config/fish/conf.d/artoo-agents.fish` defines `agy` as `agy --dangerously-skip-permissions` |
+| `trusted-reach` | every other guest | the profile's `defaultMode` kept unless it is `bypassPermissions` (then `default`); `permissions.disableBypassPermissionsMode: "disable"` | the fish file defines nothing |
+
+A fenced guest holding keys is `trusted-reach`, and the plan names the
+keys ("fenced, but holds ~/.ssh/id_ed25519"). The kind is decided on
+every `rex setup`, so fencing or unfencing a guest changes it on the
+next run. `rex status` and `vm verify` warn when an agent may run
+unrestricted (`bypassPermissions` in Claude's settings, or the fish
+file's flag) on a guest that is not `sandboxed`.
+
+### 18.7 `rex status [VM…]`
+
+Read-only. Without a VM: every guest tagged `rex`. One embedded script
+through the guest agent gathers everything as one JSON object; only the
+fields below leave the guest.
+
+| Check | ok | warning | failed |
+| --- | --- | --- | --- |
+| package | Rex's origin, version | — | missing, or another origin |
+| apt pin | Rex 1001, others −1 | Ubuntu's `rex` not at −1, Rex's origin not at 1001 or unknown to apt, the pin file missing or not upstream's | — |
+| linger | on | off (sessions end at logout) | — |
+| server | running version, sessions | installed ≠ running ("runs X; Y once it stops"), not running | — |
+| terminfo | `Ready` | not ready (`artoo rex setup VM`) | — |
+| skill A | current (a `foreign` or `unreadable` item named, left alone) | an item outdated or missing, session naming off | — |
+| agy bridge | current | missing or changed | — |
+| profile | N files current | changed on the guest, or behind the workstation's profile | — |
+| permissions | the kind | unrestricted on a guest not `sandboxed` | — |
+| agent (one per terminal with a status) | `claude-code working in naboo-api` | `blocked` (waiting for the operator), `error` | — |
+
+A row that is not checked says why (no agent, no profile set). A stopped
+guest, or one whose agent does not answer, has every row not checked,
+which is not a failure. A terminal's records (an agent and its
+subagents) fold into one row with the most pressing state (blocked,
+error, working, done, idle). A named VM not tagged `rex` is refused
+(exit 5, naming `rex setup`). Several guests: one block per guest, then
+a summary line. `-o json`: a list of `{vm, vmid, checks, agents:
+[{session, block, app, state, title, updated_at}]}`. Any failure → exit
+8.
+
+### 18.8 Agents and the lab's own operations
+
+- **`vm reboot --pending`** reads each `rex` guest's agents first and
+  skips a guest where one is `working` or `blocked` ("naboo (claude-code
+  working in naboo-api)") and one whose agents cannot be read, and reads
+  them again just before each reboot. `--force-agents` includes them
+  all; the plan names the agents and, when a busy or unreadable guest is
+  actually included, the risk is destructive: the confirmation becomes
+  the typed target `every-guest` (`--yes --confirm every-guest`
+  non-interactively). When nothing was busy at the plan (only y/N
+  asked), a guest busy by its turn is still skipped. A server socket
+  that does not answer, or an answer `jq` cannot read, counts as
+  unreadable, never as "no agents". Whether each guest is busy is part
+  of the plan's fingerprint.
+- **`vm upgrade`** names, in its plan, the agents working on each `rex`
+  guest, and goes ahead: it reboots nothing and restarts no user
+  session (§18.1).
+- **`vm rm`** and **`vm rename`** remove or rename the guest's Rex host
+  on the workstation when artoo recorded it (§18.9, §9.3, §9.18).
+
+### 18.9 `rex hosts sync`
+
+The workstation's Rex hosts (`rex hosts`, on its home server): one host
+per guest tagged `rex`, labelled with the guest's name, endpoint
+`ssh://<guests.user>@<fqdn>`. artoo records the labels it manages in
+`~/.artoo/rex-hosts.json`.
+
+- A missing host is added; a recorded host whose endpoint differs is
+  edited; a recorded host whose guest is gone or no longer tagged `rex`
+  is removed. Removal is part of the same confirmed plan and touches only
+  hosts artoo recorded.
+- A host with the guest's label and exactly the wanted endpoint is
+  adopted (recorded, nothing sent). One with other endpoints that artoo
+  did not add is left alone and named in the plan, with the commands
+  that let artoo manage it (`rex hosts remove LABEL`, then sync again).
+- The `rex` CLI is found on the PATH or in Rex for Mac's bundle
+  ([API.md](API.md) §5). Without it, or without a running Rex on the
+  workstation, the command refuses (exit 5); it never starts Rex. `vm
+  rm` and `vm rename` skip their Rex step with a note then.
+
+### 18.10 Testing
+
+Offline: the probe script's JSON for every state (a fresh guest, Rex
+from another origin, wrong pins, linger off, a stale server, an
+outdated skill, profile drift, each permission kind); the profile's
+refusals; the JSON merges; the bridge's hook output for each event; the
+hosts plan from a fake `rex` runner; the reboot guard. Live runs, each
+under an approved plan (§13): a disposable guest with `vm new --rex`, a
+Rex session over SSH from the workstation, `rex status` with an agent
+working, `rex hosts sync`, the reboot guard, and `vm rm`; the bridge's
+OSC from a hook process (`/dev/tty`) and Rex's session-start text for
+`agy` are checked there.
