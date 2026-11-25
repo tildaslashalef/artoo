@@ -1,8 +1,8 @@
-//! What Rex looks like on a guest (SPEC §20.7, §17.5): one embedded
+//! What Rex looks like on a guest: one embedded
 //! probe, run as root through the guest agent, prints one JSON object of
 //! the fields below — nothing else leaves the guest — parsed into a
 //! typed `State`, then judged into `rex status`'s and `vm verify`'s
-//! check rows. `agents` is the lighter read the reboot guard (§20.8) and
+//! check rows. `agents` is the lighter read the reboot guard and
 //! `vm upgrade`'s plan use.
 
 const std = @import("std");
@@ -19,7 +19,7 @@ const template = @import("../commands/template.zig");
 const Context = app.Context;
 const Check = vm_new.Check;
 
-/// The program status of one terminal (SPEC §17.5), as the guest reports
+/// The program status of one terminal, as the guest reports
 /// it (sanitize before rendering).
 pub const Agent = struct {
     /// The Rex session's label.
@@ -31,7 +31,7 @@ pub const Agent = struct {
     title: []const u8 = "",
     updated_at: []const u8 = "",
 
-    /// `working` or `blocked`: a reboot would cut it off (SPEC §20.8).
+    /// `working` or `blocked`: a reboot would cut it off.
     pub fn busy(x: Agent) bool {
         return std.mem.eql(u8, x.state, "working") or std.mem.eql(u8, x.state, "blocked");
     }
@@ -131,7 +131,7 @@ const user_agents =
     \\if [ -n "$srv" ]; then
     \\  g=$( {
     \\    # Each jq's own status counts: a shape it cannot read is an error
-    \\    # record, never "no sessions" (SPEC §20.8).
+    \\    # record, never "no sessions".
     \\    # jq -e: 4 is "no output" (nothing listed), anything else not 0 an error.
     \\    l=$(rex ls --json 2>/dev/null) || l=
     \\    ids=$(printf '%s' "$l" | jq -er '(.sessions // error("no sessions")) | .[] | [.session_id, (.label // "")] | @tsv' 2>/dev/null); rc=$?
@@ -167,7 +167,7 @@ const user_full = user_agents ++
 
 /// `apt-cache policy rex` summarized: each version line carries its pin
 /// priority, the lines under it (a right-aligned priority after seven
-/// spaces, then the source) its origins (SPEC §20.3 step 4).
+/// spaces, then the source) its origins.
 const policy_awk =
     \\awk '
     \\function flush() {
@@ -228,7 +228,7 @@ pub fn parse(a: std.mem.Allocator, out: []const u8) !State {
     return std.json.parseFromSliceLeaky(State, a, std.mem.trim(u8, out, " \t\r\n"), .{ .ignore_unknown_fields = true });
 }
 
-/// The agents on a guest for the reboot guard (SPEC §20.8), one per
+/// The agents on a guest for the reboot guard, one per
 /// terminal. A server that is not running has none; a status that cannot
 /// be read is an error (the caller skips the guest).
 pub fn agents(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8) ![]const Agent {
@@ -286,7 +286,7 @@ pub fn busyText(ctx: *Context, list: []const Agent) !?[]const u8 {
 // ---------------------------------------------------------------- checks
 
 /// A deb version (`0.1.0~alpha.N`) and `rex version`'s
-/// (`0.1.0-snapshot.N`) in one form, so the two compare (SPEC §17.5).
+/// (`0.1.0-snapshot.N`) in one form, so the two compare.
 pub fn normalVersion(a: std.mem.Allocator, v: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     for (std.mem.trim(u8, v, " \t\r\n")) |ch| try out.append(a, if (ch == '~') '-' else ch);
@@ -310,7 +310,7 @@ pub fn notChecked(ctx: *Context, why: []const u8) ![]const Check {
     return out;
 }
 
-/// SPEC §20.7's rows for `st`, without the agent rows (`agentChecks`).
+/// `rex status`'s rows for `st`, without the agent rows (`agentChecks`).
 /// `vm` names the guest in the hints ('artoo rex setup VM').
 pub fn checks(ctx: *Context, st: State, vm: []const u8) ![]const Check {
     const a = ctx.arena;
@@ -368,8 +368,8 @@ pub fn checks(ctx: *Context, st: State, vm: []const u8) ![]const Check {
     return out.items;
 }
 
-/// The agy bridge row (SPEC §20.4) and the profile and permissions rows
-/// (§20.5, §20.6), each from its own read of the guest: shown after
+/// The agy bridge row and the profile and permissions rows
+///, each from its own read of the guest: shown after
 /// `checks` by `rex status` and `vm verify`.
 pub fn extraChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, user: []const u8) ![]const Check {
     const a = ctx.arena;
@@ -414,7 +414,7 @@ fn pinCheck(ctx: *Context, st: State, setup: []const u8) !Check {
     return .{ .name = "apt pin", .status = .ok, .detail = "Rex 1001, others −1" };
 }
 
-/// One row per harness `rex skill status` detects (SPEC §20.3 step 7).
+/// One row per harness `rex skill status` detects.
 fn skillChecks(ctx: *Context, out: *std.ArrayList(Check), skills: ?[]const Harness, setup: []const u8) !void {
     const a = ctx.arena;
     const hs = skills orelse return out.append(a, .{ .name = "skill", .status = .warning, .detail = "status unreadable" });
@@ -424,7 +424,7 @@ fn skillChecks(ctx: *Context, out: *std.ArrayList(Check), skills: ?[]const Harne
         any = true;
         // Outdated or missing items and session naming off are what
         // 'rex setup' repairs (a warning); a foreign or unreadable item
-        // is left alone by it, so it is named, not warned about (SPEC §20.7).
+        // is left alone by it, so it is named, not warned about.
         var off: std.ArrayList([]const u8) = .empty;
         var alone: std.ArrayList([]const u8) = .empty;
         for (h.items) |it| {
@@ -444,7 +444,7 @@ fn skillChecks(ctx: *Context, out: *std.ArrayList(Check), skills: ?[]const Harne
     if (!any) try out.append(a, .{ .name = "skill", .status = .not_checked, .detail = "no agent harness detected (Claude Code, Codex, OpenCode, pi)" });
 }
 
-/// SPEC §20.7's agent rows: one per terminal with a status; blocked and
+/// `rex status`'s agent rows: one per terminal with a status; blocked and
 /// error are warnings. Reads that failed are one warning row.
 pub fn agentChecks(ctx: *Context, st: State) ![]const Check {
     const a = ctx.arena;
@@ -463,8 +463,8 @@ pub fn agentChecks(ctx: *Context, st: State) ![]const Check {
     return out.items;
 }
 
-/// `vm verify`'s rows for a guest tagged `rex` (SPEC §9.4: the agent
-/// rows excepted): not checked without an answering agent.
+/// `vm verify`'s rows for a guest tagged `rex` (`rex status`'s,
+/// the agent rows excepted): not checked without an answering agent.
 pub fn verifyChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, agent_ok: bool) ![]const Check {
     const vmid = v.vmid;
     const vm = v.name;

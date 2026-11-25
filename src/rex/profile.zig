@@ -1,5 +1,5 @@
-//! The agent profile (SPEC §20.5) and the permission kind it carries
-//! (§20.6): a workstation directory loaded and checked, the guest's side
+//! The agent profile and the permission kind it carries
+//!: a workstation directory loaded and checked, the guest's side
 //! read by one agent exec, a plan of writes, the writes, and the
 //! `rex status` rows "profile" and "permissions".
 //!
@@ -28,7 +28,7 @@ pub const Kind = permissions.Kind;
 pub const kindOf = permissions.kindOf;
 pub const Check = vm_new.Check;
 
-/// Limits (SPEC §20.5).
+/// Limits.
 pub const max_file_bytes: usize = 1 << 20;
 pub const max_profile_bytes: usize = 4 << 20;
 pub const max_files: usize = 500;
@@ -89,7 +89,7 @@ pub fn loadConfigured(ctx: *Context) !?Profile {
 }
 
 /// Load the profile at `configured` (a path; `~` is the workstation's
-/// home). Every refusal of SPEC §20.5 is `error.Refused`, naming the file
+/// home). Every refusal is `error.Refused`, naming the file
 /// and never its content.
 pub fn load(ctx: *Context, configured: []const u8) !Profile {
     const a = ctx.arena;
@@ -281,7 +281,7 @@ fn secretLooking(name: []const u8) bool {
     return false;
 }
 
-/// Why a file name is refused (SPEC §20.5), or null.
+/// Why a file name is refused, or null.
 pub fn refusedName(name: []const u8) ?[]const u8 {
     for ([_][]const u8{ ".credentials.json", "credentials", "credentials.json", "oauth_creds.json", ".netrc" }) |n|
         if (std.mem.eql(u8, name, n)) return "an agent credential file";
@@ -448,7 +448,7 @@ fn parseManifest(a: Allocator, raw: []const u8) !std.StringArrayHashMapUnmanaged
 
 // ---------------------------------------------------------------- merge
 
-/// Merge `profile` into `base` (SPEC §20.5): the profile's top-level keys
+/// Merge `profile` into `base`: the profile's top-level keys
 /// win; `permissions` merges key by key; `hooks` per event, the guest's
 /// entries kept unless the profile has one with the same command(s).
 pub fn mergeObjects(a: Allocator, base: std.json.ObjectMap, profile: std.json.ObjectMap) !std.json.ObjectMap {
@@ -623,7 +623,7 @@ fn sha256Hex(a: Allocator, data: []const u8) ![]const u8 {
 /// File rows shown in the plan before they are summarized.
 const max_file_rows = 12;
 
-/// The plan for `guest` (SPEC §20.5, §20.6). `profile` null applies the
+/// The plan for `guest`. `profile` null applies the
 /// permission kind only (no profile set). `force` overwrites files
 /// changed on the guest (`--force-profile`).
 pub fn plan(a: Allocator, profile: ?Profile, g: Guest, kind: Kind, force: bool) !Plan {
@@ -689,7 +689,7 @@ pub fn plan(a: Allocator, profile: ?Profile, g: Guest, kind: Kind, force: bool) 
         try manifest.put(a, key, want);
     };
 
-    // The permission kind (SPEC §20.6), for Claude where it is (on the
+    // The permission kind, for Claude where it is (on the
     // PATH, or its settings exist), as for agy's fish file below.
     if (!claude_done and (g.claude or g.claude_settings != null)) switch (try mergeFile(a, g.claude_settings, null, kind)) {
         .current => {},
@@ -876,7 +876,7 @@ fn writeAsUser(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8, rel: 
 
 // ---------------------------------------------------------------- checks
 
-/// `rex status`'s rows "profile" and "permissions" (SPEC §20.7), from one
+/// `rex status`'s rows "profile" and "permissions", from one
 /// read of the guest.
 pub fn checks(ctx: *Context, c: *pve.Client, vmid: u32, user: []const u8, profile: ?Profile, fenced: bool) ![]Check {
     return checksFrom(ctx.arena, profile, try read(ctx, c, vmid, user, profile), fenced);

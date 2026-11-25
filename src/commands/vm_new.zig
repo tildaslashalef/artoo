@@ -299,7 +299,7 @@ const NewOp = struct {
     watch_vm: ?[]const u8 = null,
     /// `~/.artoo/ssh_config` exists and gets the guest's block.
     ssh_config: bool = false,
-    /// `--rex`, or `rex.default` without `--no-rex` (SPEC §20.2).
+    /// `--rex`, or `rex.default` without `--no-rex`.
     rex: bool = false,
     state: []const u8 = "",
     ledger: exec.Ledger = .{},
@@ -311,7 +311,7 @@ const NewOp = struct {
         const c = op.c;
         const cfg = try ctx.config();
         // A profile Rex's step would refuse refuses now, before anything
-        // is created (SPEC §20.5).
+        // is created.
         if (op.rex) _ = try @import("../rex/profile.zig").loadConfigured(ctx);
         const a = ctx.arena;
         op.target = op.name;
@@ -631,7 +631,7 @@ const NewOp = struct {
             l.set(i, .done, detail orelse "no watchdog");
         }
         if (s_rex) |i| {
-            // The same steps as 'rex setup' (SPEC §20.3); its checks join verify's.
+            // The same steps as 'rex setup'; its checks join verify's.
             l.set(i, .unknown, "");
             l.set(i, .done, try rex_setup.setUpNew(ctx, c, try vms.resolve(c, op.name), l.noter(i)));
         }
@@ -934,7 +934,7 @@ pub fn runChecks(ctx: *Context, c: *pve.Client, v: vms.Vm, cfg: Value, no_dns: b
         ch.name = g.name;
         try out.append(a, ch);
     }
-    // A guest tagged rex: `rex status`'s checks, the agent rows excepted (SPEC §9.4, §20.7).
+    // A guest tagged rex: `rex status`'s checks, the agent rows excepted.
     if (@import("../rex/guest.zig").tagged(v)) try out.appendSlice(a, try @import("../rex/state.zig").verifyChecks(ctx, c, v, agent_ok));
     try out.append(a, try alloyCheck(ctx, c, v, agent_ok, watched));
     try out.append(a, try @import("vm_fence.zig").check(ctx, c, v));

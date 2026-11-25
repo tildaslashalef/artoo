@@ -1,4 +1,4 @@
-//! `artoo rex status [VM…]` (SPEC §20.7): Rex and the agents on guests
+//! `artoo rex status [VM…]`: Rex and the agents on guests
 //! tagged `rex`, read through the guest agent. Read-only.
 
 const std = @import("std");
@@ -24,7 +24,7 @@ pub const Report = struct {
     agents: []const state.Agent,
 };
 
-/// The rows of one guest tagged `rex`: §20.7's checks then the agent rows.
+/// The rows of one guest tagged `rex`: the Rex checks, then the agent rows.
 pub fn report(ctx: *Context, c: *pve.Client, v: vms.Vm) !Report {
     const name = try k.clean(ctx, v.name);
     var r: Report = .{ .vm = name, .vmid = v.vmid, .checks = &.{}, .agents = &.{} };

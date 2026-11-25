@@ -1,8 +1,8 @@
-//! `artoo rex …` (SPEC §20): Rex and the coding agents on ordinary guests.
+//! `artoo rex …`: Rex and the coding agents on ordinary guests.
 
 const cli = @import("../cli.zig");
 
-pub const group = cli.group("rex", "Rex and the coding agents on guests (SPEC 20)", &.{
+pub const group = cli.group("rex", "Rex and the coding agents on guests", &.{
     cli.leaf(@import("rex_setup.zig").setup),
     cli.leaf(@import("rex_status.zig").status),
     @import("rex_hosts.zig").group,

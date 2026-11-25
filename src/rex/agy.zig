@@ -1,4 +1,4 @@
-//! The agy bridge (SPEC §20.4): Rex has no harness for Antigravity's
+//! The agy bridge: Rex has no harness for Antigravity's
 //! `agy` yet, so artoo gives it Rex's skill stub and three hooks — the
 //! session-start context and the program status Rex shows per terminal.
 //! Paths are relative to the guest user's home; the files are the user's.
@@ -147,7 +147,7 @@ pub fn files(a: std.mem.Allocator, st: setup.State) !Files {
     return if (any) .changed else .missing;
 }
 
-/// The `agy bridge` row of `rex status` (SPEC §20.7): current, missing or
+/// The `agy bridge` row of `rex status`: current, missing or
 /// changed; not checked without agy, or when Rex has its own agy harness.
 pub fn check(ctx: *Context, c: *pve.Client, vm: vms.Vm, user: []const u8) !vm_new.Check {
     const label = "agy bridge";
