@@ -1,0 +1,8 @@
+#!/bin/sh
+# Refuses a commit message that carries attribution (AGENTS.md): a
+# Co-Authored-By trailer or a "Generated with" line. Installed by
+# 'make hooks' (core.hooksPath).
+if grep -qiE '^[[:space:]]*(co-authored-by:|generated with)' "$1"; then
+	echo "commit-msg: attribution is not allowed in artoo commits; remove the Co-Authored-By/Generated with line" >&2
+	exit 1
+fi

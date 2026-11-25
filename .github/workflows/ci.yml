@@ -36,6 +36,16 @@ jobs:
         with:
           version: 0.17.0
 
+      # AGENTS.md: no attribution in commits (scripts/hooks/commit-msg).
+      - name: No attribution
+        if: github.event_name == 'pull_request'
+        run: |
+          base=${{ github.event.pull_request.base.sha }}
+          if git log --format=%B "$base"..HEAD | grep -qiE '^[[:space:]]*(co-authored-by:|generated with)'; then
+            echo "a commit carries attribution (Co-Authored-By or Generated with); see AGENTS.md" >&2
+            exit 1
+          fi
+
       - name: Format check
         timeout-minutes: 5
         run: zig build fmt

@@ -29,7 +29,7 @@ SIGN_ID := $(shell security find-identity -p codesigning 2>/dev/null | awk '/"Ap
 SIGN    := $(if $(SIGN_ID),codesign --force --identifier artoo --sign $(SIGN_ID),true)
 
 .DEFAULT_GOAL := build
-.PHONY: build test fmt install run clean leak-check
+.PHONY: build test fmt install run clean leak-check hooks
 
 build:
 	@$(ZIG) build
@@ -66,3 +66,8 @@ run: build
 
 clean:
 	@rm -rf zig-out .zig-cache
+
+# The commit-msg hook that refuses attribution (AGENTS.md).
+hooks:
+	git config core.hooksPath scripts/hooks
+	@echo "hooks: core.hooksPath = scripts/hooks"
