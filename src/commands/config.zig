@@ -28,6 +28,8 @@ const section_titles = [_]struct { []const u8, []const u8 }{
     .{ "pve", "Proxmox (pve)" },
     .{ "unifi", "UniFi (unifi)" },
     .{ "guests", "Guests" },
+    .{ "rex", "Rex (rex)" },
+    .{ "agents", "Coding agents (agents)" },
 };
 
 pub const show = struct {
@@ -378,6 +380,13 @@ test "config: show renders sections, marks defaults" {
         \\  fence_allow_out        --  (default)
         \\  snapshot_keep          2  (default)
         \\  snapshot_max_age_days  14  (default)
+        \\
+        \\Rex (rex)
+        \\  channel                preview  (default)
+        \\  default                false  (default)
+        \\
+        \\Coding agents (agents)
+        \\  profile                --  (default)
         \\
     , h.stdout());
 }
