@@ -533,14 +533,14 @@ pub fn readGuestWith(ctx: *Context, c: *pve.Client, v: vms.Vm, opts: Opts) !Gues
 pub fn judgeProfile(ctx: *Context, c: *pve.Client, g: *Guest) !void {
     const a = ctx.arena;
     const pg = try profile.read(ctx, c, g.vm.vmid, g.user, g.agent_profile);
-    const fenced = template.taggedWith(g.vm.tags, @import("../commands/vm_fence.zig").tag);
-    const kind = profile.kindOf(fenced, pg.ssh_keys);
+    const fence = try fenceOf(ctx, c, g.vm);
+    const kind = profile.kindOf(fence, pg.ssh_keys);
     const p = try profile.plan(a, g.agent_profile, pg, kind, g.force_profile);
     try g.notes.appendSlice(a, p.notes);
     // Only a fenced guest needs the reason: it would be sandboxed but for
     // its keys.
-    if (fenced and kind == .trusted_reach)
-        try g.notes.append(a, try std.fmt.allocPrint(a, "Permissions: {s}", .{try permissions.reason(a, true, pg.ssh_keys)}));
+    if (fence != .none and kind == .trusted_reach)
+        try g.notes.append(a, try std.fmt.allocPrint(a, "Permissions: {s}", .{try permissions.reason(a, fence, pg.ssh_keys)}));
     const what = if (g.agent_profile == null) "permissions" else "agent profile";
     if (p.empty()) {
         try g.current.append(a, .{ .kind = .profile, .text = try std.fmt.allocPrint(a, "{s} ({s})", .{ what, kind.word() }) });
@@ -560,6 +560,22 @@ pub fn judgeProfile(ctx: *Context, c: *pve.Client, g: *Guest) !void {
         if (it.kind == .tag) break i;
     } else g.items.items.len;
     try g.items.insert(a, at, item);
+}
+
+/// Whether `v`'s fence holds: tagged `fenced` and `vm verify`'s fence
+/// check ok (rules as derived, the datacenter firewall on). The tag alone
+/// never sandboxes a guest.
+pub fn fenceOf(ctx: *Context, c: *pve.Client, v: vms.Vm) !permissions.Fence {
+    const vm_fence = @import("../commands/vm_fence.zig");
+    if (!template.taggedWith(v.tags, vm_fence.tag)) return .none;
+    const ck = vm_fence.check(ctx, c, v) catch |err| switch (err) {
+        error.OutOfMemory, error.Canceled => |e| return e,
+        else => {
+            defer ctx.diag = null;
+            return .{ .broken = try k.clean(ctx, ctx.diag orelse @errorName(err)) };
+        },
+    };
+    return if (ck.status == .ok) .holds else .{ .broken = ck.detail };
 }
 
 /// Re-read `g` (state and tags) and judge it again.
@@ -633,7 +649,7 @@ pub fn apply(ctx: *Context, c: *pve.Client, g: *Guest, report: Report) !void {
             // which step 9 (planned from the earlier read, empty then) now
             // has to bring to the kind the plan named.
             const pg = try profile.read(ctx, c, g.vm.vmid, g.user, g.agent_profile);
-            const kind = profile.kindOf(template.taggedWith(g.vm.tags, @import("../commands/vm_fence.zig").tag), pg.ssh_keys);
+            const kind = profile.kindOf(try fenceOf(ctx, c, g.vm), pg.ssh_keys);
             const p = try profile.plan(a, g.agent_profile, pg, kind, g.force_profile);
             if (!p.empty()) {
                 try profile.write(ctx, c, g.vm.vmid, g.user, p);

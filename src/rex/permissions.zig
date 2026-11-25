@@ -19,18 +19,30 @@ pub const Kind = enum {
     }
 };
 
-/// The kind of a guest: `fenced` from its tags, `keys` the names of the
-/// private keys in the guest user's `~/.ssh`.
-pub fn kindOf(fenced: bool, keys: []const []const u8) Kind {
-    return if (fenced and keys.len == 0) .sandboxed else .trusted_reach;
+/// Whether the guest is fenced: not tagged, tagged and the fence holds
+/// (`vm verify`'s fence check is ok), or tagged but it does not (why).
+pub const Fence = union(enum) {
+    none,
+    holds,
+    broken: []const u8,
+};
+
+/// The kind of a guest: `keys` the names of the private keys in the guest
+/// user's `~/.ssh`. Only a fence that holds sandboxes.
+pub fn kindOf(fence: Fence, keys: []const []const u8) Kind {
+    return if (fence == .holds and keys.len == 0) .sandboxed else .trusted_reach;
 }
 
 /// Why the guest has its kind, for plans and `rex status`: "sandboxed",
 /// "trusted-reach (not fenced)", "trusted-reach (fenced, but holds
 /// ~/.ssh/id_ed25519)".
-pub fn reason(a: Allocator, fenced: bool, keys: []const []const u8) ![]const u8 {
-    if (kindOf(fenced, keys) == .sandboxed) return "sandboxed (fenced, no private key in ~/.ssh)";
-    if (!fenced) return "trusted-reach (not fenced)";
+pub fn reason(a: Allocator, fence: Fence, keys: []const []const u8) ![]const u8 {
+    if (kindOf(fence, keys) == .sandboxed) return "sandboxed (fenced, no private key in ~/.ssh)";
+    switch (fence) {
+        .none => return "trusted-reach (not fenced)",
+        .broken => |why| return std.fmt.allocPrint(a, "trusted-reach (tagged fenced, but the fence does not hold: {s})", .{why}),
+        .holds => {},
+    }
     var list: std.ArrayList(u8) = .empty;
     for (keys, 0..) |k, i| {
         if (i > 0) try list.appendSlice(a, ", ");
@@ -118,14 +130,17 @@ pub fn applyClaude(a: Allocator, settings: *std.json.ObjectMap, kind: Kind) !voi
 const testing = std.testing;
 
 test "kindOf: fenced without keys is sandboxed; keys or no fence is trusted-reach" {
-    try testing.expectEqual(Kind.sandboxed, kindOf(true, &.{}));
-    try testing.expectEqual(Kind.trusted_reach, kindOf(true, &.{"id_ed25519"}));
-    try testing.expectEqual(Kind.trusted_reach, kindOf(false, &.{}));
-    try testing.expectEqual(Kind.trusted_reach, kindOf(false, &.{"id_ed25519"}));
+    try testing.expectEqual(Kind.sandboxed, kindOf(.holds, &.{}));
+    try testing.expectEqual(Kind.trusted_reach, kindOf(.holds, &.{"id_ed25519"}));
+    try testing.expectEqual(Kind.trusted_reach, kindOf(.none, &.{}));
+    try testing.expectEqual(Kind.trusted_reach, kindOf(.none, &.{"id_ed25519"}));
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    try testing.expectEqualStrings("trusted-reach (fenced, but holds ~/.ssh/id_ed25519, ~/.ssh/deploy)", try reason(arena.allocator(), true, &.{ "id_ed25519", "deploy" }));
-    try testing.expectEqualStrings("trusted-reach (not fenced)", try reason(arena.allocator(), false, &.{}));
+    try testing.expectEqualStrings("trusted-reach (fenced, but holds ~/.ssh/id_ed25519, ~/.ssh/deploy)", try reason(arena.allocator(), .holds, &.{ "id_ed25519", "deploy" }));
+    try testing.expectEqualStrings("trusted-reach (not fenced)", try reason(arena.allocator(), .none, &.{}));
+    // Tagged, but the fence does not hold: never sandboxed.
+    try testing.expectEqual(Kind.trusted_reach, kindOf(.{ .broken = "datacenter firewall off: the fence has no effect" }, &.{}));
+    try testing.expectEqualStrings("trusted-reach (tagged fenced, but the fence does not hold: datacenter firewall off: the fence has no effect)", try reason(arena.allocator(), .{ .broken = "datacenter firewall off: the fence has no effect" }, &.{}));
 }
 
 test "fish file: sandboxed passes the flag, trusted-reach defines nothing" {
