@@ -101,14 +101,14 @@ pub const Config = struct {
         /// and `vm snap prune` selects it.
         snapshot_max_age_days: u32 = 14,
     };
-    /// SPEC §20.2: Rex on ordinary guests.
+    /// Rex on ordinary guests.
     pub const Rex = struct {
         /// The apt suite `rex setup` writes.
         channel: RexChannel = .preview,
         /// `vm new` sets Rex up unless `--no-rex`.
         default: bool = false,
     };
-    /// SPEC §20.5: the coding agents' profile copied by `rex setup`.
+    /// the coding agents' profile copied by `rex setup`.
     pub const Agents = struct {
         /// A workstation directory; empty: no profile.
         profile: []const u8 = "",

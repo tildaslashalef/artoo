@@ -1,4 +1,4 @@
-//! Permission kinds of the coding agents on a guest (SPEC §20.6): how
+//! Permission kinds of the coding agents on a guest: how
 //! freely Claude Code and `agy` act depends on what the guest can reach.
 
 const std = @import("std");
@@ -6,7 +6,7 @@ const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 
 pub const Kind = enum {
-    /// Fenced (tag `fenced`, §9.11) and no private key in `~/.ssh`.
+    /// Fenced (tag `fenced`) and no private key in `~/.ssh`.
     sandboxed,
     /// Every other guest.
     trusted_reach,
@@ -20,7 +20,7 @@ pub const Kind = enum {
 };
 
 /// The kind of a guest: `fenced` from its tags, `keys` the names of the
-/// private keys in the guest user's `~/.ssh` (SPEC §20.6).
+/// private keys in the guest user's `~/.ssh`.
 pub fn kindOf(fenced: bool, keys: []const []const u8) Kind {
     return if (fenced and keys.len == 0) .sandboxed else .trusted_reach;
 }
@@ -39,7 +39,7 @@ pub fn reason(a: Allocator, fenced: bool, keys: []const []const u8) ![]const u8 
     return std.fmt.allocPrint(a, "trusted-reach (fenced, but holds {s})", .{list.items});
 }
 
-/// The guest's fish file that wraps `agy` (SPEC §20.6), home-relative.
+/// The guest's fish file that wraps `agy`, home-relative.
 pub const fish_path = ".config/fish/conf.d/artoo-agents.fish";
 
 pub const agy_flag = "--dangerously-skip-permissions";
@@ -48,14 +48,14 @@ pub const agy_flag = "--dangerously-skip-permissions";
 pub fn fishFile(kind: Kind) []const u8 {
     return switch (kind) {
         .sandboxed =>
-        \\# Managed by artoo (SPEC §20.6): this guest is sandboxed (fenced, no
+        \\# Managed by artoo: this guest is sandboxed (fenced, no
         \\# private key in ~/.ssh), so agy runs without asking. 'artoo rex setup'
         \\# rewrites this file.
         \\function agy; command agy --dangerously-skip-permissions $argv; end
         \\
         ,
         .trusted_reach =>
-        \\# Managed by artoo (SPEC §20.6): this guest is trusted-reach (not fenced,
+        \\# Managed by artoo: this guest is trusted-reach (not fenced,
         \\# or it holds a private key), so agy keeps asking before it acts.
         \\# 'artoo rex setup' rewrites this file.
         \\
@@ -89,8 +89,8 @@ pub fn claudeUnrestricted(settings: Value) bool {
     return std.mem.eql(u8, m, "bypassPermissions");
 }
 
-/// Apply `kind` to Claude's (merged) settings object in place (SPEC
-/// §20.6). Sandboxed: `defaultMode` `bypassPermissions` and no
+/// Apply `kind` to Claude's (merged) settings object in place.
+/// Sandboxed: `defaultMode` `bypassPermissions` and no
 /// `disableBypassPermissionsMode` (the kind decides). Trusted-reach:
 /// `defaultMode` kept unless `bypassPermissions` (then `default`) and
 /// `disableBypassPermissionsMode` `"disable"`.

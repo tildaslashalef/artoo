@@ -3,7 +3,7 @@
 //! its agent answering and the request gone before the next — the first
 //! that does not come back stops the run. The edge, the router and the
 //! watchdog are left to their own `vm reboot`, as with `vm upgrade --all`.
-//! On guests tagged `rex` the agents are read first (SPEC §20.8): a guest
+//! On guests tagged `rex` the agents are read first: a guest
 //! where one is working or blocked is skipped unless `--force-agents`.
 
 const std = @import("std");
@@ -59,7 +59,7 @@ fn pkgList(a: std.mem.Allocator, pkgs: []const []const u8) ![]const u8 {
 }
 
 /// The typed confirmation when `--force-agents` reboots a guest whose
-/// agents are busy (SPEC §20.8).
+/// agents are busy.
 pub const forced_target = "every-guest";
 
 pub const RebootPendingOp = struct {
@@ -126,7 +126,7 @@ pub const RebootPendingOp = struct {
                 try own_run.append(a, try std.fmt.allocPrint(a, "{s} (artoo runs here: reboot it last, on its own; {s})", .{ name, try pkgList(a, pkgs) }));
                 continue;
             }
-            // SPEC §20.8: an agent working or blocked holds the reboot back.
+            // an agent working or blocked holds the reboot back.
             var busy: ?[]const u8 = null;
             if (rex_guest.tagged(v)) {
                 busy = try busyAgents(ctx, op.c, v.vmid, op.user);
@@ -206,7 +206,7 @@ pub const RebootPendingOp = struct {
         for (op.todo, first..) |g, i| {
             var sent = false;
             // Read again right before the write: an agent busy by now skips
-            // the guest (SPEC §20.8) — with --force-agents too, unless the
+            // the guest — with --force-agents too, unless the
             // typed confirmation covered busy guests (nothing was busy at
             // the plan, so only y/N was asked).
             if (g.rex and !(op.force_agents and op.risk == .destructive)) {

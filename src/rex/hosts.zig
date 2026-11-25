@@ -1,4 +1,4 @@
-//! The workstation's Rex hosts for guests (SPEC §20.9, §17.5): the local
+//! The workstation's Rex hosts for guests: the local
 //! `rex` CLI, the record of the labels artoo manages
 //! (`~/.artoo/rex-hosts.json`), and the plan that brings the hosts in
 //! step with the guests tagged `rex`. Shared by `rex hosts sync`, `vm rm`
@@ -18,13 +18,13 @@ const ui = @import("../ui.zig");
 
 const Context = app.Context;
 
-/// The labels artoo added or adopted (SPEC §20.9).
+/// The labels artoo added or adopted.
 pub const record_path = "~/.artoo/rex-hosts.json";
 
-/// Rex for Mac's own CLI (SPEC §17.5), used when `rex` is not on the PATH.
+/// Rex for Mac's own CLI, used when `rex` is not on the PATH.
 pub const mac_bundle_cli = "/Applications/Rex.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex";
 
-/// Never start a missing Rex server (SPEC §17.5).
+/// Never start a missing Rex server.
 const no_autostart = "--autostart=false";
 
 /// One host as `rex hosts list --json` lists it.
@@ -33,7 +33,7 @@ pub const Host = struct {
     endpoints: []const []const u8,
 };
 
-/// `ssh://<user>@<fqdn>` (SPEC §20.9).
+/// `ssh://<user>@<fqdn>`.
 pub fn endpoint(a: Allocator, user: []const u8, fqdn: []const u8) ![]const u8 {
     return std.fmt.allocPrint(a, "ssh://{s}@{s}", .{ user, fqdn });
 }
@@ -138,7 +138,7 @@ pub const Connection = union(enum) {
 };
 
 /// Find the CLI and list the hosts: no CLI, or no running Rex, is
-/// `.unavailable` with the reason (SPEC §20.9).
+/// `.unavailable` with the reason.
 pub fn connect(ctx: *Context) !Connection {
     const exe = (try locate(ctx.io, ctx.arena, ctx.env, platformBundle())) orelse
         return .{ .unavailable = if (platformBundle() != null) "no rex CLI on this machine (not on PATH, no Rex for Mac)" else "no rex CLI on this machine (not on PATH)" };
@@ -262,7 +262,7 @@ fn lessIgnoreCase(_: void, x: []const u8, y: []const u8) bool {
 // ---------------------------------------------------------------- vm rm, vm rename
 
 /// The Rex host of a guest that `vm rm` or `vm rename` changes: only a
-/// host artoo recorded (SPEC §20.8).
+/// host artoo recorded.
 pub const Recorded = struct {
     /// The guest's label as recorded.
     label: []const u8,
@@ -354,7 +354,7 @@ pub const Action = struct {
 };
 
 /// What brings `listed` in step with `wants`, given the `recorded`
-/// labels (SPEC §20.9); in the order of `wants`, then the removals.
+/// labels; in the order of `wants`, then the removals.
 pub fn diff(a: Allocator, wants: []const Want, listed: []const Host, recorded: []const []const u8) ![]const Action {
     var out: std.ArrayList(Action) = .empty;
     for (wants) |w| {

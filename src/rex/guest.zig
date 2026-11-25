@@ -1,4 +1,4 @@
-//! Shared facts of Rex on guests (SPEC §20, §17.5): the tag, which
+//! Shared facts of Rex on guests: the tag, which
 //! guests may have Rex, and how a command runs as the guest user.
 
 const std = @import("std");
@@ -7,10 +7,10 @@ const template = @import("../commands/template.zig");
 const vm_cmd = @import("../commands/vm.zig");
 const vm_new = @import("../commands/vm_new.zig");
 
-/// The Proxmox tag of a guest with Rex (SPEC §20.1).
+/// The Proxmox tag of a guest with Rex.
 pub const tag = "rex";
 
-/// Roles that never get Rex (SPEC §20.1).
+/// Roles that never get Rex.
 pub const refused_roles = [_][]const u8{ "edge", "router", "watch" };
 
 /// Why `v` may not have Rex, or null (state checks — running, agent —
@@ -29,8 +29,8 @@ pub fn tagged(v: vms.Vm) bool {
 }
 
 /// A shell script that runs `script` as `user` with Rex's environment
-/// and no Rex server started (SPEC §20.3): never a login shell (the
-/// user's shell is fish). `user` is a validated Linux name (SPEC §5);
+/// and no Rex server started: never a login shell (the
+/// user's shell is fish). `user` is a validated Linux name;
 /// `script` is passed as one single-quoted word.
 pub fn asUser(a: std.mem.Allocator, user: []const u8, script: []const u8) ![]const u8 {
     var q: std.ArrayList(u8) = .empty;

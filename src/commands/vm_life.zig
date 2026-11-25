@@ -867,7 +867,7 @@ const RmOp = struct {
     tsc: ?tsapi.Client = null,
     ts_dev: ?tn.Device = null,
     ts_note: ?[]const u8 = null,
-    /// Its Rex host on this machine, when artoo recorded it (SPEC §20.8).
+    /// Its Rex host on this machine, when artoo recorded it.
     rex: ?rex_hosts.Recorded = null,
     ledger: exec.Ledger = .{},
 

@@ -1,4 +1,4 @@
-//! `artoo rex setup VM…` (SPEC §20.3): Rex, its agent skill and the agy
+//! `artoo rex setup VM…`: Rex, its agent skill and the agy
 //! bridge on ordinary guests, through the guest agent. One plan for every
 //! guest (a change row per step), confirmed once; each step is read first
 //! and reported, not redone, when already right.
@@ -139,7 +139,7 @@ pub const SetupOp = struct {
             try ctx.out.print("\nStill not right: {s}\n", .{try std.mem.join(a, "; ", op.left.items)});
             return false;
         }
-        // SPEC §20.3: 'rex status's checks (§20.7) for each guest; a failed one is exit 8.
+        // 'rex status's checks for each guest; a failed one is exit 8.
         var failed: usize = 0;
         for (op.guests) |*g| {
             const rep = try rex_status.report(ctx, op.c, g.vm);
@@ -201,12 +201,12 @@ pub const setup = struct {
         defer c.deinit();
         var op: SetupOp = .{ .c = &c, .words = words, .force_profile = args.has("force-profile") };
         exec.run(ctx, &op, .{}) catch |err| switch (err) {
-            // SPEC §20.3: a set-up guest is "nothing to change", exit 0.
+            // a set-up guest is "nothing to change", exit 0.
             error.NoChange => {
                 ctx.diag = null;
                 if (ctx.json()) return ui.json.envelope(ctx.out, .pve, .{ .result = "unchanged", .guests = op.target }, .{});
                 try ctx.out.print("Nothing to change: Rex is set up on {s}.\n", .{op.target});
-                // SPEC §20.3: 'rex status's checks end every run.
+                // 'rex status's checks end every run.
                 var failed: usize = 0;
                 for (op.guests) |*g| {
                     const rep = try rex_status.report(ctx, &c, g.vm);
@@ -240,7 +240,7 @@ const pid = "{\"data\":{\"pid\":42}}";
 const naboo_list = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo\"}]}";
 const naboo_rex_list = "{\"data\":[{\"vmid\":201,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"}]}";
 
-/// The agent-profile read of step 9 (SPEC §20.3): no Claude, no profile.
+/// The agent-profile read of step 9: no Claude, no profile.
 fn profileRead(a: std.mem.Allocator, f: @import("../rex/profile.zig").ProbeFixture) ![2]R {
     return .{ r("agent/exec HTTP", pid), r("exec-status", try agentOut(a, 0, try @import("../rex/profile.zig").probeOut(a, f), "")) };
 }

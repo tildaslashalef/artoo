@@ -1,4 +1,4 @@
-//! `artoo rex hosts sync` (SPEC §20.9): the workstation's Rex hosts in
+//! `artoo rex hosts sync`: the workstation's Rex hosts in
 //! step with the guests tagged `rex` — one host per guest, label the
 //! guest's name, endpoint `ssh://<guests.user>@<fqdn>`. Only hosts artoo
 //! recorded in `~/.artoo/rex-hosts.json` are edited or removed.
@@ -224,7 +224,7 @@ const sync = struct {
     }
 };
 
-pub const group = cli.group("hosts", "The workstation's Rex hosts for guests (SPEC 20.9)", &.{cli.leaf(sync)});
+pub const group = cli.group("hosts", "The workstation's Rex hosts for guests", &.{cli.leaf(sync)});
 
 // ---------------------------------------------------------------- tests
 

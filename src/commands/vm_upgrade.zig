@@ -51,7 +51,7 @@ const UpgradeOp = struct {
     reboot: ?[]const []const u8 = null,
     /// `--snapshot`.
     guard: ?snapguard.Guard = null,
-    /// The agents at work on a guest tagged `rex` (SPEC §20.8), a plan note.
+    /// The agents at work on a guest tagged `rex`, a plan note.
     agents: ?[]const u8 = null,
 
     pub fn read(op: *UpgradeOp, ctx: *Context) !void {
@@ -200,8 +200,8 @@ pub fn ownRunRole(tags: []const u8) ?[]const u8 {
     return null;
 }
 
-/// A plan note naming the agents at work on a guest tagged `rex` (SPEC
-/// §20.8): the upgrade goes ahead (it restarts no user session, §20.1);
+/// A plan note naming the agents at work on a guest tagged `rex`:
+/// the upgrade goes ahead (it restarts no user session);
 /// null when none is busy or the guest has no Rex.
 fn agentsNote(ctx: *Context, c: *pve.Client, v: vms.Vm, name: []const u8) !?[]const u8 {
     if (!rex_guest.tagged(v)) return null;
@@ -230,7 +230,7 @@ const Guest = struct {
     reboot: bool = false,
     /// The reboot check itself failed: neither "pending" nor "not needed".
     reboot_unknown: bool = false,
-    /// The agents at work on a guest tagged `rex` (SPEC §20.8), a plan note.
+    /// The agents at work on a guest tagged `rex`, a plan note.
     agents: ?[]const u8 = null,
 };
 

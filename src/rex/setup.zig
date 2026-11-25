@@ -1,4 +1,4 @@
-//! Rex on one guest (SPEC §20.3): read its state through the guest agent
+//! Rex on one guest: read its state through the guest agent
 //! in one probe, judge each step (already right, or a change), apply the
 //! changes in order. `rex setup` (one ledger row per step) and `vm new
 //! --rex` (one ledger step) share `readGuest` and `apply`.
@@ -25,7 +25,7 @@ const Value = std.json.Value;
 
 pub const sha256Hex = files.sha256Hex;
 
-// ---------------------------------------------------------------- facts (SPEC §17.5)
+// ---------------------------------------------------------------- facts
 
 /// Superlogical's binary keyring, embedded (never fetched by the guest).
 pub const keyring = @embedFile("../guest/rex-archive-keyring.gpg");
@@ -152,7 +152,7 @@ pub const State = struct {
         return std.mem.eql(u8, s.pkg_status, "installed");
     }
 
-    /// Installed and Superlogical's (its Maintainer field, SPEC §17.5).
+    /// Installed and Superlogical's (its Maintainer field).
     pub fn ours(s: State) bool {
         return s.installed() and std.ascii.findIgnoreCase(s.maintainer, "superlogical") != null;
     }
@@ -161,7 +161,7 @@ pub const State = struct {
         return if (s.terminfo) |t| std.mem.startsWith(u8, t, "Ready") else false;
     }
 
-    /// Rex lists a harness for agy: the bridge steps aside (SPEC §20.4).
+    /// Rex lists a harness for agy: the bridge steps aside.
     pub fn agyHarness(s: State) bool {
         for (s.harnesses orelse &.{}) |h| if (std.mem.eql(u8, h.id, "agy")) return true;
         return false;
@@ -237,7 +237,7 @@ pub fn parseState(a: Allocator, out: []const u8) !State {
     return st;
 }
 
-/// The probe script for `user` (a validated Linux name, SPEC §5).
+/// The probe script for `user` (a validated Linux name).
 pub fn probeScript(a: Allocator, user: []const u8) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}{s}\n", .{ probe_root, try guest.asUser(a, user, probe_user) });
 }
@@ -252,7 +252,7 @@ pub fn probe(c: *pve.Client, vmid: u32, user: []const u8) !State {
 
 // ---------------------------------------------------------------- judge
 
-/// The steps of SPEC §20.3, in order. Step 9 (agent profile, permission
+/// The steps of `rex setup`, in order. Step 9 (agent profile, permission
 /// kind) slots in before `tag`.
 pub const Kind = enum {
     key,
@@ -265,7 +265,7 @@ pub const Kind = enum {
     agy_skill,
     agy_hook,
     agy_hooks,
-    /// Step 9: the agent profile and the permission kind (SPEC §20.5, §20.6).
+    /// Step 9: the agent profile and the permission kind.
     profile,
     tag,
 };
@@ -503,7 +503,7 @@ fn doneText(a: Allocator, list: []const Done) ![]const u8 {
 // ---------------------------------------------------------------- read
 
 /// `v` read for Rex: refused (error.Refused, nothing sent) when it may not
-/// have Rex (SPEC §20.3), else probed and judged.
+/// have Rex, else probed and judged.
 pub fn readGuest(ctx: *Context, c: *pve.Client, v: vms.Vm) !Guest {
     return readGuestWith(ctx, c, v, .{ .agent_profile = try profile.loadConfigured(ctx) });
 }
@@ -523,7 +523,7 @@ pub fn readGuestWith(ctx: *Context, c: *pve.Client, v: vms.Vm, opts: Opts) !Gues
     return g;
 }
 
-/// Step 9 (SPEC §20.3): read the guest's agent files, plan the profile and
+/// Step 9: read the guest's agent files, plan the profile and
 /// the permission kind, and slot the step in before the tag.
 pub fn judgeProfile(ctx: *Context, c: *pve.Client, g: *Guest) !void {
     const a = ctx.arena;
@@ -533,7 +533,7 @@ pub fn judgeProfile(ctx: *Context, c: *pve.Client, g: *Guest) !void {
     const p = try profile.plan(a, g.agent_profile, pg, kind, g.force_profile);
     try g.notes.appendSlice(a, p.notes);
     // Only a fenced guest needs the reason: it would be sandboxed but for
-    // its keys (SPEC §20.6).
+    // its keys.
     if (fenced and kind == .trusted_reach)
         try g.notes.append(a, try std.fmt.allocPrint(a, "Permissions: {s}", .{try permissions.reason(a, true, pg.ssh_keys)}));
     const what = if (g.agent_profile == null) "permissions" else "agent profile";
@@ -748,7 +748,7 @@ pub fn writeUserFile(c: *pve.Client, vmid: u32, user: []const u8, rel: []const u
     if (!r.ok()) return ctx.fail(error.Partial, "writing ~/{s} failed: {s}", .{ rel, try k.clean(ctx, edge.firstLine(r.err)) });
 }
 
-/// `vm new --rex` (SPEC §9.3): set Rex up on the new guest as `rex setup`
+/// `vm new --rex`: set Rex up on the new guest as `rex setup`
 /// does, reported into one ledger step; the step's detail.
 pub fn setUpNew(ctx: *Context, c: *pve.Client, v: vms.Vm, note: exec.Note) ![]const u8 {
     var g = try readGuest(ctx, c, v);
@@ -763,7 +763,7 @@ pub fn setUpNew(ctx: *Context, c: *pve.Client, v: vms.Vm, note: exec.Note) ![]co
 
 const testing = std.testing;
 
-test "the embedded keyring is Superlogical's (SPEC 17.5)" {
+test "the embedded keyring is Superlogical's" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     try testing.expectEqual(@as(usize, 2854), keyring.len);
@@ -799,7 +799,7 @@ test "the probe runs the user's part as the user, never a login shell" {
     try testing.expect(std.mem.find(u8, s, "runuser -l") == null);
 }
 
-/// Probe output for tests (`Fixture` builds the variants of SPEC §20.10).
+/// Probe output for tests (`Fixture` builds its variants).
 pub const Fixture = struct {
     a: Allocator,
     key: []const u8 = keyring_sha256,

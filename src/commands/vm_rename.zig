@@ -194,7 +194,7 @@ const RenameOp = struct {
     ledger: exec.Ledger = .{},
     /// False for verify's read: a finished rename leaves no trace of OLD.
     check_trace: bool = true,
-    /// OLD's Rex host on this machine, when artoo recorded it (SPEC §20.8).
+    /// OLD's Rex host on this machine, when artoo recorded it.
     rex: ?rex_hosts.Recorded = null,
     fence_want: []const FenceWant = &.{},
 
