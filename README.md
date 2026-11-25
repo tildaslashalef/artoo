@@ -146,9 +146,11 @@ signed: after downloading, run `xattr -d com.apple.quarantine artoo`.
 
 ## Contributing
 
-Issues and pull requests are welcome, but artoo follows my lab first:
-changes that keep it simple and safe for this stack are the ones likely
-to be merged. Forks that take it somewhere else are very welcome.
+artoo is built for one lab, and this repository takes no issues or pull
+requests. If it almost fits yours, fork it and make it your own: the
+[SPEC](docs/SPEC.md) describes every command and its safety rules,
+[AGENTS.md](AGENTS.md) the rules the code follows (for you or your coding
+agent), and `make test` runs the whole suite offline.
 
 ## License
 
