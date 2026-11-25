@@ -36,6 +36,8 @@ const template = @import("template.zig");
 const storage = @import("storage.zig");
 const life = @import("vm_life.zig");
 const watch = @import("watch.zig");
+const rex_setup = @import("../rex/setup.zig");
+const rex_guest = @import("../rex/guest.zig");
 const k = @import("node.zig");
 
 const Context = app.Context;
@@ -297,6 +299,8 @@ const NewOp = struct {
     watch_vm: ?[]const u8 = null,
     /// `~/.artoo/ssh_config` exists and gets the guest's block.
     ssh_config: bool = false,
+    /// `--rex`, or `rex.default` without `--no-rex` (SPEC §20.2).
+    rex: bool = false,
     state: []const u8 = "",
     ledger: exec.Ledger = .{},
     checks: []const Check = &.{},
@@ -453,6 +457,7 @@ const NewOp = struct {
         try changes.append(a, .{ .field = "host key", .from = null, .to = try std.fmt.allocPrint(a, "{s} entry {s} (read through the guest agent)", .{ known_hosts.default_path, op.name }) });
         if (op.ssh_config) try changes.append(a, .{ .field = "ssh config", .from = null, .to = try std.fmt.allocPrint(a, "Host {s} in {s}", .{ op.name, ssh_config.default_path }) });
         if (op.watch_vm) |w| try changes.append(a, .{ .field = "watch", .from = null, .to = try std.fmt.allocPrint(a, "Alloy pushes metrics and the journal to {s}", .{w}) });
+        if (op.rex) try changes.append(a, .{ .field = "Rex", .from = null, .to = try std.fmt.allocPrint(a, "rex setup: Rex ({t}), linger, terminfo, agent skill, tag {s}", .{ (try ctx.config()).rex.channel, rex_guest.tag }) });
         var notes: std.ArrayList([]const u8) = .empty;
         if (op.existing != null) try notes.append(a, "Continuing an interrupted 'vm new': finished steps are skipped.");
         if (op.no_dns) try notes.append(a, "--no-dns: no DNS record; reach the guest by address.");
@@ -491,6 +496,7 @@ const NewOp = struct {
         const s_ssh = if (op.ssh_config) try l.add(a, "update ssh config") else null;
         const s_dns = if (st.dns) try l.add(a, "add DNS record") else null;
         const s_watch = if (op.watch_vm != null) try l.add(a, "enroll in watch") else null;
+        const s_rex = if (op.rex) try l.add(a, "set up Rex") else null;
         errdefer {
             ctx.out.writeAll("\n") catch {};
             l.render(ctx.out, &ctx.ui) catch {};
@@ -621,6 +627,11 @@ const NewOp = struct {
             const detail = try watch.enrollNew(ctx, c, try vms.resolve(c, op.name));
             l.set(i, .done, detail orelse "no watchdog");
         }
+        if (s_rex) |i| {
+            // The same steps as 'rex setup' (SPEC §20.3); its checks join verify's.
+            l.set(i, .unknown, "");
+            l.set(i, .done, try rex_setup.setUpNew(ctx, c, try vms.resolve(c, op.name), l.noter(i)));
+        }
     }
 
     pub fn verify(op: *NewOp, ctx: *Context) !bool {
@@ -694,6 +705,8 @@ pub const new = struct {
         \\    known_hosts line for other machines)
         \\  - the DNS record NAME.<guests.domain> on UniFi
         \\  - enroll it with the watchdog, when one exists
+        \\  - set up Rex as 'artoo rex setup' does, with --rex (or rex.default
+        \\    true and no --no-rex); never with --role
         \\  - run 'artoo vm verify'
         \\
         \\Re-running the same command continues an interrupted run.
@@ -713,6 +726,8 @@ pub const new = struct {
         .{ .long = "ssh-jump", .help = "Reach it over SSH through Proxmox only (tag ssh-jump)" },
         .{ .long = "no-dns", .help = "Skip the DNS record on UniFi (the client record is still made)" },
         .{ .long = "no-watch", .help = "Do not enroll with the watchdog (tag no-watch): a quiet test guest" },
+        .{ .long = "rex", .help = "Set up Rex as 'rex setup' does (default: rex.default)" },
+        .{ .long = "no-rex", .help = "Do not set up Rex although rex.default is true" },
     };
     pub const examples = [_][]const u8{ "artoo vm new -n", "artoo vm new naboo --role web -n", "artoo vm new hoth --size medium --disk 60 -y", "artoo vm new hoth --no-watch --no-dns -y" };
 
@@ -721,6 +736,8 @@ pub const new = struct {
         const role = args.string("role");
         if (role) |r| if (!names.valid(r)) return ctx.fail(error.Usage, "--role must be one lowercase label (e.g. edge), got '{s}'", .{r});
         if (args.has("no-watch") and role != null and std.mem.eql(u8, role.?, watch.role)) return ctx.fail(error.Usage, "--no-watch cannot be used for the watchdog itself (--role {s})", .{watch.role});
+        if (args.has("rex") and args.has("no-rex")) return ctx.fail(error.Usage, "--rex and --no-rex exclude each other", .{});
+        if (args.has("rex") and role != null) return ctx.fail(error.Usage, "--rex is for ordinary guests; a guest with --role gets no Rex", .{});
         const size = args.choice("size", Size) orelse .small;
         const cores: u32 = if (args.int("cores")) |n| blk: {
             if (n < 1 or n > 64) return ctx.fail(error.Usage, "--cores must be 1-64, got {d}", .{n});
@@ -755,6 +772,7 @@ pub const new = struct {
             .want_id = want_id,
             .template_word = args.string("template") orelse cfg.guests.template,
             .no_dns = args.has("no-dns"),
+            .rex = role == null and (args.has("rex") or (cfg.rex.default and !args.has("no-rex"))),
         };
         try exec.run(ctx, &op, .{});
     }
@@ -1931,6 +1949,63 @@ test "vm new --no-watch -n: tagged no-watch, no enroll step although a watchdog 
         }
     }
     try testing.expect(std.mem.find(u8, out, "Alloy pushes") == null);
+}
+
+/// `vm new hoth --no-dns -n` with `extra` flags and `rex.default`: stdout.
+fn rexPlan(a: std.mem.Allocator, extra: []const u8, rex_default: bool) ![]const u8 {
+    const B = testkit.Gateway.FakeServer.Behavior;
+    const r = struct {
+        fn body(s: []const u8) B {
+            return .{ .respond = .{ .body = s } };
+        }
+    }.body;
+    var g: testkit.Gateway = undefined;
+    try g.init(&[_]B{
+        r("{\"data\":[{\"vmid\":9000,\"name\":\"ubuntu-2604\",\"template\":1,\"status\":\"stopped\",\"maxdisk\":3758096384}]}"),
+        r("{\"data\":{\"tags\":\"artoo-template\",\"cicustom\":\"vendor=local:snippets/artoo-vendor-0123456789ab.yaml\"}}"),
+        r("{\"data\":[{\"volid\":\"local:snippets/artoo-vendor-0123456789ab.yaml\",\"size\":10}]}"),
+        r("{\"data\":[{\"vmid\":9000}]}"),
+        r("{\"offset\":0,\"limit\":200,\"count\":1,\"totalCount\":1,\"data\":[{\"id\":\"S1\",\"internalReference\":\"default\",\"name\":\"Default\"}]}"),
+        r("{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}"),
+        r("{\"meta\":{\"rc\":\"ok\"},\"data\":[]}"),
+        r("{\"offset\":0,\"limit\":200,\"count\":0,\"totalCount\":0,\"data\":[]}"),
+        r(storage.storage_body),
+        r("{\"meta\":{\"rc\":\"ok\"},\"data\":[{\"_id\":\"N0\",\"name\":\"WAN\"},{\"_id\":\"N1\",\"name\":\"Default\",\"ip_subnet\":\"192.168.1.1/24\"}]}"),
+    });
+    defer g.deinit();
+    try g.tmp.dir.createDirPath(testing.io, ".ssh");
+    try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".ssh/id_ed25519.pub", .data = "ssh-ed25519 AAAAkey me@mac\n" });
+    if (rex_default) {
+        try g.tmp.dir.createDirPath(testing.io, ".artoo");
+        try g.tmp.dir.writeFile(testing.io, .{ .sub_path = ".artoo/config.json", .data = "{\"schema_version\":1,\"rex\":{\"default\":true}}\n" });
+    }
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    const exit = g.h.run(&root, try std.fmt.allocPrint(a, "vm new hoth --no-dns -n{s}", .{extra}));
+    if (exit != .ok) std.debug.print("stderr:\n{s}\n", .{g.h.stderr()});
+    try testing.expectEqual(Exit.ok, exit);
+    return a.dupe(u8, g.h.stdout());
+}
+
+test "vm new --rex -n: the plan shows Rex; rex.default picks it, --no-rex drops it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const row = "Rex            (none) → rex setup: Rex (preview), linger, terminfo, agent skill, tag rex\n";
+    try testing.expect(std.mem.find(u8, try rexPlan(a, " --rex", false), row) != null);
+    try testing.expect(std.mem.find(u8, try rexPlan(a, "", true), row) != null);
+    try testing.expect(std.mem.find(u8, try rexPlan(a, " --no-rex", true), "Rex ") == null);
+    try testing.expect(std.mem.find(u8, try rexPlan(a, "", false), "Rex ") == null);
+}
+
+test "vm new --rex: refused with --role and with --no-rex, before anything is read" {
+    var g: testkit.Gateway = undefined;
+    try g.init(&.{});
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm new naboo --rex --role web"));
+    try testing.expect(std.mem.find(u8, g.h.stderr(), "--rex is for ordinary guests") != null);
+    try testing.expectEqual(Exit.usage, g.h.run(&root, "vm new naboo --rex --no-rex"));
+    try testing.expectEqual(@as(usize, 0), g.sent());
 }
 
 test "vm new continuing: a connected client still on the address is named, nothing sent" {
