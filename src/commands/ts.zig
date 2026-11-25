@@ -1100,7 +1100,7 @@ const JoinOp = struct {
         if (!template.taggedWith(v.tags, "artoo")) return ctx.fail(error.Refused, "{s} is not an artoo guest (no tag artoo)", .{v.name});
         if (vm_cmd.roleOf(v.tags)) |r| if (std.mem.eql(u8, r, "edge") or std.mem.eql(u8, r, "watch") or std.mem.eql(u8, r, "router"))
             return ctx.fail(error.Refused, "{s} carries role-{s}: {s}", .{ v.name, r, if (std.mem.eql(u8, r, "router")) "it joins with 'artoo router setup'" else "it never joins the tailnet" });
-        if (!template.taggedWith(v.tags, "tailnet")) return ctx.fail(error.Refused, "{s} is not tagged tailnet; guests join the tailnet only when tagged: 'artoo vm set {s} tags=…;tailnet' first", .{ v.name, v.name });
+        if (!template.taggedWith(v.tags, "tailnet")) return ctx.fail(error.Refused, "{s} is not tagged tailnet; guests join the tailnet only when tagged: 'artoo vm set {s} tags=…,tailnet' first", .{ v.name, v.name });
         if (!v.running()) return ctx.fail(error.Refused, "{s} is {s}; start it first", .{ v.name, v.status });
         if (!try agent.ping(op.c, v.vmid)) return ctx.fail(error.Refused, "the guest agent of {s} does not answer", .{v.name});
         op.state = try guestState(op.c, v.vmid);
@@ -1232,7 +1232,7 @@ pub const join = struct {
     pub const details =
         \\Puts a running guest on the tailnet as a tagged device, so it is
         \\reachable from your devices. The guest must carry the Proxmox tag
-        \\'tailnet' ('artoo vm set VM tags=…;tailnet').
+        \\'tailnet' ('artoo vm set VM tags=…,tailnet').
         \\
         \\The guest joins with --tag, one of tailscale.guest_tags (default: the
         \\first). It accepts no routes, advertises none, runs no Tailscale SSH

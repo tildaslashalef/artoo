@@ -216,7 +216,7 @@ pub const init = struct {
 
 pub const edit = struct {
     pub const name = "edit";
-    pub const summary = "Edit the config file in $EDITOR, validated before saving";
+    pub const summary = "Edit the config file in $VISUAL or $EDITOR, validated before saving";
     pub const details =
         \\Opens a private copy of the config file in $VISUAL or $EDITOR (default
         \\vi). The file is replaced only if the edited copy is a valid config;

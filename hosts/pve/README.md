@@ -15,7 +15,7 @@ The Ghostty terminfo is compiled system-wide into `/etc/terminfo` (as on
 guests, SPEC §9.1). Root's login shell stays Bash; `/root/.bashrc` execs
 fish for interactive terminals, so automation keeps Bash.
 
-Apply (an approved host change, GUIDE §6): `scripts/pve-shell.sh`
+Apply (an approved host change, GUIDE §14): `scripts/pve-shell.sh`
 backs up the current files to `/root/pve-setup-backups/shell-<UTC>/`,
 replaces them, compiles the terminfo and verifies. Rollback: extract the
 backup's `root-shell.tgz` into `/` and remove the `/etc/terminfo` entries.

@@ -1,10 +1,12 @@
-//! HTTP transport for both APIs.
+//! HTTP transport for every API artoo calls.
 //!
-//! - CA bundle from config only; `now` is pinned so the stdlib never
-//!   replaces the bundle with system roots. Hostnames verified.
+//! - TLS: an API with a CA bundle in config trusts that bundle only (`now`
+//!   is pinned so the stdlib never replaces it with system roots); the
+//!   others (Cloudflare, GitHub, Tailscale) use the system roots.
+//!   Hostnames are always verified.
 //! - No connection reuse: the pool is disabled and every request sends
-//!   `Connection: close` (pveproxy closes idle sockets after 5 s; the prototype lost
-//!   writes on reused dead sockets).
+//!   `Connection: close` (pveproxy closes idle sockets after 5 s, and a
+//!   write on a reused dead socket would be lost).
 //! - Redirects refused unless a caller asks for them back (the self-update,
 //!   `artoo update`, follows GitHub's own under its policy); `accept-encoding:
 //!   identity`; bodies capped while streaming.

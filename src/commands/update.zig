@@ -29,8 +29,8 @@ pub const update = struct {
         \\Before the plan is shown, the archive for this machine is downloaded
         \\and checked against SHA256SUMS and GitHub's digest, and the binary
         \\inside must report the release's version. Once confirmed, the current
-        \\binary is copied to .artoo.previous beside it and the new one is
-        \\renamed into place.
+        \\binary is copied beside it as .artoo.previous (.<name>.previous for a
+        \\binary named otherwise) and the new one is renamed into place.
         \\
         \\-n downloads and verifies but replaces nothing. --check only reads the
         \\release: exit 0 when an update is available, 5 when there is nothing
