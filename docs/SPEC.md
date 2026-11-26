@@ -3301,8 +3301,9 @@ title, updated_at}]}`. Any failure → exit 8.
 - **`vm reboot --pending`** reads each `rex` guest's agents first and
   skips a guest where one is `working` or `blocked` ("naboo (claude-code
   working in naboo-api)") and one whose agents cannot be read, and reads
-  them again just before each reboot, unless the run was confirmed with
-  the typed target below. `--force-agents` includes them all; the plan names the agents and, when a busy or unreadable guest is
+  them again just before each reboot, except a guest the plan named as
+  busy or unreadable when the run was confirmed with the typed target
+  below (a guest idle at the plan is still read again). `--force-agents` includes them all; the plan names the agents and, when a busy or unreadable guest is
   actually included, the risk is destructive: the confirmation becomes
   the typed target `every-guest` (`--yes --confirm every-guest`
   non-interactively). When nothing was busy at the plan (only y/N
