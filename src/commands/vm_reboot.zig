@@ -182,7 +182,7 @@ pub const RebootPendingOp = struct {
         } else if (op.force_agents) {
             try notes.append(a, "--force-agents: no agent is busy on these guests now, so only y/N is asked; one busy by its turn is skipped (run again to confirm it).");
         }
-        for (op.todo) |g| if (g.rex and !(op.force_agents and op.risk == .destructive))
+        for (op.todo) |g| if (g.rex and !op.confirmedBusy(g))
             try notes.append(a, try std.fmt.allocPrint(a, "{s} runs Rex: its agents are read again right before its reboot; one busy by then skips it.", .{g.name}));
         return .{
             .action = try std.fmt.allocPrint(a, "Reboot {f} that want it", .{ui.values.count(op.todo.len, "guest")}),
@@ -192,6 +192,11 @@ pub const RebootPendingOp = struct {
             .impact = impact.items,
             .notes = notes.items,
         };
+    }
+
+    /// Named busy (or unreadable) in a plan confirmed by typing the target.
+    fn confirmedBusy(op: *const RebootPendingOp, g: anytype) bool {
+        return op.force_agents and op.risk == .destructive and g.agents != null;
     }
 
     pub fn fingerprint(op: *RebootPendingOp) []const u8 {
@@ -206,10 +211,10 @@ pub const RebootPendingOp = struct {
         for (op.todo, first..) |g, i| {
             var sent = false;
             // Read again right before the write: an agent busy by now skips
-            // the guest — with --force-agents too, unless the
-            // typed confirmation covered busy guests (nothing was busy at
-            // the plan, so only y/N was asked).
-            if (g.rex and !(op.force_agents and op.risk == .destructive)) {
+            // the guest — with --force-agents too, unless the typed
+            // confirmation named this guest as busy. One idle at the plan
+            // was not confirmed, so it is read again.
+            if (g.rex and !op.confirmedBusy(g)) {
                 if (try busyAgents(ctx, op.c, g.vm.vmid, op.user)) |b| {
                     l.set(i, .skipped, if (op.force_agents)
                         try std.fmt.allocPrint(a, "{s} since the confirmation; run again to confirm it", .{b})
@@ -564,6 +569,30 @@ test "vm reboot --pending: a rex guest with an agent working is skipped; --force
     try expectAll(g.h.stdout(), &.{ "✓ reboot naboo     done  kernel 7.0.0-45-generic\n", "✓ 2 guests rebooted and back" });
     try testing.expectEqual(@as(usize, 0), g.srv.unused());
     try testing.expectEqual(Exit.usage, g.h.run(&root, "vm reboot naboo --force-agents"));
+}
+
+test "vm reboot --pending --force-agents: a guest idle at the plan is read again; busy by its turn, it is skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const both = "{\"data\":[{\"vmid\":205,\"name\":\"naboo\",\"status\":\"running\",\"tags\":\"artoo;rex\"},{\"vmid\":207,\"name\":\"tatooine\",\"status\":\"running\",\"tags\":\"artoo;rex\"}]}";
+    const yes = try execStatus(a, 0, "yes\nlinux-base\n");
+    const working = try execStatus(a, 0, agents_working);
+    // naboo busy, tatooine idle at the plan.
+    const read = [_]B{ ans(both), ans(ping), ans(pid), ans(yes), ans(pid), ans(working), ans(ping), ans(pid), ans(yes), ans(pid), ans(try execStatus(a, 0, agents_idle)) };
+    const back = [_]B{ ans(pid), ans(yes), ans(upid_body), ans(task_ok), ans(ping), ans(pid), ans(try execStatus(a, 0, "7.0.0-45-generic\n")) };
+    var g: testkit.Gateway = undefined;
+    // naboo: confirmed busy, not read again; tatooine: read again, busy now.
+    try g.init(&(read ++ back ++ [_]B{ ans(pid), ans(working) }));
+    defer g.deinit();
+    const root = cli.group("artoo", "t", &.{@import("vm.zig").group});
+    try testing.expectEqual(Exit.ok, g.h.run(&root, "vm reboot --pending --force-agents -y --confirm every-guest"));
+    try expectAll(g.h.stdout(), &.{
+        "tatooine runs Rex: its agents are read again right before its reboot; one busy by then skips it.",
+        "✓ reboot naboo     done  kernel 7.0.0-45-generic\n",
+        "reboot tatooine  skipped  claude-code working in naboo-api since the confirmation; run again to confirm it",
+    });
+    try testing.expectEqual(@as(usize, 0), g.srv.unused());
 }
 
 test "vm reboot --pending: the agents are read again before each rex guest's reboot; busy by then, or unreadable, skips it" {
