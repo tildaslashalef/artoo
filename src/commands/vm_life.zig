@@ -2221,10 +2221,10 @@ test "vm rm: a failed ssh config step fails only itself; the later steps still r
     g.h.hooks.runner = fake.runner();
     // A read-only ~/.artoo: the ssh config cannot be rewritten (nor the
     // Rex record), but the Rex host is still removed.
-    var dir = try g.tmp.dir.openDir(testing.io, ".artoo", .{});
-    defer dir.close(testing.io);
-    try dir.setPermissions(testing.io, .fromMode(0o555));
-    defer dir.setPermissions(testing.io, .fromMode(0o755)) catch {};
+    // By path (fchmodat): Linux opens a plain directory handle O_PATH,
+    // which fchmod refuses.
+    try g.tmp.dir.setFilePermissions(testing.io, ".artoo", .fromMode(0o555), .{});
+    defer g.tmp.dir.setFilePermissions(testing.io, ".artoo", .fromMode(0o755), .{}) catch {};
     try testing.expectEqual(Exit.partial, g.h.run(&root, "vm rm web-01 -y --confirm web-01"));
     try fake.done();
     const out = g.h.stdout();
